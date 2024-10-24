@@ -25,9 +25,12 @@ class HostProfile:
         self,
         imgs: list = [],
         flts: list = [],
-        slit_params: dict = {},
-        center_ra: float = None,
-        center_dec: float = None,
+        spec2d: any = None,
+        center_ra: float = None, # deg
+        center_dec: float = None, # deg
+        slit_len: float = 10.0, # arcsec
+        slit_wid: float = 1.0, # arcsec
+        position_angle: float = None, # deg
         show: bool = False,
     ):
         assert len(imgs) == len(flts), "imgs and flts length mismatch"
@@ -36,12 +39,24 @@ class HostProfile:
         self.imgs = imgs
         self.flts = flts
         self.wv_eff = np.array([wv_eff_dict[flt] for flt in flts])
-        self.center_ra = center_ra
-        self.center_dec = center_dec
 
-        self.slit_len = slit_params.get("slit_len", 10.0)  # arcsec
-        self.slit_wid = slit_params.get("slit_wid", 1.0)  # arcsec
-        self.position_angle = slit_params.get("position_angle", None)
+        if spec2d is not None:
+            self.center_ra = spec2d.center_ra
+            self.center_dec = spec2d.center_dec
+            self.slit_len = spec2d.slit_len
+            self.slit_wid = spec2d.slit_wid
+            self.position_angle = spec2d.position_angle
+        else:
+            self.center_ra = center_ra
+            self.center_dec = center_dec
+            self.slit_len = slit_len
+            self.slit_wid = slit_wid
+            self.position_angle = position_angle
+
+        if len(imgs) > 0:
+            assert self.center_ra is not None, "center_ra is required for image data"
+            assert self.center_dec is not None, "center_dec is required for image data"
+            assert self.position_angle is not None, "position_angle is required for image data"
 
         self.counts_slit = []
 
@@ -67,7 +82,7 @@ class HostProfile:
             slit_wid_pix = self.slit_wid / pixel_scale  # Slit width in pixels
 
             # Convert RA, Dec to pixel coordinates
-            coord = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
+            coord = SkyCoord(ra=self.center_ra * u.deg, dec=self.center_dec * u.deg, frame="icrs")
             center_x, center_y = wcs.world_to_pixel(coord)
 
             # Rotate the image
@@ -124,10 +139,11 @@ class HostProfile:
         if show:
             plt.show()
 
-        self.counts_slit = jnp.asarray(self.counts_slit)
-        self.mean_prof_slit = jnp.mean(self.counts_slit, axis=0)
-        self.prof_slit = self.counts_slit / jnp.sum(self.counts_slit, axis=1)[:, None]
-        self.spat_slit = jnp.linspace(-self.slit_len / 2, self.slit_len / 2, self.prof_slit.shape[1])
+        if len(self.imgs) > 0:
+            self.counts_slit = jnp.asarray(self.counts_slit)
+            self.mean_prof_slit = jnp.mean(self.counts_slit, axis=0)
+            self.prof_slit = self.counts_slit / jnp.sum(self.counts_slit, axis=1)[:, None]
+            self.spat_slit = jnp.linspace(-self.slit_len / 2, self.slit_len / 2, self.prof_slit.shape[1])
 
     def model_host_profile_prior(self, **kwargs) -> Callable[[jax.Array], jax.Array]:
         """
@@ -135,7 +151,7 @@ class HostProfile:
         """
         # No prior photometric data
         if len(self.flts) == 0:
-            host_prior = jax.vmap(lambda x: jnp.float64(1 / self.slit_len)) # constant
+            host_prior = lambda x: jnp.float64(1 / self.slit_len) # constant
         # Single band
         elif len(self.flts) == 1:
             params = {
@@ -152,12 +168,11 @@ class HostProfile:
                 **kwargs,
             )
             gp_pred = lambda x: gp_host_prior.gp.predict(y=self.mean_prof_slit, X_test=x)
-            host_prior = jax.vmap(gp_pred, in_axes=-1)
+            host_prior = gp_pred
         # Multiple bands
         else:
             spat_grid, wv_eff_grid = jnp.meshgrid(self.spat_slit, self.wv_eff)
             X = jnp.stack([spat_grid.ravel(), wv_eff_grid.ravel()], axis=-1)
-            print(X.shape)
             params = {
                 "log_amp": jnp.float64(-3.0),
                 "log_scale": jnp.asarray([0.0, 4.0]),

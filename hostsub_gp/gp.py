@@ -7,10 +7,6 @@ from tinygp import kernels, GaussianProcess
 import jax
 import jax.numpy as jnp
 
-import numpyro
-from numpyro import distributions as dist
-from numpyro.infer import MCMC, NUTS
-
 import jaxopt
 
 from tinygp import GaussianProcess, kernels, transforms
@@ -29,7 +25,6 @@ class gp:
             "jitter": jnp.float64(1e-6),
         },
         optimization: bool = True,
-        sampling: bool = False,
     ) -> None:
         self.params_init = params_init
 
@@ -39,8 +34,6 @@ class gp:
         if optimization:
             self.params = self.optimize(X, y, mean)
             self.gp = build_gp(self.params, X, mean)
-        if sampling:
-            pass
 
     def optimize(self, X, y, mean) -> dict:
         solver = jaxopt.ScipyMinimize(fun=neg_log_prob)
