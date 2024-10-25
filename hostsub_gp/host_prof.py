@@ -16,9 +16,10 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from ._plt_config import plt
-from .gp import gp
+from .gp import _gp
 
 from typing import Callable
+
 
 class HostProfile:
     def __init__(
@@ -26,11 +27,11 @@ class HostProfile:
         imgs: list = [],
         flts: list = [],
         spec2d: any = None,
-        center_ra: float = None, # deg
-        center_dec: float = None, # deg
-        slit_len: float = 10.0, # arcsec
-        slit_wid: float = 1.0, # arcsec
-        position_angle: float = None, # deg
+        center_ra: float = None,  # deg
+        center_dec: float = None,  # deg
+        slit_len: float = 10.0,  # arcsec
+        slit_wid: float = 1.0,  # arcsec
+        position_angle: float = None,  # deg
         show: bool = False,
     ):
         assert len(imgs) == len(flts), "imgs and flts length mismatch"
@@ -151,16 +152,16 @@ class HostProfile:
         """
         # No prior photometric data
         if len(self.flts) == 0:
-            host_prior = lambda x: jnp.float64(1 / self.slit_len) # constant
+            host_prior = lambda x: jnp.float64(1 / self.slit_len)  # constant
         # Single band
         elif len(self.flts) == 1:
             params = {
-                "log_amp": jnp.float64(-3.0),
-                "log_scale": jnp.float64(0.0),
-                "jitter": jnp.float64(1e-6),
+                "log_amp": jnp.float64(-3),
+                "log_scale": jnp.float64(0),
+                "log_jitter": jnp.float64(-6),
                 "mean": jnp.float64(1 / self.slit_len),
             }
-            gp_host_prior = gp(
+            gp_host_prior = _gp(
                 X=self.spat_slit.T,
                 y=self.mean_prof_slit,
                 params=params,
@@ -174,12 +175,12 @@ class HostProfile:
             spat_grid, wv_eff_grid = jnp.meshgrid(self.spat_slit, self.wv_eff)
             X = jnp.stack([spat_grid.ravel(), wv_eff_grid.ravel()], axis=-1)
             params = {
-                "log_amp": jnp.float64(-3.0),
-                "log_scale": jnp.asarray([0.0, 4.0]),
-                "jitter": jnp.float64(1e-6),
+                "log_amp": jnp.float64(-3),
+                "log_scale": jnp.asarray([0, 4], dtype=jnp.float64),
+                "log_jitter": jnp.float64(-6),
                 "mean": jnp.float64(1 / self.slit_len),
             }
-            gp_host_prior = gp(
+            gp_host_prior = _gp(
                 X=X,
                 y=self.prof_slit.ravel(),
                 params=params,
