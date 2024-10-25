@@ -30,23 +30,24 @@ class gp:
 
         if params is not None:
             self.params = params
-            self.gp = build_gp(params, X, mean)
+            self.gp = build_gp(params, X)
         if optimization:
-            self.params = self.optimize(X, y, mean)
-            self.gp = build_gp(self.params, X, mean)
+            self.params = self.optimize(X, y)
+            self.gp = build_gp(self.params, X)
 
-    def optimize(self, X, y, mean) -> dict:
+    def optimize(self, X, y) -> dict:
         solver = jaxopt.ScipyMinimize(fun=neg_log_prob)
-        soln = solver.run(self.params_init, X=X, y=y, mean=mean)
+        soln = solver.run(self.params_init, X=X, y=y)
         print(f"Final parameters: {soln.params}")
         print(f"Final negative log likelihood: {soln.state.fun_val}")
         return soln.params
 
 
-def build_gp(params: dict, X: any, mean: any = jnp.float64(0)) -> GaussianProcess:
+def build_gp(params: dict, X: any) -> GaussianProcess:
     log_amp = params.get("log_amp", jnp.float64(0.0))
     log_scale = params.get("log_scale", jnp.zeros(1, dtype=jnp.float64))
     jitter = params.get("jitter", jnp.float64(1e-6))
+    mean = params.get("mean", jnp.float64(0))
     kernel = 10**log_amp * transforms.Linear(10 ** (-log_scale), kernel=kernels.ExpSquared())
     gp = GaussianProcess(kernel=kernel, X=jnp.asarray(X), diag=jitter, mean=mean)
     return gp
@@ -54,6 +55,6 @@ def build_gp(params: dict, X: any, mean: any = jnp.float64(0)) -> GaussianProces
 
 @jax.jit
 # @jax.value_and_grad
-def neg_log_prob(params, X, y, mean):
-    gp = build_gp(params, X, mean)
+def neg_log_prob(params, X, y):
+    gp = build_gp(params, X)
     return -gp.log_probability(y)

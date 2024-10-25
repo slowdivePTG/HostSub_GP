@@ -38,7 +38,7 @@ class Spec2D:
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
-        batch_1d: int = 2,  # batch size for modeling 1D host spectra
+        batch_1d: int = 1,  # batch size for modeling 1D host spectra
         batch_2d: tuple = (2, 50),  # batch size for modeling slowing varying host profiles
         show: bool = False,
     ):
@@ -64,21 +64,22 @@ class Spec2D:
         print(f"Loading the 2D spectrum with the shape: {self.spec2d.shape}")
         spec_grid2d, spat_grid2d = np.meshgrid(self.spec, self.spat)
         self.X = np.stack([spat_grid2d.ravel(), spec_grid2d.ravel()], axis=-1)
+
         # Mask the trace from the source (|spat| < seeing * mask_wid)
         self.mask = np.abs(self.spat) < self.spat_resln * self.mask_wid
         mask_2d = np.tile(self.mask, (self.spec.size, 1)).T
+        self.spec2d_host = self.spec2d[~mask_2d]
         self.X_host = self.X[~mask_2d.ravel()]
 
         # The batched 1D grids for the host galaxy spectra (i.e., outside the mask)
+        self.spec1d_host = self.spec2d[~self.mask].sum(axis=0)
         print(f"Batching the 1D galaxy spectrum (outside the mask) with the size: {batch_1d}")
         spec_batch_1d_idx = np.array_split(np.arange(self.spec.size), self.spec.size // batch_1d)
         spec_batch_1d = [self.spec[spec_batch] for spec_batch in spec_batch_1d_idx]
-        # new central wavelength in each batch: mean of the batch
+        # New central wavelength in each batch: mean of the batch
         self.X_batch_1d = np.array([spec_batch.mean() for spec_batch in spec_batch_1d])
-        # new values: mean of the batch
-        self.spec1d_batch_1d = np.array(
-            [self.spec2d[:, spec_batch][~self.mask].mean() for spec_batch in spec_batch_1d_idx]
-        )
+        # New values: mean of the batch
+        self.spec1d_batch_1d = np.array([self.spec1d_host[spec_batch].mean() for spec_batch in spec_batch_1d_idx])
         print("Batched 1D galaxy spectrum:", self.spec1d_batch_1d.shape)
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
@@ -93,19 +94,21 @@ class Spec2D:
         spec_batch_2d_idx = np.array_split(np.arange(self.spec.size), self.spec.size // batch_2d[1])
         spat_batch_2d = [self.spat[spat_batch] for spat_batch in spat_batch_2d_idx]
         spec_batch_2d = [self.spec[spec_batch] for spec_batch in spec_batch_2d_idx]
-        # new coordinates: mean of the batch
+        # New coordinates: mean of the batch
         self.spat_batch_2d = np.array([spat_batch.mean() for spat_batch in spat_batch_2d])
         self.spec_batch_2d = np.array([spec_batch.mean() for spec_batch in spec_batch_2d])
         spec_batch_2d_grid2d, spat_batch_2d_grid2d = np.meshgrid(self.spec_batch_2d, self.spat_batch_2d)
         self.X_batch_2d = np.stack([spat_batch_2d_grid2d.ravel(), spec_batch_2d_grid2d.ravel()], axis=-1)
-        # new values: mean of the batch
+        # New values: mean of the batch
         spec2d_batch_2d = np.array(
             [
                 [self.spec2d[spat_batch, :][:, spec_batch].mean() for spec_batch in spec_batch_2d_idx]
                 for spat_batch in spat_batch_2d_idx
             ]
         )
-        self.spec2d_batch_2d = spec2d_batch_2d / jnp.sum(spec2d_batch_2d, axis=0)[None:, ]
+        self.spec2d_batch_2d = (
+            spec2d_batch_2d / jnp.sum(spec2d_batch_2d, axis=0)[None:,] * (len(spat_batch_2d_idx) / len(self.spat))
+        )
         print("Batched 2D galaxy spectrum:", self.spec2d_batch_2d.shape)
 
         if show:
@@ -147,18 +150,67 @@ class Spec2D:
         host_prof = HostProfile(imgs=imgs, flts=flts, spec2d=self, **kwargs)
         self.host_flux_prior = host_prof.model_host_profile_prior(optimization=True)
 
-    def build_host_gp(self, params_1d: dict = {}, params_2d: dict = {}) -> Tuple[GaussianProcess, GaussianProcess]:
+    def model_host(self, num_chains: int = 1, num_samples: int = 1000, num_warmup: int = 1000, **kwargs) -> None:
+        """
+        Model the host galaxy using Gaussian Process regression.
+        """
+
+        # Make sure the host flux prior is built
+        if not hasattr(self, "host_flux_prior"):
+            raise ValueError("Please build the host flux prior first.")
+
+        def numpyro_model():
+            # Priors
+            params_1d = dict(
+                jitter=numpyro.sample("jitter_1d", dist.HalfNormal((1e-2 * self.spec1d_batch_1d.mean()) ** 2)),
+                log_amp=numpyro.sample("log_amp_1d", dist.Normal(-3.0, 1.0)),
+                log_spec_scale=numpyro.sample("log_scale_1d", dist.Normal(0.0, 1.0)),
+            )
+            params_2d = dict(
+                jitter=numpyro.sample("jitter_2d", dist.HalfNormal(1e-6)),
+                log_amp=numpyro.sample("log_amp_2d", dist.Normal(-3.0, 1.0)),
+                log_spat_scale=numpyro.sample("log_spat_scale_2d", dist.Normal(0.0, 1.0)),
+                log_spec_scale=numpyro.sample("log_spec_scale_2d", dist.Normal(3.0, 1.0)),
+                mean=numpyro.sample("mean_2d", dist.Normal(0.0, 1 / len(self.spat))),
+            )
+            gp_1d, gp_2d = self._build_host_gp(params_1d=params_1d, params_2d=params_2d)
+            numpyro.sample("y_1d", gp_1d.numpyro_dist(), obs=self.spec1d_batch_1d)
+            numpyro.sample("y_2d", gp_2d.numpyro_dist(), obs=self.spec2d_batch_2d.ravel())
+
+            # Likelihood
+            y_host_1d = gp_1d.predict(y=self.spec1d_batch_1d, X_test=self.X_host[:, 1][:, None])
+            y_host_2d = gp_2d.predict(
+                y=self.spec2d_batch_2d.ravel() - self.host_flux_prior(gp_2d.X), X_test=self.X_host
+            ) + self.host_flux_prior(self.X_host)
+            y_host_2d_norm = y_host_2d / jnp.sum(y_host_2d, axis=0)[None, :]
+            y_host = numpyro.deterministic("y_host", y_host_1d * y_host_2d_norm)
+            noise = numpyro.sample("noise", dist.HalfNormal(1e2))
+            numpyro.sample("y_host_obs", dist.Normal(y_host, noise), obs=self.spec2d_host.ravel())
+
+        nuts_kernel = NUTS(numpyro_model, target_accept_prob=0.9)
+        mcmc = MCMC(
+            nuts_kernel,
+            num_chains=num_chains,
+            num_samples=num_samples,
+            num_warmup=num_warmup,
+            progress_bar=True,
+            **kwargs,
+        )
+        mcmc.run(jax.random.PRNGKey(0))
+        self.mcmc_samples = mcmc.get_samples()
+
+    def _build_host_gp(self, params_1d: dict = {}, params_2d: dict = {}) -> Tuple[GaussianProcess, GaussianProcess]:
         """
         Build the Gaussian Process for the 1D host galaxy spectra and 2D host galaxy spatial profiles.
         """
-        mean_1d = self.spec1d_batch_1d.mean()
+        mean_1d = params_1d.get("mean", jnp.float64(0))
         jitter_1d = params_1d.get("jitter", jnp.float64(1e-6))
-        log_amp_1d = params_1d.get("log_amp", jnp.float64(-3.0))
-        log_spec_scale_1d = params_1d.get("log_spec_scale", jnp.log10(self.spat_resln))
+        log_amp_1d = params_1d.get("log_amp", jnp.float64(3.0))
+        log_spec_scale_1d = params_1d.get("log_spec_scale", jnp.log10(self.spec_resln))
         kernel_1d = 10**log_amp_1d * transforms.Linear(10 ** (-log_spec_scale_1d), kernels.ExpSquared())
         gp_1d = GaussianProcess(kernel=kernel_1d, X=self.X_batch_1d[:, None], diag=jitter_1d, mean=mean_1d)
 
-        mean_2d = self.host_flux_prior
+        mean_2d = params_2d.get("mean", jnp.float64(0))
         jitter_2d = params_2d.get("jitter", jnp.float64(1e-6))
         log_amp_2d = params_2d.get("log_amp", jnp.float64(-3.0))
         log_spat_scale_2d = params_2d.get("log_spat_scale", jnp.log10(self.spec_resln * self.batch_2d[0]))
@@ -166,30 +218,6 @@ class Spec2D:
         kernel_2d = 10**log_amp_2d * transforms.Linear(
             10 ** (-jnp.asarray([log_spat_scale_2d, log_spec_scale_2d])), kernels.ExpSquared()
         )
-        gp_2d = GaussianProcess(
-            kernel=kernel_2d, X=self.X_batch_2d, diag=jitter_2d, mean=mean_2d, mean_value=mean_2d(self.X_batch_2d)
-        )
+        gp_2d = GaussianProcess(kernel=kernel_2d, X=self.X_batch_2d, diag=jitter_2d, mean=mean_2d)
 
         return gp_1d, gp_2d
-
-
-def numpyro_model(spec2d: Spec2D):
-    # Priors
-    params_1d = dict(
-        jitter=numpyro.sample("jitter_1d", dist.HalfNormal((1e-2 * spec2d.spec1d_batch_1d.mean()) ** 2)),
-        log_amp=numpyro.sample("log_amp_1d", dist.Normal(-3.0, 1.0)),
-        log_spec_scale=numpyro.sample("log_scale_1d", dist.Normal(0.0, 1.0)),
-    )
-    params_2d = dict(
-        jitter=numpyro.sample("jitter_2d", dist.HalfNormal(1e-6)),
-        log_amp=numpyro.sample("log_amp_2d", dist.Normal(-3.0, 1.0)),
-        log_spat_scale=numpyro.sample("log_spat_scale_2d", dist.Normal(0.0, 1.0)),
-        log_spec_scale=numpyro.sample("log_spec_scale_2d", dist.Normal(3.0, 1.0)),
-    )
-    gp_1d, gp_2d = spec2d.build_host_gp(params_1d=params_1d, params_2d=params_2d)
-    numpyro.sample("y_1d", gp_1d.numpyro_dist(), obs=spec2d.spec1d_batch_1d)
-    numpyro.sample("y_2d", gp_2d.numpyro_dist(), obs=spec2d.spec2d_batch_2d.ravel())
-
-    # Likelihood
-    y_host_1d = gp_1d.predict(y=spec2d.spec1d_batch_1d, X_test=spec2d.X_host[:, None])
-    y_host_2d = gp_2d.predict(y=spec2d.spec2d_batch_2d.ravel(), X_test=spec2d.X_host)

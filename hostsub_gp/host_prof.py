@@ -158,11 +158,11 @@ class HostProfile:
                 "log_amp": jnp.float64(-3.0),
                 "log_scale": jnp.float64(0.0),
                 "jitter": jnp.float64(1e-6),
+                "mean": jnp.float64(1 / self.slit_len),
             }
             gp_host_prior = gp(
                 X=self.spat_slit.T,
                 y=self.mean_prof_slit,
-                mean=1 / self.slit_len,
                 params=params,
                 params_init=params,
                 **kwargs,
@@ -177,11 +177,11 @@ class HostProfile:
                 "log_amp": jnp.float64(-3.0),
                 "log_scale": jnp.asarray([0.0, 4.0]),
                 "jitter": jnp.float64(1e-6),
+                "mean": jnp.float64(1 / self.slit_len),
             }
             gp_host_prior = gp(
                 X=X,
                 y=self.prof_slit.ravel(),
-                mean=1 / self.slit_len,
                 params=params,
                 params_init=params,
                 **kwargs,
