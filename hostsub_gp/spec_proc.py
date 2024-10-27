@@ -141,10 +141,8 @@ class Spec2D:
         params_fix: dict = {},
         optimization: bool = False,
         sampling: bool = False,
-        num_chains: int = 1,
-        num_samples: int = 1000,
-        num_warmup: int = 1000,
-        **kwargs,
+        optimization_kwargs: dict = {},
+        sampling_kwargs: dict = {},
     ) -> None:
         """
         Model the host galaxy using Gaussian Process regression.
@@ -170,10 +168,13 @@ class Spec2D:
             raise ValueError("Please build the host flux prior first.")
 
         if optimization:
-            self.gp_params = self._model_host_optimization(params_init=params_init, params_fix=params_fix, **kwargs)
+            self.gp_params = {
+                **self._model_host_optimization(params_init=params_init, params_fix=params_fix, **optimization_kwargs),
+                **params_fix,
+            }
 
         if sampling:
-            inf_data = self._model_host_sampling(num_chains, num_samples, num_warmup, **kwargs)
+            self.inf_data = self._model_host_sampling(params_init=params_init, **sampling_kwargs)
             # TODO: self.gp_params
 
         if not optimization and not sampling:
@@ -186,7 +187,7 @@ class Spec2D:
         # Predict the host galaxy flux on the entire 2D grids
         self._spec2d_pred = self._get_pred(self._gp_1d, self._gp_2d, self.X)
 
-    def _get_host_neg_log_probability(self, params: dict, params_fix: dict = {}) -> float:
+    def _get_host_neg_log_probability(self, params: dict, **kwargs) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
         Not JIT-compiled.
@@ -201,6 +202,7 @@ class Spec2D:
         float
             The negative log probability of the host flux.
         """
+        params_fix = kwargs.get("params_fix", {})
         return _get_host_neg_log_probability(
             params,
             X_1d=self.X_batch_1d,
@@ -215,7 +217,9 @@ class Spec2D:
             params_fix=params_fix,
         )
 
-    def _model_host_optimization(self, params_init: dict, verbose: bool = True, params_fix: dict = {}) -> dict:
+    def _model_host_optimization(
+        self, params_init: dict, verbose: bool = True, params_fix: dict = {}, **kwargs
+    ) -> dict:
         """
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
 
@@ -231,7 +235,7 @@ class Spec2D:
         gp_params : dict
             The optimized parameters for the Gaussian Process model.
         """
-        solver = jaxopt.ScipyMinimize(fun=_get_host_neg_log_probability)
+        solver = jaxopt.ScipyMinimize(fun=_get_host_neg_log_probability, **kwargs)
         for key in params_fix.keys():
             params_init.pop(key, None)
         soln = solver.run(
@@ -250,12 +254,10 @@ class Spec2D:
         if soln.state.status != 0:
             warnings.warn(f"Optimization failed with status {soln.state.status}.")
         if verbose:
-            # print(f"Optimization status: {soln.state}")
             print(f"Final parameters: {soln.params}")
-            # print(f"Final negative log likelihood: {soln.state.fun_val}")
         return soln.params
 
-    def _model_host_sampling(self, num_chains: int, num_samples: int, num_warmup: int, **kwargs) -> az.InferenceData:
+    def _model_host_sampling(self, params_init: dict = None, **kwargs) -> any:
         """
         Perform host sampling using MCMC.
 
@@ -278,15 +280,13 @@ class Spec2D:
         def numpyro_model():
             # Priors
             params_1d = dict(
-                log_jitter=numpyro.sample("log_jitter_1d", dist.HalfNormal(1e-6)),
-                log_amp=numpyro.sample("log_amp_1d", dist.Normal(-3.0, 1.0)),
+                log_jitter=numpyro.sample("log_jitter_1d", dist.Normal(0.0, 1.0)),
+                log_amp=numpyro.sample("log_amp_1d", dist.Uniform(-10.0, 10.0)),
                 log_scale=numpyro.sample("log_spec_scale_1d", dist.Normal(0.0, 1.0)),
-                mean=numpyro.sample(
-                    "mean_1d", dist.Uniform(-np.median(self.spec1d_batch_1d), np.median(self.spec1d_batch_1d))
-                ),
+                mean=numpyro.sample("mean_1d", dist.Uniform(0, np.max(self.spec1d_batch_1d))),
             )
             params_2d = dict(
-                log_jitter=numpyro.sample("log_jitter_2d", dist.HalfNormal(1e-6)),
+                log_jitter=numpyro.sample("log_jitter_2d", dist.Normal(-2.0, 1.0)),
                 log_amp=numpyro.sample("log_amp_2d", dist.Normal(-3.0, 1.0)),
                 log_scale=jnp.asarray(
                     [
@@ -305,17 +305,11 @@ class Spec2D:
             noise = kwargs.get("noise", 1)
             numpyro.sample("y_host_obs", dist.Normal(y_host, noise), obs=self.spec2d_host.ravel())
 
-        nuts_kernel = NUTS(numpyro_model, target_accept_prob=0.9)
-        mcmc = MCMC(
-            nuts_kernel,
-            num_chains=num_chains,
-            num_samples=num_samples,
-            num_warmup=num_warmup,
-            progress_bar=True,
-            **kwargs,
-        )
+        init_strategy = None if params_init == {} else numpyro.infer.init_to_value(values=params_init)
+        nuts_kernel = NUTS(numpyro_model, init_strategy=init_strategy)
+        mcmc = MCMC(nuts_kernel, **kwargs)
         mcmc.run(jax.random.PRNGKey(0))
-        results = az.convert_to_inference_data(mcmc.get_samples())
+        results = mcmc.get_samples()
 
         return results
 
