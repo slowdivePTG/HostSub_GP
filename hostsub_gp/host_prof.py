@@ -69,8 +69,12 @@ class HostProfile:
             ax[-1, 0].set_xlabel("X (pixels)")
             ax[-1, 1].set_xlabel("Spatial coordinate (arcsec)")
 
-        for k, (img, flt) in enumerate(zip(self.imgs, self.flts)):
+        img_pixel_scale = np.array([fits.getval(img, "CDELT1") * 3600 for img in imgs])  # Pixel scale in arcsec/pixel
+        assert np.allclose(img_pixel_scale, img_pixel_scale[0]), "Different pixel scales in the images"
+        # TODO: Support different pixel scales (i.e., images different telescopes)
+        pixel_scale = img_pixel_scale[0]
 
+        for k, (img, flt) in enumerate(zip(self.imgs, self.flts)):
             # Load FITS image and WCS info
             hdulist = fits.open(img)
             data = hdulist[0].data
@@ -78,7 +82,6 @@ class HostProfile:
             wcs = WCS(header)
 
             # Define the rectangle size in pixels or arcminutes (angular size)
-            pixel_scale = header["CDELT1"] * 3600  # Pixel scale in arcsec/pixel
             slit_len_pix = self.slit_len / pixel_scale  # Slit length in pixels
             slit_wid_pix = self.slit_wid / pixel_scale  # Slit width in pixels
 
@@ -143,8 +146,16 @@ class HostProfile:
         if len(self.imgs) > 0:
             self.counts_slit = jnp.asarray(self.counts_slit)
             self.mean_prof_slit = jnp.mean(self.counts_slit, axis=0)
-            self.prof_slit = self.counts_slit / jnp.sum(self.counts_slit, axis=1)[:, None]
-            self.spat_slit = jnp.linspace(-self.slit_len / 2, self.slit_len / 2, self.prof_slit.shape[1])
+            self.spat_slit = jnp.linspace(-self.slit_len / 2, self.slit_len / 2, self.counts_slit.shape[1])
+            if spec2d is not None: # Mask the central region
+                mask = np.abs(self.spat_slit) < spec2d.spat_resln * spec2d.mask_wid  # Mask the central region
+                self.prof_slit = (
+                    self.counts_slit
+                    / jnp.sum(self.counts_slit[:, ~mask], axis=1)[:, None]
+                    * (spec2d.pixel_scale / pixel_scale)
+                )
+            else: # No mask
+                self.prof_slit = self.counts_slit / jnp.sum(self.counts_slit, axis=1)[:, None]
 
     def model_host_profile_prior(self, **kwargs) -> Callable[[jax.Array], jax.Array]:
         """
