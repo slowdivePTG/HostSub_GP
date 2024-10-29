@@ -1,5 +1,5 @@
 # HostSub_GP
-Modeling the 2d spectrum of host galaxies with Gaussian Process for better background subtraction in supernova spectroscopy.
+Modeling the 2d spectrum of host galaxies with Gaussian process (GP) for better background subtraction in supernova spectroscopy.
 
 ## Input
 ### Required
@@ -10,23 +10,22 @@ Modeling the 2d spectrum of host galaxies with Gaussian Process for better backg
 - Spatial location of the SN
 - Seeing
 - Spectral resolution
-- Instrumental sensitivity function
-
-### Optional
 - Slit position/orientation
 - Images of the host galaxy (in multiple filters)
+
+### Optional (TODO)
+- Instrumental sensitivity function
 - A spectrum of the host galaxy
 
 ## Output
-- Fluxed calibrated spectra (2d/1d) of the host galaxy/SN 
-- Estimated flux uncertainties
+- Sky/host background subtracted 2D spectra
 
 ## Model
 The observed counts at pixel $x$ and wavelength $\lambda$ is composed of
 $$
-C_\mathrm{obs}(x, \lambda) = \left[f_\mathrm{SN}(x, \lambda) + f_\mathrm{Host}(x, \lambda)\right]\cdot t(\lambda) + f_\mathrm{Sky}(\lambda) + \sigma_C,
+C_\mathrm{Obs}(x, \lambda) = f_\mathrm{SN}(x, \lambda) + f_\mathrm{Host}(x, \lambda)  + f_\mathrm{Sky}(\lambda) + \sigma_C,
 $$
-where $t(\lambda)$ is the throughput function, and the random noise $\sigma_f\sim N(0, \sigma)$.
+where the random noise $\sigma_f\sim N(0, \sigma)$.
 
 The contribution from the SN is modeled as
 $$
@@ -36,33 +35,47 @@ where $F_\mathrm{SN}$ is the 1D spectrum we would like to extract, and $PSF(x, \
 
 The contribution from the host galaxy is modeled as
 $$
-f_\mathrm{Host}(x, \lambda) = F_\mathrm{Host}(\lambda)\cdot p_\mathrm{Host}(x, \lambda),
+f_\mathrm{Host}(x, \lambda) = F_\mathrm{Host}(\lambda)\cdot \xi(x, \lambda),
 $$
-where $F_\mathrm{Host}(\lambda)$ is the 1D spectrum of the host, and $p_\mathrm{Host}(x,\lambda)$ is the spatial profile. By definition, $p_\mathrm{Host}(x,\lambda)$ is also normalized, $\int p_\mathrm{Host}(x,\lambda)\mathrm dx=1$.
+where $F_\mathrm{Host}(\lambda)$ is the 1D spectrum of the host, and $\xi(x,\lambda)$ is the spatial profile, which is also normalized, 
 
-We have constraints on $p_\mathrm{Host}$ from multi-band images of the host galaxy,
-$$
-\int F_\mathrm{Host}(x,\lambda)\cdot p_\mathrm{Host}(x,\lambda)\cdot\lambda t_\mathrm{flt}(\lambda)\mathrm d\lambda = F_\mathrm{Host}(\mathrm{flt})\cdot p_\mathrm{Host}(x;\mathrm{flt}),
-$$
-where $F_\mathrm{Host}(\mathrm{flt})$ is the broad-band flux of the galaxy in the slit, and $p_\mathrm{Host}(x;\mathrm{flt})$ is the broad-band flux profile. Both can be measured from images.
+$$\int_{|x|>x_M} \xi(x,\lambda)\mathrm dx=1,$$
 
-Ideally, i.e., when flat, tilt, bias are all well calibrated, the sky emission lines will only be a function of $\lambda$. Here we adopt this assumption. If the slit covers $N_\mathrm{pix}$ pixels, then $F_\mathrm{Sky}(\lambda) = N_\mathrm{pix}f_\mathrm{Sky}(\lambda)$.
+where $x_M$ stands for the radius of the aperture where the SN is masked. This typically requires $x_M\gg$ seeing.
+
+Ideally, i.e., when flat, tilt, bias are all well calibrated, the sky emission lines will only be a function of $\lambda$. Here we adopt this assumption.
 
 All that being said, the model looks like
 $$
-C_\mathrm{obs}(x, \lambda) = \left[F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Host}(\lambda)\cdot p_\mathrm{Host}(x, \lambda)\right]\cdot t(\lambda) + F_\mathrm{Sky}(\lambda)/N_\mathrm{pix} + \sigma_C.
+C_\mathrm{Obs}(x, \lambda) = F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Host}(\lambda)\cdot \xi(x, \lambda) + f_\mathrm{Sky}(\lambda) + \sigma_C.
 $$
 
-And when $|x|\ge x_0\gg$ seeing, contribution from the SN is negligible, thus
+To get rid of the sky background, we estimate the mean counts outside some $x_G > x_M\gg$ seeing, i.e., the global background
 $$
-C'(\lambda;x_0)\equiv\sum_{|x|>x_0}C_\mathrm{obs}(x,\lambda)\simeq F_\mathrm{Host}(\lambda)\cdot t(\lambda)\cdot\sum_{|x|>x_0}p_\mathrm{Host}(x,\lambda) + F_\mathrm{Sky}(\lambda)\cdot \sum_{|x|>x_0}1/N_\mathrm{pix},
+C_G(\lambda) = \langle C_\mathrm{Obs}(x,\lambda)\rangle_{|x|>x_G} = F_\mathrm{Host}(\lambda) \langle \xi(x,\lambda)\rangle_{|x|>x_G} + f_\mathrm{Sky}(\lambda).
 $$
-which we will model with a 1D Gaussian process,
+By subtracting the global background, we remove the sky emission and get
 $$
-C'(\lambda;x_0)\sim \mathcal{GP}(0, K_1(\lambda,\lambda^*)).
+\widetilde C(x,\lambda) \equiv C_\mathrm{Obs}(x, \lambda) - C_G(\lambda) = F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Host}(\xi(x,\lambda) - \langle \xi(x,\lambda)\rangle_{|x|>x_G}).
 $$
+
+And when $|x|\ge x_M\gg$ seeing, contribution from the SN is negligible, thus
+$$
+\widetilde C_{\mathrm{1D}}(\lambda)\equiv\int_{|x|>x_M}C_\mathrm{Obs}(x,\lambda)\mathrm dx\simeq F_\mathrm{Host}(\lambda) \cdot\left[1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}\right],
+$$
+which we will model with a 1D GP
+$$
+\widetilde C_{\mathrm{1D}}(\lambda)\sim \mathcal{GP}(\mu_\mathrm{1D}, K_1(\lambda,\lambda^*; l_\mathrm{1D})),
+$$
+conditioned on the integrated observed flux $\hat C_{\mathrm{1D}}$. Here $\mu_\mathrm{1D}$ is a fixed mean value of the GP, $l_\mathrm{1D}$ is the scaling factor of the kernel, which should be the order of the spectral resolution.
 
 Independently, the normalized counts at each $\lambda$ is
 $$
-C''(x,\lambda;x_0)\equiv \frac{C_\mathrm{obs}(x,\lambda)}{C'(\lambda;x_0)}\sim \mathcal{GP}\left(\frac{\bar p_\mathrm{Host}}{\sum_{|x|>x_0}\bar p_\mathrm{Host}}, K_2((x,\lambda),(x^*,\lambda^*))\right).
+\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\widetilde C_\mathrm{1D}(\lambda)} = \frac{\xi(x,\lambda)}{1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}}.
 $$
+
+We will model it with a 2D GP
+$$
+\widetilde C_{\mathrm{2D}}(x,\lambda)\sim\mathcal{GP}(\mu_\mathrm{2D}(x,\lambda), K_2((x,\lambda),(x^*,\lambda^*); l_\mathrm{2D})).
+$$
+The mean function $\mu_\mathrm{2D}(x,\lambda)$ is estimated from the (multi-band) images of the galaxy within the slit, and $l_\mathrm{2D}$ is the 2D scaling factor. Note that we expect the scaling factor on the spectral orientation is much greater than $l_\mathrm{1D}$, which is essentially why we would like to separate the two independent GPs.
