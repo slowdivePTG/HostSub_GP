@@ -1,0 +1,15 @@
+name: hostsub
+channels:
+  - conda-forge
+dependencies:
+  - python==3.11
+  - jax
+  - jaxopt
+  - numpyro
+  - tinygp
+  - astropy==6.0.1
+  - arviz
+  - pip
+  - pip:
+    - pypeit==1.14.0
+    - specutils

@@ -1,4 +1,4 @@
-# hostsub_gp/spec_proc.py
+# hostsub_gp/spec.py
 
 __all__ = ["Spec2D"]
 
@@ -29,9 +29,10 @@ import warnings
 class Spec2D:
     def __init__(
         self,
-        spec2d: np.ndarray,  # 2D spectrum (spatial x spectral)
-        spat: np.ndarray,  # spatial grids
-        spec: np.ndarray,  # spectral grids
+        dat: np.ndarray,  # 2D spectrum (spatial x spectral)
+        *,
+        coord_spat: np.ndarray = None,  # spatial grids
+        coord_spec: np.ndarray = None,  # spectral grids
         pixel_scale: float = None,  # arcsec/pixel
         center_ra: float = None,  # RA of the center
         center_dec: float = None,  # DEC of the center
@@ -41,15 +42,11 @@ class Spec2D:
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
-        noise: float = 1.0,  # noise level
-        batch_1d: int = 1,  # batch size for modeling 1D host spectra
+        sky_wid: tuple = (5.0, 5.0),  # sky region
+        noise: float = None,  # noise level
         batch_2d: tuple = (2, 50),  # batch size for modeling slowing varying host profiles
         show: bool = False,
     ):
-        assert spec2d.shape == (spat.size, spec.size), "spec2d shape mismatch"
-        self.spec2d = spec2d
-        self.spat = spat
-        self.spec = spec
         self.pixel_scale = pixel_scale
         self.center_ra = center_ra
         self.center_dec = center_dec
@@ -59,67 +56,85 @@ class Spec2D:
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
         self.mask_wid = mask_wid
-
-        self.noise = noise
-
-        self.batch_1d = batch_1d
-        self.batch_2d = batch_2d
+        self.sky_wid = sky_wid
 
         # The 2D grids for the raw data
-        print(f"Loading the 2D spectrum with the shape: {self.spec2d.shape}")
-        spec_grid2d, spat_grid2d = np.meshgrid(self.spec, self.spat)
-        self.X = np.stack([spat_grid2d.ravel(), spec_grid2d.ravel()], axis=-1)
+        self.f_obs = dat
+        print(f"Loading the 2D spectrum with the shape: {self.f_obs.shape}")
+        if coord_spat.ndim == 1:
+            assert dat.shape == (coord_spat.size, coord_spec.size), "spec2d shape mismatch"
+            self.coord_spec, self.coord_spat = np.meshgrid(coord_spec, coord_spat)
+        elif coord_spat.ndim == 2:
+            assert dat.shape == coord_spat.shape == coord_spec.shape, "spec2d shape mismatch"
+            self.coord_spat = coord_spat
+            self.coord_spec = coord_spec
+        self.X = np.stack([self.coord_spat.ravel(), self.coord_spec.ravel()], axis=-1)
+        self.shape = self.f_obs.shape
+
+        # The global sky region (spat < -sky_wid[0] * seeing) or (spat > sky_wid[1] * seeing)
+        sky_left = np.min(self.coord_spat, axis=1) < -self.spat_resln * self.sky_wid[0]
+        sky_right = np.max(self.coord_spat, axis=1) > self.spat_resln * self.sky_wid[1]
+        self.sky = sky_left | sky_right
+        if self.sky.sum() / self.sky.ravel().size < 0.1:
+            warnings.warn(r"Sky region is < 10% of the overall pixels.")
+        # Estimate the noise background
+        self.noise = noise if noise is not None else np.std(self.f_obs[self.sky])
+
+        # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
+        self.f_bkg = np.mean(self.f_obs[self.sky, :], axis=0)
+        self.f_sky_sub = self.f_obs - np.tile(self.f_bkg, (self.shape[0], 1))
 
         # Mask the trace from the source (|spat| < seeing * mask_wid)
-        self.mask = np.abs(self.spat) < self.spat_resln * self.mask_wid
-        mask_2d = np.tile(self.mask, (self.spec.size, 1)).T
+        assert min(sky_wid) > mask_wid, "sky_wid should be larger than mask_wid"
+        host_left = np.min(self.coord_spat, axis=1) < -self.mask_wid * self.spat_resln
+        host_right = np.max(self.coord_spat, axis=1) > self.mask_wid * self.spat_resln
+        self.host = host_left | host_right
+        self.f_host = self.f_sky_sub[self.host, :]
+        self.X_host = np.stack([self.coord_spat[self.host, :].ravel(), self.coord_spec[self.host, :].ravel()], axis=-1)
 
-        # The 2D spectrum of the host galaxy (i.e., outside the mask)
-        self.spec2d_host = self.spec2d[~self.mask, :]
-        self.X_host = self.X[~mask_2d.ravel()]
-
-        # The batched 1D grids for the host galaxy spectra
-        print(f"Batching the 1D galaxy spectrum (outside the mask) with the size: {batch_1d}")
-        self.spec1d_host = self.spec2d_host.sum(axis=0)
-        spec_batch_1d_idx = np.array_split(np.arange(self.spec.size), self.spec.size // batch_1d)
-        spec_batch_1d = [self.spec[spec_batch] for spec_batch in spec_batch_1d_idx]
-        # New central wavelength in each batch: mean of the batch
-        self.X_batch_1d = np.array([spec_batch.mean() for spec_batch in spec_batch_1d])
-        # New values: mean of the batch
-        self.spec1d_batch_1d = np.array([self.spec1d_host[spec_batch].mean() for spec_batch in spec_batch_1d_idx])
-        print("Batched 1D galaxy spectrum:", self.spec1d_batch_1d.shape)
+        # The 1D grids for the sky-subtracted host galaxy spectra: sum along the spatial direction outside the mask
+        print(f"Obtaining the sky-subtracted 1D galaxy spectrum (outside the mask)")
+        self.f_1d = np.sum(self.f_sky_sub[self.host, :], axis=0)
+        # Central wavelength in each row: mean of the row
+        self.X_1d = np.mean(self.coord_spec[self.host, :], axis=0)[:, None]
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
+        self.batch_2d = batch_2d
         print(f"Batching the 2D galaxy spectrum (outside the mask) with the size: {batch_2d}")
-        host_left = ~self.mask & (self.spat < 0)
-        host_right = ~self.mask & (self.spat > 0)
         spat_batch_2d_idx = np.array_split(
-            np.arange(self.spat.size)[host_left], host_left.sum() // batch_2d[0]  # Left side
+            np.arange(self.shape[0])[host_left], host_left.sum() // batch_2d[0]  # Left side
         ) + np.array_split(
-            np.arange(self.spat.size)[host_right], host_right.sum() // batch_2d[0]  # Right side
+            np.arange(self.shape[0])[host_right], host_right.sum() // batch_2d[0]  # Right side
         )
-        spec_batch_2d_idx = np.array_split(np.arange(self.spec.size), self.spec.size // batch_2d[1])
-        spat_batch_2d = [self.spat[spat_batch] for spat_batch in spat_batch_2d_idx]
-        spec_batch_2d = [self.spec[spec_batch] for spec_batch in spec_batch_2d_idx]
-        # New coordinates: mean of the batch
-        self.spat_batch_2d = np.array([spat_batch.mean() for spat_batch in spat_batch_2d])
-        self.spec_batch_2d = np.array([spec_batch.mean() for spec_batch in spec_batch_2d])
-        spec_batch_2d_grid2d, spat_batch_2d_grid2d = np.meshgrid(self.spec_batch_2d, self.spat_batch_2d)
-        self.X_batch_2d = np.stack([spat_batch_2d_grid2d.ravel(), spec_batch_2d_grid2d.ravel()], axis=-1)
-        # New values: mean of the batch
-        self.spec2d_batch_2d = np.array(
-            [
-                [
-                    (self.spec2d / self.spec1d_host)[spat_batch, :][:, spec_batch].mean()
-                    for spec_batch in spec_batch_2d_idx
-                ]
-                for spat_batch in spat_batch_2d_idx
-            ]
+        spec_batch_2d_idx = np.array_split(np.arange(self.shape[1]), self.shape[1] // batch_2d[1])
+        self.shape_batch_2d = (len(spat_batch_2d_idx), len(spec_batch_2d_idx))
+        self.coord_spat_batch_2d, self.coord_spec_batch_2d = np.empty(self.shape_batch_2d), np.empty(
+            self.shape_batch_2d
         )
-        print("Batched 2D galaxy spectrum:", self.spec2d_batch_2d.shape)
+        self.f_batch_2d = np.empty(self.shape_batch_2d)
+        for x in range(self.shape_batch_2d[0]):
+            for y in range(self.shape_batch_2d[1]):
+                # New coordinates: mean of the batch
+                self.coord_spat_batch_2d[x, y] = self.coord_spat[spat_batch_2d_idx[x], :][
+                    :, spec_batch_2d_idx[y]
+                ].mean()
+                self.coord_spec_batch_2d[x, y] = self.coord_spec[spat_batch_2d_idx[x], :][
+                    :, spec_batch_2d_idx[y]
+                ].mean()
+                # New values: mean of the batch
+                self.f_batch_2d[x, y] = (self.f_sky_sub / self.f_1d)[spat_batch_2d_idx[x], :][
+                    :, spec_batch_2d_idx[y]
+                ].mean()
+        self.X_batch_2d = np.stack([self.coord_spat_batch_2d.ravel(), self.coord_spec_batch_2d.ravel()], axis=-1)
+        print("Batched 2D galaxy spectrum:", self.f_batch_2d.shape)
 
         if show:
             self._plot_raw()
+
+        assert (self.X_1d.shape[1] == 1) & (self.X_1d.shape[0] == self.f_1d.size), "1D spectrum error"
+        assert (self.X_batch_2d.shape[1] == 2) & (
+            self.X_batch_2d.shape[0] == self.f_batch_2d.ravel().size
+        ), "2D batch error"
 
     def build_host_prior(self, imgs: list = [], flts: list = [], **kwargs) -> None:
         """
@@ -132,8 +147,8 @@ class Spec2D:
         flts : list
             Filters of the host galaxy images.
         """
-        host_prof = HostProfile(imgs=imgs, flts=flts, spec2d=self, **kwargs)
-        self.host_flux_prior = jax.jit(host_prof.model_host_profile_prior(optimization=True))
+        host_prof = HostProfile(imgs=imgs, flts=flts, spec2d=self)
+        self.host_flux_prior = host_prof.model_host_profile_prior(optimization=True, **kwargs)
 
     def model_host(
         self,
@@ -183,9 +198,9 @@ class Spec2D:
         params_1d, params_2d = _split_params(self.gp_params)
         self._gp_1d, self._gp_2d = self._build_host_gp(params_1d=params_1d, params_2d=params_2d)
         # Predict the host galaxy flux outside the mask
-        self._spec2d_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.X_host)
+        self._f_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.X_host)
         # Predict the host galaxy flux on the entire 2D grids
-        self._spec2d_pred = self._get_pred(self._gp_1d, self._gp_2d, self.X)
+        self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.X)
 
     def _get_host_neg_log_probability(self, params: dict, **kwargs) -> float:
         """
@@ -205,12 +220,12 @@ class Spec2D:
         params_fix = kwargs.get("params_fix", {})
         return _get_host_neg_log_probability(
             params,
-            X_1d=self.X_batch_1d,
+            X_1d=self.X_1d,
             X_2d=self.X_batch_2d,
             X_obs=self.X_host,
-            y_1d=self.spec1d_batch_1d,
-            y_2d=self.spec2d_batch_2d.ravel(),
-            y_obs=self.spec2d_host.ravel(),
+            y_1d=self.f_1d,
+            y_2d=self.f_batch_2d.ravel(),
+            y_obs=self.f_host.ravel(),
             y_2d_mean=self.host_flux_prior(self.X_batch_2d),
             y_obs_mean=self.host_flux_prior(self.X_host),
             noise=self.noise,
@@ -240,12 +255,12 @@ class Spec2D:
             params_init.pop(key, None)
         soln = solver.run(
             params_init,
-            X_1d=self.X_batch_1d,
+            X_1d=self.X_1d,
             X_2d=self.X_batch_2d,
             X_obs=self.X_host,
-            y_1d=self.spec1d_batch_1d,
-            y_2d=self.spec2d_batch_2d.ravel(),
-            y_obs=self.spec2d_host.ravel(),
+            y_1d=self.f_1d,
+            y_2d=self.f_batch_2d.ravel(),
+            y_obs=self.f_host.ravel(),
             y_2d_mean=self.host_flux_prior(self.X_batch_2d),
             y_obs_mean=self.host_flux_prior(self.X_host),
             noise=self.noise,
@@ -283,7 +298,7 @@ class Spec2D:
                 log_jitter=numpyro.sample("log_jitter_1d", dist.Normal(0.0, 1.0)),
                 log_amp=numpyro.sample("log_amp_1d", dist.Uniform(-10.0, 10.0)),
                 log_scale=numpyro.sample("log_spec_scale_1d", dist.Normal(0.0, 1.0)),
-                mean=numpyro.sample("mean_1d", dist.Uniform(0, np.max(self.spec1d_batch_1d))),
+                mean=numpyro.sample("mean_1d", dist.Uniform(0, np.max(self.f_1d))),
             )
             params_2d = dict(
                 log_jitter=numpyro.sample("log_jitter_2d", dist.Normal(-2.0, 1.0)),
@@ -294,16 +309,16 @@ class Spec2D:
                         numpyro.sample("log_spec_scale_2d", dist.Normal(3.0, 1.0)),
                     ]
                 ),
-                mean=numpyro.sample("mean_2d", dist.Uniform(-1 / len(self.spat), 1 / len(self.spat))),
+                mean=numpyro.sample("mean_2d", dist.Uniform(-1.0 / self.shape[0], 1.0 / self.shape[0])),
             )
             gp_1d, gp_2d = self._build_host_gp(params_1d=params_1d, params_2d=params_2d)
-            numpyro.sample("y_1d", gp_1d.numpyro_dist(), obs=self.spec1d_batch_1d)
-            numpyro.sample("y_2d", gp_2d.numpyro_dist(), obs=self.spec2d_batch_2d.ravel())
+            numpyro.sample("y_1d", gp_1d.numpyro_dist(), obs=self.f_1d)
+            numpyro.sample("y_2d", gp_2d.numpyro_dist(), obs=self.f_batch_2d.ravel())
 
             # Likelihood
             y_host = numpyro.deterministic("y_host", self._get_pred(gp_1d, gp_2d, self.X_host))
             noise = kwargs.get("noise", 1)
-            numpyro.sample("y_host_obs", dist.Normal(y_host, noise), obs=self.spec2d_host.ravel())
+            numpyro.sample("y_host_obs", dist.Normal(y_host, noise), obs=self.f_host.ravel())
 
         init_strategy = None if params_init == {} else numpyro.infer.init_to_value(values=params_init)
         nuts_kernel = NUTS(numpyro_model, init_strategy=init_strategy)
@@ -329,8 +344,8 @@ class Spec2D:
         Tuple[GaussianProcess, GaussianProcess]
             tinygp.GaussianProcess objects for the 1D and 2D host galaxy.
         """
-        gp_1d = _gp(X=self.X_batch_1d[:, None], y=self.spec1d_batch_1d, params=params_1d).gp
-        gp_2d = _gp(X=self.X_batch_2d, y=self.spec2d_batch_2d.ravel(), params=params_2d).gp
+        gp_1d = _gp(X=self.X_1d, y=self.f_1d, params=params_1d).gp
+        gp_2d = _gp(X=self.X_batch_2d, y=self.f_batch_2d.ravel(), params=params_2d).gp
 
         return gp_1d, gp_2d
 
@@ -352,35 +367,67 @@ class Spec2D:
         jax.Array
             The predicted host galaxy flux.
         """
-        y_host_1d = gp_1d.predict(y=self.spec1d_batch_1d, X_test=X[:, 1][:, None])
+        y_host_1d = gp_1d.predict(y=self.f_1d, X_test=X[:, 1][:, None])
         y_host_2d = gp_2d.predict(
-            y=self.spec2d_batch_2d.ravel() - self.host_flux_prior(gp_2d.X), X_test=X
+            y=self.f_batch_2d.ravel() - self.host_flux_prior(gp_2d.X), X_test=X
         ) + self.host_flux_prior(X)
 
         return y_host_1d * y_host_2d
 
+    def _get_gp_params(self) -> dict:
+        """
+        Get the Gaussian Process parameters.
+
+        Returns
+        -------
+        dict
+            The Gaussian Process parameters.
+        """
+        assert hasattr(self, "gp_params"), "Please model the host galaxy first."
+        print("Gaussian Process parameters:")
+        print("1D:")
+        print("Amp:", 10 ** self.gp_params.get("log_amp_1d"))
+        print("Scale:", 10 ** self.gp_params.get("log_spec_scale_1d"))
+        print("Jitter:", 10 ** self.gp_params.get("log_jitter_1d"))
+        print("Mean:", self.gp_params.get("mean_1d"))
+        print("2D:")
+        print("Amp:", 10 ** self.gp_params.get("log_amp_2d"))
+        print("Spat Scale:", 10 ** self.gp_params.get("log_spat_scale_2d"))
+        print("Spec Scale:", 10 ** self.gp_params.get("log_spec_scale_2d"))
+        print("Jitter:", 10 ** self.gp_params.get("log_jitter_2d"))
+        print("Mean:", self.gp_params.get("mean_2d"))
+        return self.gp_params
+
     ############################ QA Plotting ############################
     def _plot_raw(self) -> None:
-        _, ax = plt.subplots(3, 1, figsize=(20, 7.5), constrained_layout=True, sharex=True)
+        _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True, sharex=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
-            self.spec2d,
+            self.f_obs,
             origin="lower",
             cmap="gray",
-            vmin=np.nanpercentile(self.spec2d, 5),
-            vmax=np.nanpercentile(self.spec2d, 99),
-            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
+            vmin=np.nanpercentile(self.f_obs, 5),
+            vmax=np.nanpercentile(self.f_obs, 99),
+            extent=[self.coord_spec.min(), self.coord_spec.max(), self.coord_spat.min(), self.coord_spat.max()],
+        )
+        ax[1].imshow(
+            self.f_sky_sub,
+            origin="lower",
+            cmap="gray",
+            vmin=np.nanpercentile(self.f_sky_sub, 5),
+            vmax=np.nanpercentile(self.f_sky_sub, 99),
+            extent=[self.coord_spec.min(), self.coord_spec.max(), self.coord_spat.min(), self.coord_spat.max()],
         )
         # Plot the 2D batched spectrum
         batch_size = (
-            (self.spat[1] - self.spat[0]) * self.batch_2d[0],
-            (self.spec[1] - self.spec[0]) * self.batch_2d[1],
+            (self.coord_spat[1, 0] - self.coord_spat[0, 0]) * self.batch_2d[0],
+            (self.coord_spec[0, 1] - self.coord_spec[0, 0]) * self.batch_2d[1],
         )
-        norm = plt.Normalize(self.spec2d_batch_2d.min(), self.spec2d_batch_2d.max())
+        norm = plt.Normalize(self.f_batch_2d.min(), self.f_batch_2d.max())
         cmap = plt.cm.get_cmap("gray")
         for k in range(len(self.X_batch_2d[:, 0])):
-            c_raw = cmap(norm(self.spec2d_batch_2d.ravel()[k]))
-            ax[1].add_patch(
+            c_raw = cmap(norm(self.f_batch_2d.ravel()[k]))
+            ax[2].add_patch(
                 plt.Rectangle(
                     (self.X_batch_2d[k, 1] - batch_size[1] / 2, self.X_batch_2d[k, 0] - batch_size[0] / 2),
                     batch_size[1],
@@ -390,24 +437,26 @@ class Spec2D:
             )
 
         # Plot the 1D batched spectrum
-        ax[2].plot(self.X_batch_1d, self.spec1d_batch_1d)
+        ax[-1].plot(self.X_1d, self.f_1d)
 
         # Titles
         ax[0].set_title(r"$\mathrm{Source}$")
-        ax[1].set_title(r"$\mathrm{Batched\ 2D\ Spectrum}$")
-        ax[2].set_title(r"$\mathrm{Batched\ 1D\ Spectrum}$")
+        ax[1].set_title(r"$\mathrm{Global\ Background\ Subtracted}$")
+        ax[2].set_title(r"$\mathrm{Batched\ 2D\ Spectrum}$")
+        ax[3].set_title(r"$\mathrm{Batched\ 1D\ Spectrum}$")
 
         # Labels
-        ax[2].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-        for ax_ in ax[:2]:
-            ax_.axhline(self.mask_wid * self.spat_resln, color="red", linestyle="--")
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="red", linestyle="--")
+        ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+        for ax_ in ax[:-1]:
+            ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
+            ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
+            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="tab:blue", linestyle="-.")
+            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="tab:blue", linestyle="-.")
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
-            ax_.set_xlim(self.spec[0], self.spec[-1])
-            ax_.set_ylim(self.spat[0], self.spat[-1])
-        ax[2].set_ylabel(r"$\mathrm{Counts}$")
-        ax[2].set_yscale("log")
+            ax_.set_xlim(self.coord_spec.min(), self.coord_spec.max())
+            ax_.set_ylim(self.coord_spat.min(), self.coord_spat.max())
+        ax[-1].set_ylabel(r"$\mathrm{Counts}$")
 
         plt.show()
 
@@ -417,21 +466,21 @@ class Spec2D:
         _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
         # Plot the 2D batched spectrum
         batch_size = (
-            (self.spat[1] - self.spat[0]) * self.batch_2d[0],
-            (self.spec[1] - self.spec[0]) * self.batch_2d[1],
+            (self.coord_spat[1, 0] - self.coord_spat[0, 0]) * self.batch_2d[0],
+            (self.coord_spec[0, 1] - self.coord_spec[0, 0]) * self.batch_2d[1],
         )
-        norm = plt.Normalize(self.spec2d_batch_2d.min(), self.spec2d_batch_2d.max())
-        norm_residual = plt.Normalize(-1e-3, 1e-3)
+        norm = plt.Normalize(self.f_batch_2d.min(), self.f_batch_2d.max())
+        norm_residual = plt.Normalize(-1e-2, 1e-2)
         cmap = plt.cm.get_cmap("gray")
         cmap_residual = plt.cm.get_cmap("RdBu_r")
-        pred_1d = self._gp_1d.predict(y=self.spec1d_batch_1d, X_test=self._gp_1d.X)
+        pred_1d = self._gp_1d.predict(y=self.f_1d, X_test=self._gp_1d.X)
         pred_2d = self._gp_2d.predict(
-            y=self.spec2d_batch_2d.ravel() - self.host_flux_prior(self._gp_2d.X), X_test=self._gp_2d.X
+            y=self.f_batch_2d.ravel() - self.host_flux_prior(self._gp_2d.X), X_test=self._gp_2d.X
         ) + self.host_flux_prior(self._gp_2d.X)
         for k in range(len(self.X_batch_2d[:, 0])):
-            c_raw = cmap(norm(self.spec2d_batch_2d.ravel()[k]))
+            c_raw = cmap(norm(self.f_batch_2d.ravel()[k]))
             c_model = cmap(norm(pred_2d[k]))
-            c_residual = cmap_residual(norm_residual(self.spec2d_batch_2d.ravel()[k] - pred_2d[k]))
+            c_residual = cmap_residual(norm_residual(self.f_batch_2d.ravel()[k] - pred_2d[k]))
             ax[0].add_patch(
                 plt.Rectangle(
                     (self.X_batch_2d[k, 1] - batch_size[1] / 2, self.X_batch_2d[k, 0] - batch_size[0] / 2),
@@ -458,9 +507,9 @@ class Spec2D:
             )
 
         # Plot the 1D batched spectrum
-        ax[3].plot(self.X_batch_1d, self.spec1d_batch_1d)
-        ax[3].plot(self.X_batch_1d, pred_1d, "--k", lw=2)
-        ax[4].plot(self.X_batch_1d, self.spec1d_batch_1d - pred_1d)
+        ax[3].plot(self.X_1d, self.f_1d)
+        ax[3].plot(self.X_1d, pred_1d, "--k", lw=2)
+        ax[4].plot(self.X_1d, self.f_1d - pred_1d)
 
         # Titles
         ax[0].set_title(r"$\mathrm{2D\ Spectrum}$")
@@ -472,28 +521,29 @@ class Spec2D:
         # Labels
         ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         for ax_ in ax[:3]:
-            ax_.axhline(self.mask_wid * self.spat_resln, color="red", linestyle="--")
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="red", linestyle="--")
+            ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
+            ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
+            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="tab:blue", linestyle="-.")
+            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="tab:blue", linestyle="-.")
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
-            ax_.set_xlim(self.spec[0], self.spec[-1])
-            ax_.set_ylim(self.spat[0], self.spat[-1])
+            ax_.set_xlim(self.coord_spec.min(), self.coord_spec.max())
+            ax_.set_ylim(self.coord_spat.min(), self.coord_spat.max())
         ax[3].set_ylabel(r"$\mathrm{Counts}$")
-        ax[3].set_yscale("log")
 
         plt.show()
 
     def _plot_host_pred(self) -> None:
-        if not (hasattr(self, "_spec2d_host_pred") and hasattr(self, "_spec2d_pred")):
+        if not (hasattr(self, "_f_host_pred") and hasattr(self, "_f_pred")):
             raise ValueError("Please model the host galaxy first.")
 
         source_params = dict(
             origin="lower",
             cmap="gray",
             aspect="auto",
-            vmin=np.nanpercentile(self.spec2d, 5),
-            vmax=np.nanpercentile(self.spec2d, 99),
-            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
+            vmin=np.nanpercentile(self.f_sky_sub, 5),
+            vmax=np.nanpercentile(self.f_sky_sub, 99),
+            extent=[self.coord_spec.min(), self.coord_spec.max(), self.coord_spat.min(), self.coord_spat.max()],
         )
         residual_params = dict(
             origin="lower",
@@ -501,16 +551,18 @@ class Spec2D:
             aspect="auto",
             vmin=-3 * self.noise,
             vmax=3 * self.noise,
-            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
+            extent=[self.coord_spec.min(), self.coord_spec.max(), self.coord_spat.min(), self.coord_spat.max()],
         )
 
         _, ax = plt.subplots(3, 1, figsize=(20, 7.5), sharex=True, sharey=True, constrained_layout=True)
-        ax[0].imshow(self.spec2d, **source_params)
-        ax[1].imshow(self._spec2d_pred.reshape(-1, len(self.spec)), **source_params)
-        ax[2].imshow(self.spec2d - self._spec2d_pred.reshape(-1, len(self.spec)), **residual_params)
+        ax[0].imshow(self.f_sky_sub, **source_params)
+        ax[1].imshow(self._f_pred.reshape(-1, self.shape[1]), **source_params)
+        ax[2].imshow(self.f_sky_sub - self._f_pred.reshape(-1, self.shape[1]), **residual_params)
         for ax_ in ax:
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="red", linestyle="--")
-            ax_.axhline(self.mask_wid * self.spat_resln, color="red", linestyle="--")
+            ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
+            ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
+            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="tab:blue", linestyle="-.")
+            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="tab:blue", linestyle="-.")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
         ax[1].set_title(r"$\mathrm{Model}$")
@@ -522,14 +574,14 @@ class Spec2D:
 
 @jax.jit
 def _get_host_neg_log_probability(
-    params: dict, X_1d, X_2d, X_obs, y_1d, y_2d, y_obs, y_2d_mean, y_obs_mean, noise, params_fix: dict = {}
+    params: dict, *, X_1d, X_2d, X_obs, y_1d, y_2d, y_obs, y_2d_mean, y_obs_mean, noise, params_fix: dict = {}
 ) -> float:
     """
     Compute the negative log probability of the host galaxy model
     """
     params = {**params, **params_fix}
     params_1d, params_2d = _split_params(params)
-    gp_1d = _gp(X=X_1d[:, None], params=params_1d).gp
+    gp_1d = _gp(X=X_1d, params=params_1d).gp
     gp_2d = _gp(X=X_2d, params=params_2d).gp
     log_prob_1d = gp_1d.log_probability(y_1d)
     log_prob_2d = gp_2d.log_probability(y_2d)

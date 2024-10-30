@@ -71,7 +71,7 @@ conditioned on the integrated observed flux $\hat C_{\mathrm{1D}}$. Here $\mu_\m
 
 Independently, the normalized counts at each $\lambda$ is
 $$
-\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\widetilde C_\mathrm{1D}(\lambda)} = \frac{\xi(x,\lambda)}{1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}}.
+\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\widetilde C_\mathrm{1D}(\lambda)} = \frac{\xi(x,\lambda)-\langle \xi(x,\lambda)\rangle_{|x|>x_G}}{1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}}.
 $$
 
 We will model it with a 2D GP

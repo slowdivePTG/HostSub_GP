@@ -3,7 +3,6 @@
 __all__ = ["HostProfile"]
 
 import numpy as np
-from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
 import astropy.units as u
@@ -17,6 +16,7 @@ jax.config.update("jax_enable_x64", True)
 
 from ._plt_config import plt
 from .gp import _gp
+from ._load import load_image, wv_eff_dict
 
 from typing import Callable
 
@@ -26,6 +26,7 @@ class HostProfile:
         self,
         imgs: list = [],
         flts: list = [],
+        cameras: str | list = None,
         spec2d: any = None,
         center_ra: float = None,  # deg
         center_dec: float = None,  # deg
@@ -35,11 +36,17 @@ class HostProfile:
         show: bool = False,
     ):
         assert len(imgs) == len(flts), "imgs and flts length mismatch"
-        wv_eff_dict = dict(g_ps1=4810.16, r_ps1=6155.47, i_ps1=7503.03, z_ps1=8668.36)
 
         self.imgs = imgs
         self.flts = flts
-        self.wv_eff = np.array([wv_eff_dict[flt] for flt in flts])
+        if cameras is None:
+            self.cameras = ["ps1"] * len(flts)
+        elif isinstance(cameras, str):
+            self.cameras = [cameras] * len(flts)
+        else:
+            assert len(cameras) == len(flts), "cameras and flts length mismatch"
+            self.cameras = cameras
+        self.wv_eff = np.array([wv_eff_dict[cam][flt] for cam, flt in zip(self.cameras, self.flts)])
 
         if spec2d is not None:
             self.center_ra = spec2d.center_ra
@@ -59,7 +66,9 @@ class HostProfile:
             assert self.center_dec is not None, "center_dec is required for image data"
             assert self.position_angle is not None, "position_angle is required for image data"
 
-        self.counts_slit = []
+        counts_slit, prof_slit = [], []
+        spat_slit = []
+        wv_slit = []
 
         if show:
             # Plot the image and the slit
@@ -69,17 +78,11 @@ class HostProfile:
             ax[-1, 0].set_xlabel("X (pixels)")
             ax[-1, 1].set_xlabel("Spatial coordinate (arcsec)")
 
-        img_pixel_scale = np.array([fits.getval(img, "CDELT1") * 3600 for img in imgs])  # Pixel scale in arcsec/pixel
-        assert np.allclose(img_pixel_scale, img_pixel_scale[0]), "Different pixel scales in the images"
-        # TODO: Support different pixel scales (i.e., images different telescopes)
-        pixel_scale = img_pixel_scale[0]
-
-        for k, (img, flt) in enumerate(zip(self.imgs, self.flts)):
+        for k, (img, flt, cam) in enumerate(zip(self.imgs, self.flts, self.cameras)):
             # Load FITS image and WCS info
-            hdulist = fits.open(img)
-            data = hdulist[0].data
-            header = hdulist[0].header
+            data, header = load_image(img, camera=cam)
             wcs = WCS(header)
+            pixel_scale = header["CDELT1"] * 3600
 
             # Define the rectangle size in pixels or arcminutes (angular size)
             slit_len_pix = self.slit_len / pixel_scale  # Slit length in pixels
@@ -106,8 +109,25 @@ class HostProfile:
                 int(np.floor(center_y_rot - slit_len_pix / 2)) - 1 : int(np.ceil(center_y_rot + slit_len_pix / 2)) - 1,
                 int(np.floor(center_x_rot - slit_wid_pix / 2)) - 1 : int(np.ceil(center_x_rot + slit_wid_pix / 2)) - 1,
             ][::-1]
-            counts_slit = np.mean(data_slit, axis=1)
-            self.counts_slit.append(counts_slit)
+            counts_slit.append(np.mean(data_slit, axis=1))  # Average along the slit width
+            spat_slit.append(np.linspace(-self.slit_len / 2, self.slit_len / 2, counts_slit[-1].size))
+            wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
+            if spec2d is not None:  # Mask the central region
+                mask = np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.mask_wid  # Mask the central region
+                sky = (np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.sky_wid[-1]) | (
+                    np.abs(spat_slit[-1]) > spec2d.spat_resln * spec2d.sky_wid[0]
+                )  # Subtract the sky background
+                xi = counts_slit[-1] / np.sum(counts_slit[-1][~mask])
+                mask_len = 2 * spec2d.spat_resln * spec2d.mask_wid
+                sky_len = spec2d.spat_resln * (spec2d.sky_wid[-1] - spec2d.sky_wid[0])
+                prof_slit.append(
+                    (xi - xi[sky].mean())
+                    / (1 - xi[sky].sum() * (slit_len - mask_len) / (slit_len - sky_len))
+                    * (spec2d.pixel_scale / pixel_scale)
+                )
+            else:  # No mask
+                xi = counts_slit[-1] / np.sum(counts_slit[-1])
+                prof_slit.append(xi)
 
             if show:
                 # Plot the image and the slit
@@ -131,7 +151,7 @@ class HostProfile:
                 ax[k, 0].set_ylim(center_y_rot - 40, center_y_rot + 40)
 
                 # Plot the spatial profile of the galaxy
-                ax[k, 1].plot(np.linspace(-self.slit_len / 2, self.slit_len / 2, counts_slit.size), counts_slit)
+                ax[k, 1].plot(np.linspace(-self.slit_len / 2, self.slit_len / 2, counts_slit[-1].size), counts_slit[-1])
 
                 ax[k, 0].set_ylabel("Y (pixels)")
                 ax[k, 1].set_ylabel("Counts")
@@ -143,21 +163,13 @@ class HostProfile:
         if show:
             plt.show()
 
-        if len(self.imgs) > 0:
-            self.counts_slit = jnp.asarray(self.counts_slit)
-            self.mean_prof_slit = jnp.mean(self.counts_slit, axis=0)
-            self.spat_slit = jnp.linspace(-self.slit_len / 2, self.slit_len / 2, self.counts_slit.shape[1])
-            if spec2d is not None: # Mask the central region
-                mask = np.abs(self.spat_slit) < spec2d.spat_resln * spec2d.mask_wid  # Mask the central region
-                self.prof_slit = (
-                    self.counts_slit
-                    / jnp.sum(self.counts_slit[:, ~mask], axis=1)[:, None]
-                    * (spec2d.pixel_scale / pixel_scale)
-                )
-            else: # No mask
-                self.prof_slit = self.counts_slit / jnp.sum(self.counts_slit, axis=1)[:, None]
+        self.prof_slit = prof_slit
+        self.spat_slit = spat_slit
+        self.wv_slit = wv_slit
+        self.prof = jnp.concatenate(prof_slit)
+        self.X = jnp.stack([jnp.concatenate(spat_slit), jnp.concatenate(wv_slit)], axis=-1)
 
-    def model_host_profile_prior(self, **kwargs) -> Callable[[jax.Array], jax.Array]:
+    def model_host_profile_prior(self, show: bool = False, **kwargs) -> Callable[[jax.Array], jax.Array]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
         """
@@ -173,31 +185,46 @@ class HostProfile:
                 "mean": jnp.float64(1 / self.slit_len),
             }
             gp_host_prior = _gp(
-                X=self.spat_slit.T,
-                y=self.mean_prof_slit,
+                X=self.X[:, 0][:, None],  # Spatial coordinate only
+                y=self.prof,
                 params=params,
                 params_init=params,
                 **kwargs,
             )
-            gp_pred = lambda x: gp_host_prior.gp.predict(y=self.mean_prof_slit, X_test=x)
-            host_prior = gp_pred
+            gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None])
+            host_prior = jax.jit(gp_pred)
         # Multiple bands
         else:
-            spat_grid, wv_eff_grid = jnp.meshgrid(self.spat_slit, self.wv_eff)
-            X = jnp.stack([spat_grid.ravel(), wv_eff_grid.ravel()], axis=-1)
             params = {
                 "log_amp": jnp.float64(-3),
-                "log_scale": jnp.asarray([0, 4], dtype=jnp.float64),
+                "log_scale": jnp.asarray([0.5, 3], dtype=jnp.float64),
                 "log_jitter": jnp.float64(-6),
                 "mean": jnp.float64(1 / self.slit_len),
             }
             gp_host_prior = _gp(
-                X=X,
-                y=self.prof_slit.ravel(),
+                X=self.X,
+                y=self.prof,
                 params=params,
                 params_init=params,
                 **kwargs,
             )
-            gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof_slit.ravel(), X_test=x)
-            host_prior = gp_pred
+            gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x)
+            host_prior = jax.jit(gp_pred)
+
+        if show:
+            fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+            cmap = plt.cm.get_cmap("coolwarm")
+            norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
+            delta = (self.prof.max() - self.prof.min()) * 0.4
+            for k in range(len(self.flts)):
+                ax.plot(self.spat_slit[k], self.prof_slit[k] - k * delta, label=f"{self.flts[k]}", color=cmap(norm(k)))
+                ax.plot(
+                    self.spat_slit[k],
+                    host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)) - k * delta,
+                    "--",
+                    color=cmap(norm(k)),
+                )
+            ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+            ax.set_ylabel(r"$\mathrm{Profile + offset}$")
+
         return host_prior
