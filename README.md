@@ -63,7 +63,7 @@ $$\widetilde C_{\mathrm{1D}}(\lambda)\equiv\int_{|x|>x_M}C_\mathrm{Obs}(x,\lambd
 
 which we will model with a 1D GP
 
-$$\widetilde C_{\mathrm{1D}}(\lambda)\sim \mathcal{GP}(\mu_\mathrm{1D}, K_1(\lambda,\lambda^*; l_\mathrm{1D})),$$
+$$\widetilde C_{\mathrm{1D}}(\lambda)\sim \mathcal{GP}(\mu_\mathrm{1D}, K_1(\lambda,\lambda^\ast; l_\mathrm{1D})),$$
 
 conditioned on the integrated observed flux $\hat C_{\mathrm{1D}}$. Here $\mu_\mathrm{1D}$ is a fixed mean value of the GP, $l_\mathrm{1D}$ is the scaling factor of the kernel, which should be the order of the spectral resolution.
 
@@ -73,6 +73,6 @@ $$\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\wi
 
 We will model it with a 2D GP
 
-$$\widetilde C_{\mathrm{2D}}(x,\lambda)\sim\mathcal{GP}(\mu_\mathrm{2D}(x,\lambda), K_2((x,\lambda),(x^*,\lambda^*); l_\mathrm{2D})).$$
+$$\widetilde C_{\mathrm{2D}}(x,\lambda)\sim\mathcal{GP}(\mu_\mathrm{2D}(x,\lambda), K_2((x,\lambda),(x^\ast,\lambda^\ast); l_\mathrm{2D})).$$
 
 The mean function $\mu_\mathrm{2D}(x,\lambda)$ is estimated from the (multi-band) images of the galaxy within the slit, and $l_\mathrm{2D}$ is the 2D scaling factor. Note that we expect the scaling factor on the spectral orientation is much greater than $l_\mathrm{1D}$, which is essentially why we would like to separate the two independent GPs.
