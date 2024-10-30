@@ -30,6 +30,7 @@ class Spec2D:
     def __init__(
         self,
         dat: np.ndarray,  # 2D spectrum (spatial x spectral)
+        dat_err: np.ndarray = None,  # 2D error spectrum
         *,
         coord_spat: np.ndarray = None,  # spatial grids
         coord_spec: np.ndarray = None,  # spectral grids
@@ -60,6 +61,7 @@ class Spec2D:
 
         # The 2D grids for the raw data
         self.f_obs = dat
+        self.f_obs_err = dat_err if dat_err is not None else np.ones_like(dat)
         print(f"Loading the 2D spectrum with the shape: {self.f_obs.shape}")
         if coord_spat.ndim == 1:
             assert dat.shape == (coord_spat.size, coord_spec.size), "spec2d shape mismatch"
@@ -82,7 +84,9 @@ class Spec2D:
 
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
         self.f_bkg = np.mean(self.f_obs[self.sky, :], axis=0)
+        self.f_bkg_err = np.sqrt(np.mean(self.f_obs_err[self.sky, :]**2, axis=0))
         self.f_sky_sub = self.f_obs - np.tile(self.f_bkg, (self.shape[0], 1))
+        self.f_sky_sub_err = np.sqrt(self.f_obs_err ** 2 + np.tile(self.f_bkg_err ** 2, (self.shape[0], 1)))
 
         # Mask the trace from the source (|spat| < seeing * mask_wid)
         assert min(sky_wid) > mask_wid, "sky_wid should be larger than mask_wid"
@@ -90,11 +94,13 @@ class Spec2D:
         host_right = np.max(self.coord_spat, axis=1) > self.mask_wid * self.spat_resln
         self.host = host_left | host_right
         self.f_host = self.f_sky_sub[self.host, :]
+        self.f_host_err = self.f_sky_sub_err[self.host, :]
         self.X_host = np.stack([self.coord_spat[self.host, :].ravel(), self.coord_spec[self.host, :].ravel()], axis=-1)
 
         # The 1D grids for the sky-subtracted host galaxy spectra: sum along the spatial direction outside the mask
         print(f"Obtaining the sky-subtracted 1D galaxy spectrum (outside the mask)")
         self.f_1d = np.sum(self.f_sky_sub[self.host, :], axis=0)
+        self.f_1d_err = np.sqrt(np.sum(self.f_sky_sub_err[self.host, :] ** 2, axis=0))
         # Central wavelength in each row: mean of the row
         self.X_1d = np.mean(self.coord_spec[self.host, :], axis=0)[:, None]
 
@@ -112,6 +118,7 @@ class Spec2D:
             self.shape_batch_2d
         )
         self.f_batch_2d = np.empty(self.shape_batch_2d)
+        self.f_batch_2d_err = np.empty(self.shape_batch_2d)
         for x in range(self.shape_batch_2d[0]):
             for y in range(self.shape_batch_2d[1]):
                 # New coordinates: mean of the batch
@@ -125,6 +132,11 @@ class Spec2D:
                 self.f_batch_2d[x, y] = (self.f_sky_sub / self.f_1d)[spat_batch_2d_idx[x], :][
                     :, spec_batch_2d_idx[y]
                 ].mean()
+                self.f_batch_2d_err[x, y] = np.sqrt(
+                    (self.f_sky_sub_err / self.f_1d)[spat_batch_2d_idx[x], :][
+                        :, spec_batch_2d_idx[y]
+                    ] ** 2
+                ).mean()
         self.X_batch_2d = np.stack([self.coord_spat_batch_2d.ravel(), self.coord_spec_batch_2d.ravel()], axis=-1)
         print("Batched 2D galaxy spectrum:", self.f_batch_2d.shape)
 

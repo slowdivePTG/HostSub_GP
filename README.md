@@ -24,6 +24,7 @@ Modeling the 2d spectrum of host galaxies with Gaussian process (GP) for better 
 The observed counts at pixel $x$ and wavelength $\lambda$ is composed of
 
 $$C_\mathrm{Obs}(x, \lambda) = f_\mathrm{SN}(x, \lambda) + f_\mathrm{Host}(x, \lambda)  + f_\mathrm{Sky}(\lambda) + \sigma_C,$$
+
 where the random noise $\sigma_f\sim N(0, \sigma)$.
 
 The contribution from the SN is modeled as
@@ -51,6 +52,7 @@ $$C_\mathrm{Obs}(x, \lambda) = F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Ho
 To get rid of the sky background, we estimate the mean counts outside some $x_G > x_M\gg$ seeing, i.e., the global background
 
 $$C_G(\lambda) = \langle C_\mathrm{Obs}(x,\lambda)\rangle_{|x|>x_G} = F_\mathrm{Host}(\lambda) \langle \xi(x,\lambda)\rangle_{|x|>x_G} + f_\mathrm{Sky}(\lambda).$$
+
 By subtracting the global background, we remove the sky emission and get
 
 $$\widetilde C(x,\lambda) \equiv C_\mathrm{Obs}(x, \lambda) - C_G(\lambda) = F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Host}(\xi(x,\lambda) - \langle \xi(x,\lambda)\rangle_{|x|>x_G}).$$
@@ -58,6 +60,7 @@ $$\widetilde C(x,\lambda) \equiv C_\mathrm{Obs}(x, \lambda) - C_G(\lambda) = F_\
 And when $|x|\ge x_M\gg$ seeing, contribution from the SN is negligible, thus
 
 $$\widetilde C_{\mathrm{1D}}(\lambda)\equiv\int_{|x|>x_M}C_\mathrm{Obs}(x,\lambda)\mathrm dx\simeq F_\mathrm{Host}(\lambda) \cdot\left[1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}\right],$$
+
 which we will model with a 1D GP
 
 $$\widetilde C_{\mathrm{1D}}(\lambda)\sim \mathcal{GP}(\mu_\mathrm{1D}, K_1(\lambda,\lambda^*; l_\mathrm{1D})),$$
