@@ -42,7 +42,7 @@ class SpecWrapper:
         else:
             if points.ndim != 1:
                 raise ValueError("Invalid shape of the input coordinates.")
-            self.spec = self.spec_img = jnp.asarray(points)
+            self.spec = self.spec_img = jnp.array(points)
             self.X = self.spec[:, None]
 
         # Loading the values and errors
@@ -51,15 +51,17 @@ class SpecWrapper:
         if values_err is not None:
             if values.shape != values_err.shape:
                 raise ValueError("Values and errors shape mismatch.")
-        self.Y = jnp.asarray(values)
-        self.Yerr = jnp.ones_like(values) if values_err is None else jnp.asarray(values_err)
+        self.Y = jnp.array(values)
+        self.Yerr = jnp.ones_like(values) if values_err is None else jnp.array(values_err)
+        self.Y = jnp.where(jnp.isfinite(self.Yerr), self.Y, np.nan)
+        self.Yerr = jnp.where(jnp.isfinite(self.Yerr), self.Yerr, np.nan)
 
         self.shape = self.Y.shape
 
         # Flatten the values and errors for GP
         if self.Y.ndim == 1:
-            self.y = self.Y
-            self.yerr = self.Yerr
+            self.y = self.Y.copy()
+            self.yerr = self.Yerr.copy()
         elif self.Y.ndim == 2:
             self.y = self.Y.ravel()
             self.yerr = self.Yerr.ravel()
@@ -79,7 +81,7 @@ class Spec2DBase:
         center_ra: float = None,  # RA of the center
         center_dec: float = None,  # DEC of the center
         slit_wid: float = 1.0,  # arcsec
-        slit_len: float = 10.0,  # arcsec
+        slit_len: float = None,  # arcsec
         position_angle: float = None,  # degree
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
@@ -92,7 +94,10 @@ class Spec2DBase:
         self.center_ra = center_ra
         self.center_dec = center_dec
         self.slit_wid = slit_wid
-        self.slit_len = slit_len
+        if slit_len is None:
+            self.slit_len = spat.max() - spat.min()
+        else:
+            self.slit_len = slit_len
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
@@ -128,7 +133,7 @@ class Spec2DBase:
             points=spec,
             values=np.nanmean(self.f_sky_obs.Y * self.f_sky_obs.Yerr**-2, axis=0)
             / np.nanmean(self.f_sky_obs.Yerr**-2, axis=0),
-            values_err=np.nanmean(self.f_sky_obs.Yerr**-2, axis=0) ** -0.5,
+            values_err=np.nanmean(self.f_sky_obs.Yerr**-2, axis=0) ** -0.5 / self.sky.sum(),
         )
         # Model the global sky background using 1D GP
         # The scale should be larger than the spectral resolution
@@ -176,7 +181,7 @@ class Spec2DBase:
             values=np.nanmean(self.f_host.Y * self.f_host.Yerr**-2, axis=0)
             / np.nanmean(self.f_host.Yerr**-2, axis=0)
             * self.host.sum(),
-            values_err=np.nanmean(self.f_host.Yerr**-2, axis=0) ** -0.5 * np.sqrt(self.host.sum()),
+            values_err=np.nanmean(self.f_host.Yerr**-2, axis=0) ** -0.5,
         )
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
@@ -225,7 +230,7 @@ class Spec2DBase:
         if show:
             self._plot_raw()
 
-    def build_host_prior(self, imgs: list = [], flts: list = [], **kwargs) -> None:
+    def build_host_prior(self, imgs: list = [], flts: list = [], **kwargs):
         """
         Build the prior of the host galaxy using Gaussian Process regression.
 
@@ -246,7 +251,7 @@ class Spec2DBase:
         sampling: bool = False,
         optimization_kwargs: dict = {},
         sampling_kwargs: dict = {},
-    ) -> None:
+    ):
         """
         Model the host galaxy using Gaussian Process regression.
 
@@ -280,7 +285,7 @@ class Spec2DBase:
         if not optimization and not sampling:
             self.gp_params = params_init
 
-        params_1d, params_2d = _split_params(self.gp_params)
+        params_1d, params_2d = _split_params(self.gp_params, require_all=True)
         self._gp_1d, self._gp_2d = self._build_host_gp(params_1d=params_1d, params_2d=params_2d)
         # Predict the host galaxy flux outside the mask
         self._f_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_host.X)
@@ -325,7 +330,7 @@ class Spec2DBase:
             print(f"Final parameters: {soln.params}")
         return soln.params
 
-    def _model_host_sampling(self, params_init: dict = None, **kwargs) -> any:
+    def _model_host_sampling(self, params_init: dict = None, **kwargs):
         """
         Perform host sampling using MCMC.
 
@@ -398,15 +403,16 @@ class Spec2DBase:
         tuple[GaussianProcess, GaussianProcess]
             tinygp.GaussianProcess objects for the 1D and 2D host galaxy.
         """
-        gp_1d = _gp(X=self.f_host_1d.X, y=self.f_host_1d.y, params=params_1d).gp
-        gp_2d = _gp(X=self.f_host_batch_2d.X, y=self.f_host_batch_2d.y, params=params_2d).gp
+        gp_1d = _gp(X=self.f_host_1d.X, y=self.f_host_1d.y, yerr=self.f_host_1d.yerr, params=params_1d).gp
+        gp_2d = _gp(
+            X=self.f_host_batch_2d.X, y=self.f_host_batch_2d.y, yerr=self.f_host_batch_2d.y, params=params_2d
+        ).gp
 
         return gp_1d, gp_2d
 
     def _get_host_neg_log_probability(self, params: dict, **kwargs) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
-        Not JIT-compiled.
 
         Parameters
         ----------
@@ -418,11 +424,33 @@ class Spec2DBase:
         float
             The negative log probability of the host flux.
         """
-        return _get_host_neg_log_probability(
+        mask_obs = np.isfinite(self.f_host.y)
+
+        @jax.jit
+        def _neg_log_probability(
+            params: dict, *, f_X, f_y, f_yerr, f_1d_X, f_1d_y, f_1d_yerr, f_2d_X, f_2d_y, f_2d_yerr, f_2d_mean, f_mean
+        ) -> float:
+            """
+            Compute the negative log probability of the host galaxy model
+            """
+            params_1d, params_2d = _split_params(params, require_all=True)
+            gp_1d = _gp(X=f_1d_X, yerr=f_1d_yerr, params=params_1d).gp
+            gp_2d = _gp(X=f_2d_X, yerr=f_2d_yerr, params=params_2d).gp
+            log_prob_1d = gp_1d.log_probability(f_1d_y)
+            log_prob_2d = gp_2d.log_probability(f_2d_y)
+
+            y_host_1d = gp_1d.predict(y=f_1d_y, X_test=f_X[:, 1][:, None])
+            y_host_2d = gp_2d.predict(y=f_2d_y - f_2d_mean, X_test=f_X) + f_mean
+            y_host = y_host_1d * y_host_2d
+            log_prob_obs = jnp.sum(dist.Normal(y_host, f_yerr).log_prob(f_y))
+
+            return -(log_prob_1d + log_prob_2d + log_prob_obs)
+
+        return _neg_log_probability(
             params,
-            f_X=self.f_host.X,
-            f_y=self.f_host.y,
-            f_yerr=self.f_host.yerr,
+            f_X=self.f_host.X[mask_obs],
+            f_y=self.f_host.y[mask_obs],
+            f_yerr=self.f_host.yerr[mask_obs],
             f_1d_X=self.f_host_1d.X,
             f_1d_y=self.f_host_1d.y,
             f_1d_yerr=self.f_host_1d.yerr,
@@ -430,7 +458,7 @@ class Spec2DBase:
             f_2d_y=self.f_host_batch_2d.y,
             f_2d_yerr=self.f_host_batch_2d.yerr,
             f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X),
-            f_mean=self.host_flux_prior(self.f_host.X),
+            f_mean=self.host_flux_prior(self.f_host.X[mask_obs]),
         )
 
     def _get_pred(self, gp_1d: GaussianProcess, gp_2d: GaussianProcess, X: Array) -> Array:
@@ -483,7 +511,7 @@ class Spec2DBase:
         return self.gp_params
 
     ############################ QA Plotting ############################
-    def _plot_raw(self) -> None:
+    def _plot_raw(self):
         _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True, sharex=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
@@ -547,14 +575,14 @@ class Spec2DBase:
 
         plt.show()
 
-    def _plot_host_batch_pred(self) -> None:
+    def _plot_host_batch_pred(self):
         if not (hasattr(self, "_gp_1d") and hasattr(self, "_gp_2d")):
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
         # Plot the 2D batched spectrum
         batch_size = (
-            (self.spat[-1] - self.spat[0]) * self.batch_2d[0],
-            (self.spec[-1] - self.spec[0]) * self.batch_2d[1],
+            (self.spat[1] - self.spat[0]) * self.batch_2d[0],
+            (self.spec[1] - self.spec[0]) * self.batch_2d[1],
         )
         norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
         norm_residual = plt.Normalize(-1e-2, 1e-2)
@@ -604,8 +632,22 @@ class Spec2DBase:
 
         # Plot the 1D batched spectrum
         ax[3].plot(self.f_host_1d.spec, self.f_host_1d.y)
+        ax[3].fill_between(
+            self.f_host_1d.spec,
+            self.f_host_1d.y - self.f_host_1d.yerr,
+            self.f_host_1d.y + self.f_host_1d.yerr,
+            color="tab:blue",
+            alpha=0.3,
+        )
         ax[3].plot(self.f_host_1d.spec, pred_1d, "--k", lw=2)
         ax[4].plot(self.f_host_1d.spec, self.f_host_1d.y - pred_1d)
+        ax[4].fill_between(
+            self.f_host_1d.spec,
+            self.f_host_1d.y - pred_1d - self.f_host_1d.yerr,
+            self.f_host_1d.y - pred_1d + self.f_host_1d.yerr,
+            color="tab:blue",
+            alpha=0.3,
+        )
 
         # Titles
         ax[0].set_title(r"$\mathrm{2D\ Spectrum}$")
@@ -629,7 +671,7 @@ class Spec2DBase:
 
         plt.show()
 
-    def _plot_host_pred(self) -> None:
+    def _plot_host_pred(self):
         if not (hasattr(self, "_f_host_pred") and hasattr(self, "_f_pred")):
             raise ValueError("Please model the host galaxy first.")
 
@@ -641,19 +683,20 @@ class Spec2DBase:
             vmax=np.nanpercentile(self.f_sky_sub.y, 99),
             extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
         )
+        f_res_Y = self.f_sky_sub.Y - self._f_pred.reshape(-1, self.shape[1])
         residual_params = dict(
             origin="lower",
-            cmap="RdBu_r",
+            cmap="gray",
             aspect="auto",
-            vmin=-3,  # TODO: change the hard-coded value
-            vmax=3,
+            vmin=np.nanpercentile(f_res_Y, 1),
+            vmax=np.nanpercentile(f_res_Y, 99),
             extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
         )
 
         _, ax = plt.subplots(3, 1, figsize=(20, 7.5), sharex=True, sharey=True, constrained_layout=True)
         ax[0].imshow(self.f_sky_sub.Y, **source_params)
         ax[1].imshow(self._f_pred.reshape(-1, self.shape[1]), **source_params)
-        ax[2].imshow(self.f_sky_sub.Y - self._f_pred.reshape(-1, self.shape[1]), **residual_params)
+        ax[2].imshow(f_res_Y, **residual_params)
         for ax_ in ax:
             ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
             ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
@@ -680,7 +723,7 @@ class Spec2D(Spec2DBase):
         center_ra: float = None,  # RA of the center
         center_dec: float = None,  # DEC of the center
         slit_wid: float = 1.0,  # arcsec
-        slit_len: float = 10.0,  # arcsec
+        slit_len: float = None,  # arcsec
         position_angle: float = None,  # degree
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
@@ -759,44 +802,24 @@ def rectification(
     raise NotImplementedError
 
 
-@jax.jit
-def _get_host_neg_log_probability(
-    params: dict, *, f_X, f_y, f_yerr, f_1d_X, f_1d_y, f_1d_yerr, f_2d_X, f_2d_y, f_2d_yerr, f_2d_mean, f_mean
-) -> float:
-    """
-    Compute the negative log probability of the host galaxy model
-    """
-    params_1d, params_2d = _split_params(params)
-    gp_1d = _gp(X=f_1d_X, yerr=f_1d_yerr, params=params_1d).gp
-    gp_2d = _gp(X=f_2d_X, yerr=f_2d_yerr, params=params_2d).gp
-    log_prob_1d = gp_1d.log_probability(f_1d_y)
-    log_prob_2d = gp_2d.log_probability(f_2d_y)
-
-    y_host_1d = gp_1d.predict(y=f_1d_y, X_test=f_X[:, 1][:, None])
-    y_host_2d = gp_2d.predict(y=f_2d_y - f_2d_mean, X_test=f_X) + f_mean
-    y_host = y_host_1d * y_host_2d
-    log_prob_obs = jnp.nansum(dist.Normal(y_host, f_yerr).log_prob(f_y))
-
-    return -(log_prob_1d + log_prob_2d + log_prob_obs)
-
-
-def _split_params(params: dict) -> tuple[dict, dict]:
+def _split_params(params: dict, require_all: bool = False) -> tuple[dict, dict]:
     """
     Split the parameters into 1D and 2D.
     """
-    params_1d = {
-        "log_amp": params.get("log_amp_1d", jnp.float64(3.0)),
-        "log_scale": params.get("log_spec_scale_1d", jnp.float64(0.0)),
-        "log_jitter": params.get("log_jitter_1d", jnp.float64(1e-6)),
-        "mean": params.get("mean_1d", jnp.float64(0)),
-    }
-    params_2d = {
-        "log_amp": params.get("log_amp_2d", jnp.float64(-3.0)),
-        "log_scale": jnp.asarray(
-            [params.get("log_spat_scale_2d", jnp.float64(0.0)), params.get("log_spec_scale_2d", jnp.float64(3.0))]
-        ),
-        "log_jitter": params.get("log_jitter_2d", jnp.float64(1e-6)),
-        "mean": params.get("mean_2d", jnp.float64(0)),
-    }
+    params_1d = dict()
+    params_2d = dict()
+    keys_required = ["log_amp", "log_scale", "mean"]
+    keys = keys_required + ["log_jitter"]  # jitter is optional
+    for key in keys:
+        key_1d = key + "_1d"
+        key_2d = key + "_2d"
+        if require_all and key in keys_required:
+            if (params.get(key_1d) is None) or (params.get(key_2d) is None):
+                jax.debug.print("params: {}", params)
+                raise ValueError(f"Missing key: {key_1d} or {key_2d}")
+        if key_1d in params:
+            params_1d[key] = params[key_1d]
+        if key_2d in params:
+            params_2d[key] = params[key_2d]
 
     return params_1d, params_2d

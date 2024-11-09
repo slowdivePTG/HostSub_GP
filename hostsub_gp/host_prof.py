@@ -30,7 +30,7 @@ class HostProfile:
         spec2d: any = None,
         center_ra: float = None,  # deg
         center_dec: float = None,  # deg
-        slit_len: float = 10.0,  # arcsec
+        slit_len: float = None,  # arcsec
         slit_wid: float = 1.0,  # arcsec
         position_angle: float = None,  # deg
         show: bool = False,
@@ -116,7 +116,7 @@ class HostProfile:
                 # Mask the SN aperture
                 mask = np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.mask_wid
                 # Subtract the sky background
-                sky = (spat_slit[-1] < spec2d.spat_resln * spec2d.sky_wid[-1]) | (
+                sky = (spat_slit[-1] < spec2d.spat_resln * -spec2d.sky_wid[-1]) | (
                     spat_slit[-1] > spec2d.spat_resln * spec2d.sky_wid[0]
                 )
                 xi = counts_slit[-1] / np.sum(counts_slit[-1][~mask])
@@ -124,7 +124,7 @@ class HostProfile:
                 sky_len = spec2d.spat_resln * (spec2d.sky_wid[-1] + spec2d.sky_wid[0])
                 prof_slit.append(
                     (xi - xi[sky].mean())
-                    / (1 - xi[sky].sum() * (slit_len - mask_len) / (slit_len - sky_len))
+                    / (1 - xi[sky].sum() * (self.slit_len - mask_len) / (self.slit_len - sky_len))
                     * (spec2d.pixel_scale / pixel_scale)
                 )
             else:  # No mask
