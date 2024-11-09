@@ -33,7 +33,7 @@ class _gp:
         self.y = jnp.asarray(y)
         if yerr is None:
             self.yerr = jnp.zeros_like(y)
-        if isinstance(yerr, (int, float)):
+        elif isinstance(yerr, (int, float)):
             self.yerr = jnp.ones_like(y) * yerr
         else:
             self.yerr = jnp.asarray(yerr)
@@ -44,7 +44,7 @@ class _gp:
             if params_init is not None
             else {
                 "log_amp": jnp.float64(0),
-                "log_scale": jnp.zeros(1, dtype=jnp.float64),
+                "log_scale": jnp.zeros(X.shape[1], dtype=jnp.float64),
                 "log_jitter": jnp.float64(-6),
                 "mean": jnp.float64(0),
             }
@@ -53,8 +53,6 @@ class _gp:
 
         # Build the GP
         if optimization:
-            if self.yerr is None:
-                raise ValueError("yerr must be provided for optimization")
             self.params = self.optimize(X, self.y, self.yerr, verbose=verbose)
         else:
             if params is None:
@@ -64,6 +62,8 @@ class _gp:
 
     def optimize(self, X: Array, y: Array, yerr: Array, verbose: bool = False) -> dict:
         solver = jaxopt.ScipyMinimize(fun=_neg_log_prob)
+        if ~jnp.isfinite(_neg_log_prob(self.params_init, self.params_limits, X, y, yerr)):
+            raise ValueError("Invalid initial parameters")
         soln = solver.run(self.params_init, X=X, y=y, yerr=yerr, params_limit=self.params_limits)
         params = transform_params(soln.params, self.params_limits)
         if verbose:

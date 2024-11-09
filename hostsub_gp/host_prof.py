@@ -108,18 +108,20 @@ class HostProfile:
             data_slit = data_rot[
                 int(np.floor(center_y_rot - slit_len_pix / 2)) - 1 : int(np.ceil(center_y_rot + slit_len_pix / 2)) - 1,
                 int(np.floor(center_x_rot - slit_wid_pix / 2)) - 1 : int(np.ceil(center_x_rot + slit_wid_pix / 2)) - 1,
-            ][::-1]
+            ]
             counts_slit.append(np.mean(data_slit, axis=1))  # Average along the slit width
             spat_slit.append(np.linspace(-self.slit_len / 2, self.slit_len / 2, counts_slit[-1].size))
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
-            if spec2d is not None:  # Mask the central region
-                mask = np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.mask_wid  # Mask the central region
-                sky = (np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.sky_wid[-1]) | (
-                    np.abs(spat_slit[-1]) > spec2d.spat_resln * spec2d.sky_wid[0]
-                )  # Subtract the sky background
+            if spec2d is not None:
+                # Mask the SN aperture
+                mask = np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.mask_wid
+                # Subtract the sky background
+                sky = (spat_slit[-1] < spec2d.spat_resln * spec2d.sky_wid[-1]) | (
+                    spat_slit[-1] > spec2d.spat_resln * spec2d.sky_wid[0]
+                )
                 xi = counts_slit[-1] / np.sum(counts_slit[-1][~mask])
                 mask_len = 2 * spec2d.spat_resln * spec2d.mask_wid
-                sky_len = spec2d.spat_resln * (spec2d.sky_wid[-1] - spec2d.sky_wid[0])
+                sky_len = spec2d.spat_resln * (spec2d.sky_wid[-1] + spec2d.sky_wid[0])
                 prof_slit.append(
                     (xi - xi[sky].mean())
                     / (1 - xi[sky].sum() * (slit_len - mask_len) / (slit_len - sky_len))
