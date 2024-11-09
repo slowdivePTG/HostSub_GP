@@ -242,7 +242,6 @@ class Spec2DBase:
     def model_host(
         self,
         params_init: dict,
-        params_fix: dict = {},
         optimization: bool = False,
         sampling: bool = False,
         optimization_kwargs: dict = {},
@@ -272,10 +271,7 @@ class Spec2DBase:
             raise ValueError("Please build the host flux prior first.")
 
         if optimization:
-            self.gp_params = {
-                **self._model_host_optimization(params_init=params_init, params_fix=params_fix, **optimization_kwargs),
-                **params_fix,
-            }
+            self.gp_params = self._model_host_optimization(params_init=params_init, **optimization_kwargs)
 
         if sampling:
             self.inf_data = self._model_host_sampling(params_init=params_init, **sampling_kwargs)
@@ -291,9 +287,7 @@ class Spec2DBase:
         # Predict the host galaxy flux on the entire 2D grids
         self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
-    def _model_host_optimization(
-        self, params_init: dict, verbose: bool = True, params_fix: dict = {}, **kwargs
-    ) -> dict:
+    def _model_host_optimization(self, params_init: dict, verbose: bool = True, **kwargs) -> dict:
         """
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
 
@@ -310,16 +304,20 @@ class Spec2DBase:
             The optimized parameters for the Gaussian Process model.
         """
         solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, **kwargs)
-        for key in params_fix.keys():
-            params_init.pop(key, None)
         soln = solver.run(
             # self,
             params_init,
-            f_host=self.f_host,
-            f_host_1d=self.f_host_1d,
-            f_host_batch_2d=self.f_host_batch_2d,
-            host_flux_prior=self.host_flux_prior,
-            params_fix=params_fix,
+            f_X=self.f_host.X,
+            f_y=self.f_host.y,
+            f_yerr=self.f_host.yerr,
+            f_1d_X=self.f_host_1d.X,
+            f_1d_y=self.f_host_1d.y,
+            f_1d_yerr=self.f_host_1d.yerr,
+            f_2d_X=self.f_host_batch_2d.X,
+            f_2d_y=self.f_host_batch_2d.y,
+            f_2d_yerr=self.f_host_batch_2d.yerr,
+            f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X),
+            f_mean=self.host_flux_prior(self.f_host.X),
         )
         if soln.state.status != 0:
             warnings.warn(f"Optimization failed with status {soln.state.status}.")
@@ -405,64 +403,35 @@ class Spec2DBase:
 
         return gp_1d, gp_2d
 
-    # def _get_host_neg_log_probability(self, params: dict, **kwargs) -> float:
-    #     """
-    #     Calculate the negative log probability of the host flux given the parameters.
-    #     Not JIT-compiled.
-
-    #     Parameters
-    #     ----------
-    #     params : dict
-    #         A dictionary of parameters.
-
-    #     Returns
-    #     -------
-    #     float
-    #         The negative log probability of the host flux.
-    #     """
-    #     params_fix = kwargs.get("params_fix", {})
-    #     return _get_host_neg_log_probability(
-    #         params,
-    #         X_1d=self.X_1d,
-    #         X_2d=self.X_batch_2d,
-    #         X_obs=self.X_host,
-    #         y_1d=self.f_1d,
-    #         y_2d=self.f_batch_2d.ravel(),
-    #         y_obs=self.f_host.ravel(),
-    #         y_2d_mean=self.host_flux_prior(self.X_batch_2d),
-    #         y_obs_mean=self.host_flux_prior(self.X_host),
-    #         params_fix=params_fix,
-    #     )
-    @partial(jax.jit, static_argnums=(0,))
-    def _get_host_neg_log_probability(
-        self,
-        params: dict,
-        *,
-        f_host: SpecWrapper,
-        f_host_1d: SpecWrapper,
-        f_host_batch_2d: SpecWrapper,
-        host_flux_prior: Callable,
-        params_fix: dict = {},
-    ) -> float:
+    def _get_host_neg_log_probability(self, params: dict, **kwargs) -> float:
         """
-        Compute the negative log probability of the host galaxy model
+        Calculate the negative log probability of the host flux given the parameters.
+        Not JIT-compiled.
+
+        Parameters
+        ----------
+        params : dict
+            A dictionary of parameters.
+
+        Returns
+        -------
+        float
+            The negative log probability of the host flux.
         """
-        params = {**params, **params_fix}
-        params_1d, params_2d = _split_params(params)
-        gp_1d = _gp(X=f_host_1d.X, yerr=f_host_1d.yerr, params=params_1d).gp
-        gp_2d = _gp(X=f_host_batch_2d.X, yerr=f_host_batch_2d.yerr, params=params_2d).gp
-        log_prob_1d = gp_1d.log_probability(f_host_1d.y)
-        log_prob_2d = gp_2d.log_probability(f_host_batch_2d.y)
-
-        y_2d_mean = host_flux_prior(f_host_batch_2d.X)
-        y_obs_mean = host_flux_prior(f_host_1d.X)
-
-        y_host_1d = gp_1d.predict(y=f_host_1d.y, X_test=f_host_1d.X)
-        y_host_2d = gp_2d.predict(y=f_host_batch_2d.y - y_2d_mean, X_test=f_host.X) + y_obs_mean
-        y_host = y_host_1d * y_host_2d
-        log_prob_obs = jnp.nansum(dist.Normal(y_host, f_host.Yerr).log_prob(f_host.Y))
-
-        return -(log_prob_1d + log_prob_2d + log_prob_obs)
+        return _get_host_neg_log_probability(
+            params,
+            f_X=self.f_host.X,
+            f_y=self.f_host.y,
+            f_yerr=self.f_host.yerr,
+            f_1d_X=self.f_host_1d.X,
+            f_1d_y=self.f_host_1d.y,
+            f_1d_yerr=self.f_host_1d.yerr,
+            f_2d_X=self.f_host_batch_2d.X,
+            f_2d_y=self.f_host_batch_2d.y,
+            f_2d_yerr=self.f_host_batch_2d.yerr,
+            f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X),
+            f_mean=self.host_flux_prior(self.f_host.X),
+        )
 
     def _get_pred(self, gp_1d: GaussianProcess, gp_2d: GaussianProcess, X: Array) -> Array:
         """
@@ -502,14 +471,14 @@ class Spec2DBase:
         print("Gaussian Process parameters:")
         print("1D:")
         print("Amp:", 10 ** self.gp_params.get("log_amp_1d"))
-        print("Scale:", 10 ** self.gp_params.get("log_spec_scale_1d"))
-        print("Jitter:", 10 ** self.gp_params.get("log_jitter_1d"))
+        print("Scale:", 10 ** self.gp_params.get("log_scale_1d")[0])
+        # print("Jitter:", 10 ** self.gp_params.get("log_jitter_1d"))
         print("Mean:", self.gp_params.get("mean_1d"))
         print("2D:")
         print("Amp:", 10 ** self.gp_params.get("log_amp_2d"))
-        print("Spat Scale:", 10 ** self.gp_params.get("log_spat_scale_2d"))
-        print("Spec Scale:", 10 ** self.gp_params.get("log_spec_scale_2d"))
-        print("Jitter:", 10 ** self.gp_params.get("log_jitter_2d"))
+        print("Spat Scale:", 10 ** self.gp_params.get("log_scale_2d")[0])
+        print("Spec Scale:", 10 ** self.gp_params.get("log_scale_2d")[1])
+        # print("Jitter:", 10 ** self.gp_params.get("log_jitter_2d"))
         print("Mean:", self.gp_params.get("mean_2d"))
         return self.gp_params
 
@@ -584,14 +553,14 @@ class Spec2DBase:
         _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
         # Plot the 2D batched spectrum
         batch_size = (
-            (self.spat[1, -1] - self.spat[0, -1]) * self.batch_2d[0],
-            (self.spec[-1, 1] - self.spec[-1, 0]) * self.batch_2d[1],
+            (self.spat[-1] - self.spat[0]) * self.batch_2d[0],
+            (self.spec[-1] - self.spec[0]) * self.batch_2d[1],
         )
         norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
         norm_residual = plt.Normalize(-1e-2, 1e-2)
         cmap = plt.cm.get_cmap("gray")
         cmap_residual = plt.cm.get_cmap("RdBu_r")
-        pred_1d = self._gp_1d.predict(y=self.f_1d, X_test=self._gp_1d.X)
+        pred_1d = self._gp_1d.predict(y=self.f_host_1d.y, X_test=self._gp_1d.X)
         pred_2d = self._gp_2d.predict(
             y=self.f_host_batch_2d.y - self.host_flux_prior(self._gp_2d.X), X_test=self._gp_2d.X
         ) + self.host_flux_prior(self._gp_2d.X)
@@ -792,22 +761,21 @@ def rectification(
 
 @jax.jit
 def _get_host_neg_log_probability(
-    params: dict, *, X_1d, X_2d, X_obs, y_1d, y_2d, y_obs, y_2d_mean, y_obs_mean, params_fix: dict = {}
+    params: dict, *, f_X, f_y, f_yerr, f_1d_X, f_1d_y, f_1d_yerr, f_2d_X, f_2d_y, f_2d_yerr, f_2d_mean, f_mean
 ) -> float:
     """
     Compute the negative log probability of the host galaxy model
     """
-    params = {**params, **params_fix}
     params_1d, params_2d = _split_params(params)
-    gp_1d = _gp(X=X_1d, params=params_1d).gp
-    gp_2d = _gp(X=X_2d, params=params_2d).gp
-    log_prob_1d = gp_1d.log_probability(y_1d)
-    log_prob_2d = gp_2d.log_probability(y_2d)
+    gp_1d = _gp(X=f_1d_X, yerr=f_1d_yerr, params=params_1d).gp
+    gp_2d = _gp(X=f_2d_X, yerr=f_2d_yerr, params=params_2d).gp
+    log_prob_1d = gp_1d.log_probability(f_1d_y)
+    log_prob_2d = gp_2d.log_probability(f_2d_y)
 
-    y_host_1d = gp_1d.predict(y=y_1d, X_test=X_obs[:, 1][:, None])
-    y_host_2d = gp_2d.predict(y=y_2d - y_2d_mean, X_test=X_obs) + y_obs_mean
+    y_host_1d = gp_1d.predict(y=f_1d_y, X_test=f_X[:, 1][:, None])
+    y_host_2d = gp_2d.predict(y=f_2d_y - f_2d_mean, X_test=f_X) + f_mean
     y_host = y_host_1d * y_host_2d
-    log_prob_obs = jnp.nansum(dist.Normal(y_host, noise).log_prob(y_obs))
+    log_prob_obs = jnp.nansum(dist.Normal(y_host, f_yerr).log_prob(f_y))
 
     return -(log_prob_1d + log_prob_2d + log_prob_obs)
 
