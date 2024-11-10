@@ -15,7 +15,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 from ._plt_config import plt
-from .gp import _gp
+from .gp import GP
 from ._load import load_image, wv_eff_dict
 
 from typing import Callable
@@ -177,37 +177,43 @@ class HostProfile:
         """
         # No prior photometric data
         if len(self.flts) == 0:
-            host_prior = lambda x: jnp.float64(1 / self.slit_len)  # constant
+            host_prior = lambda _: jnp.float64(1 / self.slit_len)  # constant
         # Single band
         elif len(self.flts) == 1:
-            params = {
-                "log_amp": jnp.float64(-3),
-                "log_scale": jnp.float64(0),
-                "log_jitter": jnp.float64(-6),
-                "mean": jnp.float64(1 / self.slit_len),
-            }
-            gp_host_prior = _gp(
+            params = dict(
+                log_amp=jnp.float64(-3),
+                log_scale=jnp.float64(0),
+                log_jitter=jnp.float64(-6),
+                mean=jnp.float64(1 / self.slit_len),
+            )
+            params_limit = dict(log_scale=np.log10([1, 3]))
+            gp_host_prior = GP(
                 X=self.X[:, 0][:, None],  # Spatial coordinate only
                 y=self.prof,
                 params=params,
                 params_init=params,
+                params_limit=params_limit,
                 **kwargs,
             )
             gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None])
             host_prior = jax.jit(gp_pred)
         # Multiple bands
         else:
-            params = {
-                "log_amp": jnp.float64(-3),
-                "log_scale": jnp.asarray([0.5, 3], dtype=jnp.float64),
-                "log_jitter": jnp.float64(-6),
-                "mean": jnp.float64(1 / self.slit_len),
-            }
-            gp_host_prior = _gp(
+            params = dict(
+                log_amp=jnp.float64(-3),
+                log_scale=jnp.asarray([0.5, 3], dtype=jnp.float64),
+                log_jitter=jnp.float64(-6),
+                mean=jnp.float64(1 / self.slit_len),
+            )
+            params_limit = dict(
+                log_scale=np.log10([[1.0, 1.0], [3.0, 1e6]]),
+            )
+            gp_host_prior = GP(
                 X=self.X,
                 y=self.prof,
                 params=params,
                 params_init=params,
+                params_limit=params_limit,
                 **kwargs,
             )
             gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x)

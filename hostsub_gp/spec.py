@@ -12,14 +12,11 @@ jax.config.update("jax_enable_x64", True)
 import jaxopt
 from functools import partial
 
-import numpyro
-from numpyro import distributions as dist
-from numpyro.infer import MCMC, NUTS
-
 from tinygp import GaussianProcess
 
 from ._plt_config import plt
-from .gp import _gp
+from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _split_params
+from .gp import GP
 from .host_prof import HostProfile
 
 from typing import Callable
@@ -137,12 +134,12 @@ class Spec2DBase:
         )
         # Model the global sky background using 1D GP
         # The scale should be larger than the spectral resolution
-        # _gp_sky = _gp(
+        # _gp_sky = GP(
         #     X=self.f_sky_obs_1d.X,
         #     y=self.f_sky_obs_1d.y,
         #     yerr=self.f_sky_obs_1d.yerr,
         #     params_init=dict(log_jitter=-2.0, log_amp=3.0, log_scale=np.log10(self.spec_resln), mean=0.0),
-        #     params_limits=dict(log_scale=np.log10([0.85 * self.spec_resln, 2.5 * self.spec_resln])),
+        #     params_limit=dict(log_scale=np.log10([0.85 * self.spec_resln, 2.5 * self.spec_resln])),
         #     optimization=True,
         #     verbose=True,
         # )
@@ -247,6 +244,7 @@ class Spec2DBase:
     def model_host(
         self,
         params_init: dict,
+        params_limit: dict = None,
         optimization: bool = False,
         sampling: bool = False,
         optimization_kwargs: dict = {},
@@ -263,12 +261,6 @@ class Spec2DBase:
             Whether to optimize the model with the jaxopt.ScipyMinimize solver.
         sampling : bool, optional (default: False)
             Whether to sample the model with numpyro.
-        num_chains : int, optional (default: 1)
-            number of MCMC chains to run.
-        num_samples : int, optional (default: 1000)
-            number of samples to draw from each chain.
-        num_warmup : int, optional (default: 1000)
-            number of warmup steps for each chain.
         """
 
         # Make sure the host flux prior is built
@@ -276,7 +268,26 @@ class Spec2DBase:
             raise ValueError("Please build the host flux prior first.")
 
         if optimization:
-            self.gp_params = self._model_host_optimization(params_init=params_init, **optimization_kwargs)
+            # Default limits for the Gaussian Process parameters
+            params_limit_default = dict(
+                log_scale_1d=np.log10([self.spec_resln, 100]),  # >= spectral resolution
+                log_scale_2d=np.log10(
+                    [[self.spat_resln, self.spec_resln], [1e3, 1e5]]
+                ),  # >= spatial + spectral resolution
+                mean_2d=np.array([0, 0]),
+            )
+            if params_limit is None:
+                params_limit = params_limit_default
+            else:
+                for key in params_limit:
+                    if key in params_limit_default:
+                        params_limit_default.pop(key)
+                params_limit = {**params_limit_default, **params_limit}
+            self.gp_params = self._model_host_optimization(
+                params_init=params_init,
+                params_limit=params_limit,
+                **optimization_kwargs,
+            )
 
         if sampling:
             self.inf_data = self._model_host_sampling(params_init=params_init, **sampling_kwargs)
@@ -285,14 +296,13 @@ class Spec2DBase:
         if not optimization and not sampling:
             self.gp_params = params_init
 
-        params_1d, params_2d = _split_params(self.gp_params, require_all=True)
-        self._gp_1d, self._gp_2d = self._build_host_gp(params_1d=params_1d, params_2d=params_2d)
+        self._gp_1d, self._gp_2d = self._build_host_gp(params=self.gp_params)
         # Predict the host galaxy flux outside the mask
         self._f_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_host.X)
         # Predict the host galaxy flux on the entire 2D grids
         self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
-    def _model_host_optimization(self, params_init: dict, verbose: bool = True, **kwargs) -> dict:
+    def _model_host_optimization(self, params_init: dict, params_limit: dict, verbose: bool = True, **kwargs) -> dict:
         """
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
 
@@ -300,6 +310,8 @@ class Spec2DBase:
         ----------
         params_init : dict
             Initial parameters for optimization.
+        params_limit : dict
+            Limits for the Gaussian Process parameters.
         verbose : bool, optional (default: False)
             Whether to print the optimization status.
 
@@ -308,27 +320,19 @@ class Spec2DBase:
         gp_params : dict
             The optimized parameters for the Gaussian Process model.
         """
+        params_init_unbound = _transform_bound_to_unbound(params_init, params_limit)
+        if verbose:
+            print("Optimizing the host galaxy model...")
+            print("Initial parameters:", params_init)
+            print("Initial negative log-probability:", self._get_host_neg_log_probability(params_init_unbound, params_limit))
         solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, **kwargs)
-        soln = solver.run(
-            # self,
-            params_init,
-            f_X=self.f_host.X,
-            f_y=self.f_host.y,
-            f_yerr=self.f_host.yerr,
-            f_1d_X=self.f_host_1d.X,
-            f_1d_y=self.f_host_1d.y,
-            f_1d_yerr=self.f_host_1d.yerr,
-            f_2d_X=self.f_host_batch_2d.X,
-            f_2d_y=self.f_host_batch_2d.y,
-            f_2d_yerr=self.f_host_batch_2d.yerr,
-            f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X),
-            f_mean=self.host_flux_prior(self.f_host.X),
-        )
+        soln = solver.run(params_init_unbound, params_limit=params_limit)
         if soln.state.status != 0:
             warnings.warn(f"Optimization failed with status {soln.state.status}.")
+        params = _transform_unbound_to_bound(soln.params, params_limit)
         if verbose:
-            print(f"Final parameters: {soln.params}")
-        return soln.params
+            print(f"Final parameters: {params}")
+        return params
 
     def _model_host_sampling(self, params_init: dict = None, **kwargs):
         """
@@ -352,42 +356,7 @@ class Spec2DBase:
 
         raise NotImplementedError("Sampling is not implemented yet.")
 
-        # def numpyro_model():
-        #     # Priors
-        #     params_1d = dict(
-        #         log_jitter=numpyro.sample("log_jitter_1d", dist.Normal(0.0, 1.0)),
-        #         log_amp=numpyro.sample("log_amp_1d", dist.Uniform(-10.0, 10.0)),
-        #         log_scale=numpyro.sample("log_spec_scale_1d", dist.Normal(0.0, 1.0)),
-        #         mean=numpyro.sample("mean_1d", dist.Uniform(0, np.max(self.f_1d))),
-        #     )
-        #     params_2d = dict(
-        #         log_jitter=numpyro.sample("log_jitter_2d", dist.Normal(-2.0, 1.0)),
-        #         log_amp=numpyro.sample("log_amp_2d", dist.Normal(-3.0, 1.0)),
-        #         log_scale=jnp.asarray(
-        #             [
-        #                 numpyro.sample("log_spat_scale_2d", dist.Normal(0.0, 1.0)),
-        #                 numpyro.sample("log_spec_scale_2d", dist.Normal(3.0, 1.0)),
-        #             ]
-        #         ),
-        #         mean=numpyro.sample("mean_2d", dist.Uniform(-1.0 / self.shape[0], 1.0 / self.shape[0])),
-        #     )
-        #     gp_1d, gp_2d = self._build_host_gp(params_1d=params_1d, params_2d=params_2d)
-        #     numpyro.sample("y_1d", gp_1d.numpyro_dist(), obs=self.f_1d)
-        #     numpyro.sample("y_2d", gp_2d.numpyro_dist(), obs=self.f_batch_2d.ravel())
-
-        #     # Likelihood
-        #     y_host = numpyro.deterministic("y_host", self._get_pred(gp_1d, gp_2d, self.X_host))
-        #     numpyro.sample("y_host_obs", dist.Normal(y_host, noise), obs=self.f_host.ravel())
-
-        # init_strategy = None if params_init == {} else numpyro.infer.init_to_value(values=params_init)
-        # nuts_kernel = NUTS(numpyro_model, init_strategy=init_strategy)
-        # mcmc = MCMC(nuts_kernel, **kwargs)
-        # mcmc.run(jax.random.PRNGKey(0))
-        # results = mcmc.get_samples()
-
-        return results
-
-    def _build_host_gp(self, params_1d: dict, params_2d: dict) -> tuple[GaussianProcess, GaussianProcess]:
+    def _build_host_gp(self, params: dict, params_limit: dict = None) -> tuple[GaussianProcess, GaussianProcess]:
         """
         Build the Gaussian Process for the 1D host galaxy spectra and 2D host galaxy spatial profiles.
 
@@ -403,14 +372,26 @@ class Spec2DBase:
         tuple[GaussianProcess, GaussianProcess]
             tinygp.GaussianProcess objects for the 1D and 2D host galaxy.
         """
-        gp_1d = _gp(X=self.f_host_1d.X, y=self.f_host_1d.y, yerr=self.f_host_1d.yerr, params=params_1d).gp
-        gp_2d = _gp(
-            X=self.f_host_batch_2d.X, y=self.f_host_batch_2d.y, yerr=self.f_host_batch_2d.y, params=params_2d
+        params_1d, params_2d = _split_params(params, require_all=True)
+        params_limit_1d, params_limit_2d = _split_params(params_limit, require_all=False)
+        gp_1d = GP(
+            X=self.f_host_1d.X,
+            y=self.f_host_1d.y,
+            yerr=self.f_host_1d.yerr,
+            params=params_1d,
+            params_limit=params_limit_1d,
+        ).gp
+        gp_2d = GP(
+            X=self.f_host_batch_2d.X,
+            y=self.f_host_batch_2d.y,
+            yerr=self.f_host_batch_2d.y,
+            params=params_2d,
+            params_limit=params_limit_2d,
         ).gp
 
         return gp_1d, gp_2d
 
-    def _get_host_neg_log_probability(self, params: dict, **kwargs) -> float:
+    def _get_host_neg_log_probability(self, params: dict, params_limit: dict = None) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
 
@@ -418,36 +399,58 @@ class Spec2DBase:
         ----------
         params : dict
             A dictionary of parameters.
+        params_limit : dict, optional
+            A dictionary of parameter limits.
 
         Returns
         -------
         float
             The negative log probability of the host flux.
         """
-        mask_obs = np.isfinite(self.f_host.y)
+        params_1d, params_2d = _split_params(params, require_all=True)
+        params_limit_1d, params_limit_2d = _split_params(params_limit, require_all=False)
 
         @jax.jit
         def _neg_log_probability(
-            params: dict, *, f_X, f_y, f_yerr, f_1d_X, f_1d_y, f_1d_yerr, f_2d_X, f_2d_y, f_2d_yerr, f_2d_mean, f_mean
+            params_1d: dict,
+            params_2d: dict,
+            params_limit_1d: dict,
+            params_limit_2d: dict,
+            f_X: Array,
+            f_y: Array,
+            f_yerr: Array,
+            f_1d_X: Array,
+            f_1d_y: Array,
+            f_1d_yerr: Array,
+            f_2d_X: Array,
+            f_2d_y: Array,
+            f_2d_yerr: Array,
+            f_2d_mean: Array,
+            f_mean: Array,
         ) -> float:
             """
             Compute the negative log probability of the host galaxy model
             """
-            params_1d, params_2d = _split_params(params, require_all=True)
-            gp_1d = _gp(X=f_1d_X, yerr=f_1d_yerr, params=params_1d).gp
-            gp_2d = _gp(X=f_2d_X, yerr=f_2d_yerr, params=params_2d).gp
+            gp_1d = GP(X=f_1d_X, yerr=f_1d_yerr, params=params_1d, params_limit=params_limit_1d).gp
+            gp_2d = GP(X=f_2d_X, yerr=f_2d_yerr, params=params_2d, params_limit=params_limit_2d).gp
             log_prob_1d = gp_1d.log_probability(f_1d_y)
             log_prob_2d = gp_2d.log_probability(f_2d_y)
 
             y_host_1d = gp_1d.predict(y=f_1d_y, X_test=f_X[:, 1][:, None])
             y_host_2d = gp_2d.predict(y=f_2d_y - f_2d_mean, X_test=f_X) + f_mean
             y_host = y_host_1d * y_host_2d
-            log_prob_obs = jnp.sum(dist.Normal(y_host, f_yerr).log_prob(f_y))
+            log_prob_obs = jnp.sum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
 
             return -(log_prob_1d + log_prob_2d + log_prob_obs)
 
+        # Only include finite values in the observation
+        mask_obs = np.isfinite(self.f_host.y)
+
         return _neg_log_probability(
-            params,
+            params_1d=params_1d,
+            params_2d=params_2d,
+            params_limit_1d=params_limit_1d,
+            params_limit_2d=params_limit_2d,
             f_X=self.f_host.X[mask_obs],
             f_y=self.f_host.y[mask_obs],
             f_yerr=self.f_host.yerr[mask_obs],
@@ -686,10 +689,10 @@ class Spec2DBase:
         f_res_Y = self.f_sky_sub.Y - self._f_pred.reshape(-1, self.shape[1])
         residual_params = dict(
             origin="lower",
-            cmap="gray",
+            cmap="RdBu_r",
             aspect="auto",
-            vmin=np.nanpercentile(f_res_Y, 1),
-            vmax=np.nanpercentile(f_res_Y, 99),
+            vmin=np.nanmedian(self.f_host.yerr) * -1,
+            vmax=np.nanmedian(self.f_host.yerr) * 1,
             extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
         )
 
@@ -800,26 +803,3 @@ def rectification(
     Rectify the 2D spectrum onto a grid.
     """
     raise NotImplementedError
-
-
-def _split_params(params: dict, require_all: bool = False) -> tuple[dict, dict]:
-    """
-    Split the parameters into 1D and 2D.
-    """
-    params_1d = dict()
-    params_2d = dict()
-    keys_required = ["log_amp", "log_scale", "mean"]
-    keys = keys_required + ["log_jitter"]  # jitter is optional
-    for key in keys:
-        key_1d = key + "_1d"
-        key_2d = key + "_2d"
-        if require_all and key in keys_required:
-            if (params.get(key_1d) is None) or (params.get(key_2d) is None):
-                jax.debug.print("params: {}", params)
-                raise ValueError(f"Missing key: {key_1d} or {key_2d}")
-        if key_1d in params:
-            params_1d[key] = params[key_1d]
-        if key_2d in params:
-            params_2d[key] = params[key_2d]
-
-    return params_1d, params_2d
