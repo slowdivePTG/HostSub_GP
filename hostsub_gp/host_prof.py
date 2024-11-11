@@ -182,7 +182,7 @@ class HostProfile:
         elif len(self.flts) == 1:
             params = dict(
                 log_amp=jnp.float64(-3),
-                log_scale=jnp.float64(0),
+                log_scale=jnp.float64(0.5),
                 log_jitter=jnp.float64(-6),
                 mean=jnp.float64(1 / self.slit_len),
             )
@@ -201,7 +201,7 @@ class HostProfile:
         else:
             params = dict(
                 log_amp=jnp.float64(-3),
-                log_scale=jnp.asarray([0.5, 3], dtype=jnp.float64),
+                log_scale=jnp.asarray([0.1, 3], dtype=jnp.float64),
                 log_jitter=jnp.float64(-6),
                 mean=jnp.float64(1 / self.slit_len),
             )

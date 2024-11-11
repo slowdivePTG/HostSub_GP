@@ -15,7 +15,7 @@ from functools import partial
 from tinygp import GaussianProcess
 
 from ._plt_config import plt
-from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _split_params
+from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _split_params, _print_params
 from .gp import GP
 from .host_prof import HostProfile
 
@@ -267,14 +267,17 @@ class Spec2DBase:
         if not hasattr(self, "host_flux_prior"):
             raise ValueError("Please build the host flux prior first.")
 
+        params_init = _split_params(params_init, require_all=True)
+
         if optimization:
             # Default limits for the Gaussian Process parameters
+            # TODO: modify the default limits with a configuration file
             params_limit_default = dict(
-                log_scale_1d=np.log10([self.spec_resln, 100]),  # >= spectral resolution
+                log_scale_1d=np.log10([[1, self.spec_resln], [1e5, 1e5]]),  # >= spectral resolution
                 log_scale_2d=np.log10(
                     [[self.spat_resln, self.spec_resln], [1e3, 1e5]]
                 ),  # >= spatial + spectral resolution
-                mean_2d=np.array([0, 0]),
+                mean_2d=np.array([-1e-4, 1e-4]),
             )
             if params_limit is None:
                 params_limit = params_limit_default
@@ -283,6 +286,8 @@ class Spec2DBase:
                     if key in params_limit_default:
                         params_limit_default.pop(key)
                 params_limit = {**params_limit_default, **params_limit}
+
+            params_limit = _split_params(params_limit, require_all=False)
             self.gp_params = self._model_host_optimization(
                 params_init=params_init,
                 params_limit=params_limit,
@@ -302,7 +307,9 @@ class Spec2DBase:
         # Predict the host galaxy flux on the entire 2D grids
         self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
-    def _model_host_optimization(self, params_init: dict, params_limit: dict, verbose: bool = True, **kwargs) -> dict:
+    def _model_host_optimization(
+        self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs
+    ) -> dict:
         """
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
 
@@ -312,8 +319,6 @@ class Spec2DBase:
             Initial parameters for optimization.
         params_limit : dict
             Limits for the Gaussian Process parameters.
-        verbose : bool, optional (default: False)
-            Whether to print the optimization status.
 
         Returns
         -------
@@ -321,17 +326,18 @@ class Spec2DBase:
             The optimized parameters for the Gaussian Process model.
         """
         params_init_unbound = _transform_bound_to_unbound(params_init, params_limit)
-        if verbose:
-            print("Optimizing the host galaxy model...")
-            print("Initial parameters:", params_init)
-            print("Initial negative log-probability:", self._get_host_neg_log_probability(params_init_unbound, params_limit))
+        print("Optimizing the host galaxy model...")
+        print("Initial parameters:")
+        _print_params(params_init)
+        print(f"Initial negative log-probability: {self._get_host_neg_log_probability(params_init):.1f}")
         solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, **kwargs)
-        soln = solver.run(params_init_unbound, params_limit=params_limit)
+        soln = solver.run(params_init_unbound, params_limit)
         if soln.state.status != 0:
             warnings.warn(f"Optimization failed with status {soln.state.status}.")
         params = _transform_unbound_to_bound(soln.params, params_limit)
-        if verbose:
-            print(f"Final parameters: {params}")
+        print("Final parameters:")
+        _print_params(params)
+        print(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params
 
     def _model_host_sampling(self, params_init: dict = None, **kwargs):
@@ -356,7 +362,9 @@ class Spec2DBase:
 
         raise NotImplementedError("Sampling is not implemented yet.")
 
-    def _build_host_gp(self, params: dict, params_limit: dict = None) -> tuple[GaussianProcess, GaussianProcess]:
+    def _build_host_gp(
+        self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = None
+    ) -> tuple[GaussianProcess, GaussianProcess]:
         """
         Build the Gaussian Process for the 1D host galaxy spectra and 2D host galaxy spatial profiles.
 
@@ -372,14 +380,15 @@ class Spec2DBase:
         tuple[GaussianProcess, GaussianProcess]
             tinygp.GaussianProcess objects for the 1D and 2D host galaxy.
         """
-        params_1d, params_2d = _split_params(params, require_all=True)
-        params_limit_1d, params_limit_2d = _split_params(params_limit, require_all=False)
+        params_1d, params_2d = _init_params(params[0]), _init_params(params[1])
+        params_limit_1d, params_limit_2d = params_limit if params_limit is not None else (None, None)
         gp_1d = GP(
             X=self.f_host_1d.X,
             y=self.f_host_1d.y,
             yerr=self.f_host_1d.yerr,
             params=params_1d,
             params_limit=params_limit_1d,
+            kernel_type="composite",
         ).gp
         gp_2d = GP(
             X=self.f_host_batch_2d.X,
@@ -387,11 +396,12 @@ class Spec2DBase:
             yerr=self.f_host_batch_2d.y,
             params=params_2d,
             params_limit=params_limit_2d,
+            kernel_type="ExpSquared",
         ).gp
 
         return gp_1d, gp_2d
 
-    def _get_host_neg_log_probability(self, params: dict, params_limit: dict = None) -> float:
+    def _get_host_neg_log_probability(self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = None) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
 
@@ -407,15 +417,13 @@ class Spec2DBase:
         float
             The negative log probability of the host flux.
         """
-        params_1d, params_2d = _split_params(params, require_all=True)
-        params_limit_1d, params_limit_2d = _split_params(params_limit, require_all=False)
+        params_bound = _transform_unbound_to_bound(params, params_limit)
+        params_1d, params_2d = _init_params(params_bound[0]), _init_params(params_bound[1])
 
         @jax.jit
         def _neg_log_probability(
             params_1d: dict,
             params_2d: dict,
-            params_limit_1d: dict,
-            params_limit_2d: dict,
             f_X: Array,
             f_y: Array,
             f_yerr: Array,
@@ -431,8 +439,8 @@ class Spec2DBase:
             """
             Compute the negative log probability of the host galaxy model
             """
-            gp_1d = GP(X=f_1d_X, yerr=f_1d_yerr, params=params_1d, params_limit=params_limit_1d).gp
-            gp_2d = GP(X=f_2d_X, yerr=f_2d_yerr, params=params_2d, params_limit=params_limit_2d).gp
+            gp_1d = GP(X=f_1d_X, yerr=f_1d_yerr, params=params_1d, kernel_type="composite").gp
+            gp_2d = GP(X=f_2d_X, yerr=f_2d_yerr, params=params_2d, kernel_type="ExpSquared").gp
             log_prob_1d = gp_1d.log_probability(f_1d_y)
             log_prob_2d = gp_2d.log_probability(f_2d_y)
 
@@ -449,8 +457,6 @@ class Spec2DBase:
         return _neg_log_probability(
             params_1d=params_1d,
             params_2d=params_2d,
-            params_limit_1d=params_limit_1d,
-            params_limit_2d=params_limit_2d,
             f_X=self.f_host.X[mask_obs],
             f_y=self.f_host.y[mask_obs],
             f_yerr=self.f_host.yerr[mask_obs],
@@ -498,19 +504,9 @@ class Spec2DBase:
         dict
             The Gaussian Process parameters.
         """
-        assert hasattr(self, "gp_params"), "Please model the host galaxy first."
-        print("Gaussian Process parameters:")
-        print("1D:")
-        print("Amp:", 10 ** self.gp_params.get("log_amp_1d"))
-        print("Scale:", 10 ** self.gp_params.get("log_scale_1d")[0])
-        # print("Jitter:", 10 ** self.gp_params.get("log_jitter_1d"))
-        print("Mean:", self.gp_params.get("mean_1d"))
-        print("2D:")
-        print("Amp:", 10 ** self.gp_params.get("log_amp_2d"))
-        print("Spat Scale:", 10 ** self.gp_params.get("log_scale_2d")[0])
-        print("Spec Scale:", 10 ** self.gp_params.get("log_scale_2d")[1])
-        # print("Jitter:", 10 ** self.gp_params.get("log_jitter_2d"))
-        print("Mean:", self.gp_params.get("mean_2d"))
+        if not hasattr(self, "gp_params"):
+            raise AttributeError("Please model the host galaxy first.")
+        _print_params(self.gp_params)
         return self.gp_params
 
     ############################ QA Plotting ############################
@@ -646,8 +642,8 @@ class Spec2DBase:
         ax[4].plot(self.f_host_1d.spec, self.f_host_1d.y - pred_1d)
         ax[4].fill_between(
             self.f_host_1d.spec,
-            self.f_host_1d.y - pred_1d - self.f_host_1d.yerr,
-            self.f_host_1d.y - pred_1d + self.f_host_1d.yerr,
+            -self.f_host_1d.yerr,
+            +self.f_host_1d.yerr,
             color="tab:blue",
             alpha=0.3,
         )

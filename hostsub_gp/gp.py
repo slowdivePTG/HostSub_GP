@@ -16,7 +16,7 @@ from tinygp import GaussianProcess, kernels, transforms
 
 from jax._src.typing import ArrayLike, Array
 
-from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _check_params
+from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
 
 
 class GP:
@@ -35,7 +35,6 @@ class GP:
         params_limit: dict = None,
         kernel_type: str = "ExpSquared",
         optimization: bool = False,
-        verbose: bool = False,
     ):
         """Initialize the Gaussian Process."""
         # Initialize the input arrays
@@ -46,55 +45,46 @@ class GP:
             self.yerr = jnp.ones_like(y) * yerr
         else:
             self.yerr = jnp.asarray(yerr)
+        self.kernel_type = kernel_type
 
         # Initialize the parameters
         self.params_limit = params_limit if params_limit is not None else {}
         if optimization:
             try:
-                _check_params(params_init, required_all=True)
-            except ValueError as e:
+                self.params_init = _init_params(params_init)
+            except Exception as e:
                 raise ValueError("Optimization: " + str(e))
+            self.params_init_unbound = _transform_bound_to_unbound(self.params_init, self.params_limit)
+
             if y is None:
                 raise ValueError("Optimization: y must be provided")
             self.y = jnp.asarray(y)
 
-            self.params_init = _transform_bound_to_unbound(params_init, self.params_limit)
-            self.params = self.optimize(X, self.y, self.yerr, verbose=verbose)
+            self.params_unbound = self._optimize(X, self.y, self.yerr)
+            self.params = _transform_unbound_to_bound(self.params_unbound, self.params_limit)
+            # _print_params(self.params)
         else:
-            try:
-                _check_params(params, required_all=True)
-            except ValueError as e:
-                raise ValueError("Initializating GP: " + str(e))
-            self.params = _transform_unbound_to_bound(params, self.params_limit)
+            self.params = params
+            self.params_unbound = _transform_bound_to_unbound(self.params, self.params_limit)
 
         # Build the GP
-        self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=kernel_type)
+        self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type)
 
-    def optimize(self, X: Array, y: Array, yerr: Array, verbose: bool = False) -> dict:
-        solver = jaxopt.ScipyMinimize(fun=_neg_log_prob)
-        neg_log_prob_init = _neg_log_prob(self.params_init, self.params_limit, X, y, yerr)
+    def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
+        solver = jaxopt.ScipyMinimize(fun=partial(_neg_log_prob, kernel_type=self.kernel_type))
+        neg_log_prob_init = _neg_log_prob(
+            self.params_init_unbound, params_limit=self.params_limit, X=X, y=y, yerr=yerr, kernel_type=self.kernel_type
+        )
         if ~jnp.isfinite(neg_log_prob_init):
+            print(f"Initial parameters:")
+            print(self.params_init)
+            print(self.params_init_unbound)
             raise ValueError("Invalid initial parameters")
-        soln = solver.run(self.params_init, X=X, y=y, yerr=yerr, params_limit=self.params_limit)
-        params = soln.params
-        params_bound = _transform_unbound_to_bound(params, self.params_limit)
-        if verbose:
-            self._print_params(params_bound)
-            print(f"Final negative log-probability: {_neg_log_prob(params_bound, None, X, y, yerr):.1f}")
-        return params_bound
-
-    def _print_params(self, params: dict = None):
-        if params is None:
-            params = self.params
-        try:
-            _check_params(params)
-        except ValueError as e:
-            raise ValueError("Printing parameters: " + str(e))
-        print("Amp: {:.3e}".format(10 ** params.get("log_amp")))
-        print("Scale: " + ",".join(["{:.3e}".format(10**log_scale) for log_scale in params.get("log_scale")]))
-        if "log_jitter" in params:
-            print("Jitter: {:.3e}".format(10 ** params.get("log_jitter")))
-        print("Mean: {:.3e}".format(params.get("mean")))
+        soln = solver.run(self.params_init_unbound, params_limit=self.params_limit, X=X, y=y, yerr=yerr)
+        params_unbound = soln.params
+        print(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
+        print(f"Final negative log-probability: {soln.state.fun_val:.1f}")
+        return params_unbound
 
 
 class _build_gp:
@@ -107,18 +97,11 @@ class _build_gp:
         except ValueError as e:
             raise ValueError("Building GP: " + str(e))
 
-        self.mean = jnp.asarray(params.get("mean"), dtype=jnp.float64)
-        self.log_amp = jnp.asarray(params.get("log_amp"), dtype=jnp.float64)
-        self.log_scale = jnp.asarray(params.get("log_scale"), dtype=jnp.float64)
-        if params.get("log_jitter") is None:
-            self.log_jitter = jnp.ones_like(self.mean) * -6
-        else:
-            self.log_jitter = jnp.asarray(params.get("log_jitter"), dtype=jnp.float64)
-
-        # Check the validity of the parameter dimensions
-        if not (self.log_amp.size == self.log_jitter.size == self.mean.size):
-            print(self.log_amp.size, self.log_scale.size, self.log_jitter.size, self.mean.size)
-            raise ValueError("Invalid shape of kernel parameters")
+        # Initialize the parameters
+        self.log_amp = params.get("log_amp")
+        self.log_scale = params.get("log_scale")
+        self.log_jitter = params.get("log_jitter")
+        self.mean = params.get("mean")
 
         self.X = jnp.asarray(X)
         self.yerr = jnp.asarray(yerr)
@@ -132,7 +115,7 @@ class _build_gp:
         scale = 10**self.log_scale
         if kernel_type != "composite":
             if self.log_amp.size != 1:
-                raise ValueError("The kernel requires only 1 set of parameters")
+                raise ValueError(f"The {kernel_type} kernel requires only 1 set of parameters")
             if kernel_type == "ExpSquared":
                 kernel = amp * transforms.Linear(1 / scale, kernel=kernels.ExpSquared())
             elif kernel_type == "Matern":
@@ -140,7 +123,9 @@ class _build_gp:
         elif kernel_type == "composite":
             if self.log_amp.size != 2:
                 raise ValueError("The composite kernel requires 2 set of parameters")
+            # kernel1 : ExpSquared - long-term variations (continuum)
             kernel_expsqr = amp[0] * transforms.Linear(1 / scale[0], kernel=kernels.ExpSquared())
+            # kernel2 : Matern - short-term variations (sky lines, emission lines)
             kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52())
             kernel = kernel_expsqr + kernel_matern
         else:
