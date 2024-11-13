@@ -62,7 +62,7 @@ class GP:
 
             self.params_unbound = self._optimize(X, self.y, self.yerr)
             self.params = _transform_unbound_to_bound(self.params_unbound, self.params_limit)
-            # _print_params(self.params)
+            _print_params(self.params)
         else:
             self.params = params
             self.params_unbound = _transform_bound_to_unbound(self.params, self.params_limit)

@@ -128,9 +128,8 @@ class Spec2DBase:
         )
         self.f_sky_obs_1d = SpecWrapper(
             points=spec,
-            values=np.nanmean(self.f_sky_obs.Y * self.f_sky_obs.Yerr**-2, axis=0)
-            / np.nanmean(self.f_sky_obs.Yerr**-2, axis=0),
-            values_err=np.nanmean(self.f_sky_obs.Yerr**-2, axis=0) ** -0.5 / self.sky.sum(),
+            values=np.nanmean(self.f_sky_obs.Y, axis=0),
+            values_err=(np.nanmean(self.f_sky_obs.Yerr**2, axis=0) * self.sky.sum()) ** 0.5 / self.sky.sum(),
         )
         # Model the global sky background using 1D GP
         # The scale should be larger than the spectral resolution
@@ -175,10 +174,8 @@ class Spec2DBase:
         print(f"Obtaining the sky-subtracted 1D galaxy spectrum (outside the mask)")
         self.f_host_1d = SpecWrapper(
             points=spec,
-            values=np.nanmean(self.f_host.Y * self.f_host.Yerr**-2, axis=0)
-            / np.nanmean(self.f_host.Yerr**-2, axis=0)
-            * self.host.sum(),
-            values_err=np.nanmean(self.f_host.Yerr**-2, axis=0) ** -0.5,
+            values=np.nanmean(self.f_host.Y, axis=0) * self.host.sum(),
+            values_err=(np.nanmean(self.f_host.Yerr**2, axis=0) * self.host.sum()) ** 0.5,
         )
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
@@ -227,7 +224,7 @@ class Spec2DBase:
         if show:
             self._plot_raw()
 
-    def build_host_prior(self, imgs: list = [], flts: list = [], **kwargs):
+    def build_host_prior(self, imgs: list = [], flts: list = [], show: bool = True):
         """
         Build the prior of the host galaxy using Gaussian Process regression.
 
@@ -239,7 +236,7 @@ class Spec2DBase:
             Filters of the host galaxy images.
         """
         host_prof = HostProfile(imgs=imgs, flts=flts, spec2d=self)
-        self.host_flux_prior = host_prof.model_host_profile_prior(optimization=True, **kwargs)
+        self.host_flux_prior = host_prof.model_host_profile_prior(show=show)
 
     def model_host(
         self,
@@ -306,6 +303,31 @@ class Spec2DBase:
         self._f_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_host.X)
         # Predict the host galaxy flux on the entire 2D grids
         self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
+
+    def extract_sci(self):
+        """
+        Extract the science spectrum.
+        """
+        if not hasattr(self, "_f_pred"):
+            raise AttributeError("Please model the host galaxy first.")
+        # Subtract the host galaxy model
+        self.f_sci_pred = SpecWrapper(
+            points=(self.spat[~self.host], self.spec),
+            values=(self.f_sky_sub.Y - self._f_pred.reshape(self.shape))[~self.host, :],
+            values_err=self.f_sky_sub.Yerr[~self.host, :],
+        )
+        self.f_sci_pred_1d = SpecWrapper(
+            points=self.spec,
+            values=np.nanmean(self.f_sci_pred.Y * self.f_sci_pred.Yerr**-2, axis=0)
+            / np.nanmean(self.f_sci_pred.Yerr**-2, axis=0)
+            * (~self.host).sum(),
+            values_err=np.nanmean(self.f_sci_pred.Yerr**-2, axis=0) ** -0.5,
+        )
+        fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+        ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="tab:blue")
+        ax.axhline(0, color="k", ls="--")
+        ax.set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+        ax.set_ylabel(r"$\mathrm{Counts}$")
 
     def _model_host_optimization(
         self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs
@@ -562,10 +584,10 @@ class Spec2DBase:
         # Labels
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         for ax_ in ax[:-1]:
-            ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
-            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="tab:blue", linestyle="-.")
-            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="tab:blue", linestyle="-.")
+            ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+            ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax_.set_xlim(self.spec.min(), self.spec.max())
@@ -658,10 +680,10 @@ class Spec2DBase:
         # Labels
         ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         for ax_ in ax[:3]:
-            ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
-            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="tab:blue", linestyle="-.")
-            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="tab:blue", linestyle="-.")
+            # ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+            # ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax_.set_xlim(self.spec.min(), self.spec.max())
@@ -697,10 +719,10 @@ class Spec2DBase:
         ax[1].imshow(self._f_pred.reshape(-1, self.shape[1]), **source_params)
         ax[2].imshow(f_res_Y, **residual_params)
         for ax_ in ax:
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
-            ax_.axhline(self.mask_wid * self.spat_resln, color="tab:red", linestyle="--")
-            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="tab:blue", linestyle="-.")
-            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="tab:blue", linestyle="-.")
+            ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+            ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
         ax[1].set_title(r"$\mathrm{Model}$")

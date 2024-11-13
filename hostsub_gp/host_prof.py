@@ -116,16 +116,14 @@ class HostProfile:
                 # Mask the SN aperture
                 mask = np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.mask_wid
                 # Subtract the sky background
-                sky = (spat_slit[-1] < spec2d.spat_resln * -spec2d.sky_wid[-1]) | (
-                    spat_slit[-1] > spec2d.spat_resln * spec2d.sky_wid[0]
+                sky = (spat_slit[-1] < spec2d.spat_resln * -spec2d.sky_wid[0]) | (
+                    spat_slit[-1] > spec2d.spat_resln * spec2d.sky_wid[-1]
                 )
-                xi = counts_slit[-1] / np.sum(counts_slit[-1][~mask])
-                mask_len = 2 * spec2d.spat_resln * spec2d.mask_wid
-                sky_len = spec2d.spat_resln * (spec2d.sky_wid[-1] + spec2d.sky_wid[0])
+                xi = counts_slit[-1]
                 prof_slit.append(
                     (xi - xi[sky].mean())
-                    / (1 - xi[sky].sum() * (self.slit_len - mask_len) / (self.slit_len - sky_len))
-                    * (spec2d.pixel_scale / pixel_scale)
+                    / ((xi[~mask].mean() - xi[sky].mean()) * (~mask).sum() * pixel_scale)
+                    * spec2d.pixel_scale
                 )
             else:  # No mask
                 xi = counts_slit[-1] / np.sum(counts_slit[-1])
@@ -171,7 +169,7 @@ class HostProfile:
         self.prof = jnp.concatenate(prof_slit)
         self.X = jnp.stack([jnp.concatenate(spat_slit), jnp.concatenate(wv_slit)], axis=-1)
 
-    def model_host_profile_prior(self, show: bool = False, **kwargs) -> Callable[[jax.Array], jax.Array]:
+    def model_host_profile_prior(self, show: bool = False) -> Callable[[jax.Array], jax.Array]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
         """
@@ -193,20 +191,19 @@ class HostProfile:
                 params=params,
                 params_init=params,
                 params_limit=params_limit,
-                **kwargs,
+                optimization=True,
             )
-            gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None])
-            host_prior = jax.jit(gp_pred)
+            host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None]))
         # Multiple bands
         else:
             params = dict(
-                log_amp=jnp.float64(-3),
-                log_scale=jnp.asarray([0.1, 3], dtype=jnp.float64),
-                log_jitter=jnp.float64(-6),
+                log_amp=jnp.float64(-2),
+                log_scale=jnp.asarray([0.1, 5], dtype=jnp.float64),
+                log_jitter=jnp.float64(-4),
                 mean=jnp.float64(1 / self.slit_len),
             )
             params_limit = dict(
-                log_scale=np.log10([[1.0, 1.0], [3.0, 1e6]]),
+                log_scale=np.log10([[1.0, 1e3], [3.0, 1e7]]),
             )
             gp_host_prior = GP(
                 X=self.X,
@@ -214,13 +211,12 @@ class HostProfile:
                 params=params,
                 params_init=params,
                 params_limit=params_limit,
-                **kwargs,
+                optimization=True,
             )
-            gp_pred = lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x)
-            host_prior = jax.jit(gp_pred)
+            host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x))
 
         if show:
-            fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+            _, ax = plt.subplots(1, 1, figsize=(6, 6))
             cmap = plt.cm.get_cmap("coolwarm")
             norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
             delta = (self.prof.max() - self.prof.min()) * 0.4

@@ -146,13 +146,6 @@ def _split_params(params: dict, require_all: bool = False) -> tuple[dict, dict]:
 
 def _print_params(params: dict | tuple[dict, dict]):
     """Print the parameters."""
-    if isinstance(params, dict):
-        params = _split_params(params)
-    for i in range(2):
-        try:
-            _check_params(params[i], required_all=True)
-        except ValueError as e:
-            raise ValueError("Printing parameters: " + str(e))
 
     def _print_param(params, key, key_str):
         vals = 10 ** params.get(key) if "log" in key else params.get(key)
@@ -163,10 +156,29 @@ def _print_params(params: dict | tuple[dict, dict]):
         else:
             print(f"{key_str}: " + ", ".join(["({})".format(", ".join([f"{v:.3e}" for v in val])) for val in vals]))
 
-    for i in range(2):
-        print(f"{i+1}D parameters:")
-        _print_param(params[i], "log_amp", "Amp")
-        _print_param(params[i], "log_scale", "Scale")
-        if "log_jitter" in params[i]:
-            _print_param(params[i], "log_jitter", "Jitter")
-        _print_param(params[i], "mean", "Mean")
+    try:
+        _check_params(params, required_all=True)
+        # only 1D or 2D parameters
+        _print_param(params, "log_amp", "Amp")
+        _print_param(params, "log_scale", "Scale")
+        if "log_jitter" in params:
+            _print_param(params, "log_jitter", "Jitter")
+        _print_param(params, "mean", "Mean")
+
+    except:
+        # both 1D and 2D parameters
+        if isinstance(params, dict):
+            params = _split_params(params)
+        for i in range(2):
+            try:
+                _check_params(params[i], required_all=True)
+            except ValueError as e:
+                raise ValueError("Printing parameters: " + str(e))
+
+        for i in range(2):
+            print(f"{i+1}D parameters:")
+            _print_param(params[i], "log_amp", "Amp")
+            _print_param(params[i], "log_scale", "Scale")
+            if "log_jitter" in params[i]:
+                _print_param(params[i], "log_jitter", "Jitter")
+            _print_param(params[i], "mean", "Mean")
