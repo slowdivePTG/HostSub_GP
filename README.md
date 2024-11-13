@@ -55,11 +55,11 @@ $$C_G(\lambda) = \langle C_\mathrm{Obs}(x,\lambda)\rangle_{|x|>x_G} = F_\mathrm{
 
 By subtracting the global background, we remove the sky emission and get
 
-$$\widetilde C(x,\lambda) \equiv C_\mathrm{Obs}(x, \lambda) - C_G(\lambda) = F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Host}(\xi(x,\lambda) - \langle \xi(x,\lambda)\rangle_{|x|>x_G}).$$
+$$\widetilde C(x,\lambda) \equiv C_\mathrm{Obs}(x, \lambda) - C_G(\lambda) = F_\mathrm{SN}(\lambda)\cdot PSF(x) + F_\mathrm{Host}(\lambda)\left[\xi(x,\lambda) - \langle \xi(x,\lambda)\rangle_{|x|>x_G}\right].$$
 
 And when $|x|\ge x_M\gg$ seeing, contribution from the SN is negligible, thus
 
-$$\widetilde C_{\mathrm{1D}}(\lambda)\equiv\int_{|x|>x_M}C_\mathrm{Obs}(x,\lambda)\mathrm dx\simeq F_\mathrm{Host}(\lambda) \cdot\left[1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}\right],$$
+$$\widetilde C_{\mathrm{1D}}(\lambda)\equiv\int_{|x|>x_M}\widetilde C(x,\lambda)\mathrm dx\simeq F_\mathrm{Host}(\lambda) \cdot\left[\left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\left(\langle \xi(x,\lambda)\rangle_{|x|>x_M} - \langle \xi(x,\lambda)\rangle_{|x|>x_G}\right)\right],$$
 
 which we will model with a 1D GP
 
@@ -69,7 +69,7 @@ conditioned on the integrated observed flux $\hat C_{\mathrm{1D}}$. Here $\mu_\m
 
 Independently, the normalized counts at each $\lambda$ is
 
-$$\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\widetilde C_\mathrm{1D}(\lambda)} = \frac{\xi(x,\lambda)-\langle \xi(x,\lambda)\rangle_{|x|>x_G}}{1 - \left({l_\mathrm{Slit} - l_\mathrm{Mask}}\right)\langle \xi(x,\lambda)\rangle_{|x|>x_G}}.$$
+$$\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\widetilde C_\mathrm{1D}(\lambda)} = \frac{\xi(x,\lambda)-\langle \xi(x,\lambda)\rangle_{|x|>x_G}}{\langle \xi(x,\lambda)\rangle_{|x|>x_M} - \langle \xi(x,\lambda)\rangle_{|x|>x_G}}\frac{1}{l_\mathrm{Slit} - l_\mathrm{Mask}}.$$
 
 We will model it with a 2D GP
 
