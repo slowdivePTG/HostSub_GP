@@ -15,7 +15,7 @@ from functools import partial
 from tinygp import GaussianProcess
 
 from ._plt_config import plt
-from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _split_params, _print_params
+from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
 from .gp import GP
 from .host_prof import HostProfile
 
@@ -26,13 +26,15 @@ import warnings
 
 
 class SpecWrapper:
+    """A wrapper for the 1D and 2D spectra."""
+
     def __init__(
         self, points: ArrayLike | tuple[ArrayLike, ArrayLike], values: ArrayLike, values_err: ArrayLike = None
     ):
         # Loading the coordinates
         # Input = spatial and spectral axes of the 2D spectrum
         if isinstance(points, tuple):
-            self.spat, self.spec = points
+            self.spat, self.spec = jnp.array(points[0]), jnp.array(points[1])
             self.spec_img, self.spat_img = jnp.meshgrid(self.spec, self.spat)
             self.X = jnp.stack([self.spat_img.ravel(), self.spec_img.ravel()], axis=-1)
         # Input = spectral axis of the 1D spectrum
@@ -65,8 +67,114 @@ class SpecWrapper:
         else:
             raise ValueError("Y shape error")
 
+    def marginalize(self, mask: bool = None, margin_type: str = "mean", weights: str = None) -> "SpecWrapper":
+        """
+        Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
 
-class Spec2DBase:
+        Parameters
+        ----------
+        mask : bool, optional
+            Mask certain pixels in the marginalization.
+        margin_type : str, optional
+            Type of the marginalization: mean or sum. Default is mean.
+        weights : str, optional
+            Weights for the marginalization: None, ivar, or snr. Default is None.
+            None: no weights
+            ivar: inverse variance
+            snr: signal-to-noise ratio squared
+
+        Returns
+        -------
+        SpecWrapper
+            The marginalized 1D spectrum.
+        """
+        if mask is None:
+            mask = jnp.ones(self.shape[0], dtype=bool)
+        elif mask.ndim != 1:
+            raise ValueError("Invalid shape of the mask.")
+        if mask.shape[0] != self.shape[0]:
+            raise ValueError("Mask shape mismatch.")
+
+        if weights is None:
+            w = jnp.ones_like(self.Y[mask, :])
+        elif weights == "ivar":
+            w = self.Yerr[mask, :] ** -2
+        elif weights == "snr":
+            w = (self.Y[mask, :] / self.Yerr[mask, :]) ** 2
+        else:
+            raise ValueError("Invalid weights.")
+        mean_value = jnp.nanmean(self.Y[mask, :] * w, axis=0) / jnp.nanmean(w, axis=0)
+        mean_value_err = (
+            jnp.nanmean((self.Yerr[mask, :] * w) ** 2, axis=0) / (jnp.nanmean(w) * mask.sum()) ** 2
+        ) ** 0.5
+
+        if margin_type == "mean":
+            return SpecWrapper(points=self.spec, values=mean_value, values_err=mean_value_err)
+        elif margin_type == "sum":
+            return SpecWrapper(points=self.spec, values=mean_value * mask.sum(), values_err=mean_value_err * mask.sum())
+
+
+class Spec2D:
+    """
+    A class for the host galaxy modeling on a rectified 2D spectrum.
+
+    Attributes
+    ----------
+    spat : ArrayLike
+        The spatial grids of the 2D spectrum.
+    spec : ArrayLike
+        The spectral grids of the 2D spectrum.
+    shape : tuple[int, int]
+        The shape of the 2D spectrum.
+    pixel_scale : float
+        The instrumental pixel scale of the 2D spectrum (arcsec per pixel).
+    center_ra : float
+        The right ascension of science object.
+    center_dec : float
+        The declination of science object.
+    slit_wid : float
+        The width of the slit (arcsec).
+    slit_len : float
+        The length of the slit (arcsec).
+    position_angle : float
+        The position angle of the slit (degree).
+    spat_resln : float
+        The spatial resolution (FWHM/seeing) of the 2D spectrum (arcsec).
+    spec_resln : float
+        The spectral resolution of the 2D spectrum (angstrom).
+    mask_wid : float
+        The width of the mask to mask the source trace (in spat_resln/seeing).
+    sky_wid : tuple[float, float]
+        The width of the sky region (in spat_resln/seeing).
+    batch_2d : tuple
+        The batch size for modeling the slowly varying host profiles.
+    f_obs : SpecWrapper
+        The 2D spectrum of the observed data.
+    f_sky : SpecWrapper
+        The 1D spectrum of the global sky background (mean of the sky region).
+    f_sky_sub : SpecWrapper
+        The 2D spectrum of the sky-subtracted data.
+    f_host : SpecWrapper
+        The 2D spectrum of the sky-subtracted host galaxy (outside the mask).
+    f_host_1d : SpecWrapper
+        The 1D spectrum of the sky-subtracted host galaxy (outside the mask).
+    f_host_batch_2d : SpecWrapper
+        The batched 2D spectrum (batch size = batch_2d) of the sky-subtracted host galaxy (outside the mask).
+    host : ArrayLike
+        The mask of the host galaxy pixels.
+    sky : ArrayLike
+        The mask of the sky pixels.
+
+    Methods
+    -------
+    build_host_prior
+        Build the prior of the host galaxy using Gaussian Process regression.
+    model_host
+        Model the host galaxy using Gaussian Process regression.
+    extract_sci
+        Extract the 1D spectrum after host galaxy subtraction.
+    """
+
     def __init__(
         self,
         dat: ArrayLike,  # 2D spectrum (spatial x spectral)
@@ -83,8 +191,8 @@ class Spec2DBase:
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
-        sky_wid: tuple = (5.0, 5.0),  # sky region
-        batch_2d: tuple = (2, 64),  # batch size for modeling slowing varying host profiles
+        sky_wid: tuple[float, float] = (5.0, 5.0),  # sky region
+        batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         show: bool = False,
     ):
         self.pixel_scale = pixel_scale
@@ -121,39 +229,16 @@ class Spec2DBase:
 
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
         print(f"Estimating the global sky background")
-        self.f_sky_obs = SpecWrapper(
+        self.f_sky = SpecWrapper(
             points=(spat[self.sky], spec),
             values=self.f_obs.Y[self.sky, :],
             values_err=self.f_obs.Yerr[self.sky, :],
         )
-        self.f_sky_obs_1d = SpecWrapper(
-            points=spec,
-            values=np.nanmean(self.f_sky_obs.Y, axis=0),
-            values_err=(np.nanmean(self.f_sky_obs.Yerr**2, axis=0) * self.sky.sum()) ** 0.5 / self.sky.sum(),
-        )
-        # Model the global sky background using 1D GP
-        # The scale should be larger than the spectral resolution
-        # _gp_sky = GP(
-        #     X=self.f_sky_obs_1d.X,
-        #     y=self.f_sky_obs_1d.y,
-        #     yerr=self.f_sky_obs_1d.yerr,
-        #     params_init=dict(log_jitter=-2.0, log_amp=3.0, log_scale=np.log10(self.spec_resln), mean=0.0),
-        #     params_limit=dict(log_scale=np.log10([0.85 * self.spec_resln, 2.5 * self.spec_resln])),
-        #     optimization=True,
-        #     verbose=True,
-        # )
-        # self._gp_sky_params, self._gp_sky = _gp_sky.params, _gp_sky.gp
-        # Subtract the global sky background
-        # self.f_sky_sub = SpecWrapper(
-        #     points=(spat, spec),
-        #     values=self.f_obs.Y
-        #     - jnp.tile(self._gp_sky.predict(y=self.f_sky_obs_1d.y, X_test=self.f_sky_obs_1d.X), reps=(len(spat), 1)),
-        #     values_err=jnp.sqrt(self.f_obs.Yerr**2 + jnp.tile(self.f_sky_obs_1d.yerr, reps=(len(self.spat), 1)) ** 2),
-        # )
+        self.f_sky_1d = self.f_sky.marginalize(margin_type="mean")
         self.f_sky_sub = SpecWrapper(
             points=(spat, spec),
-            values=self.f_obs.Y - np.tile(self.f_sky_obs_1d.Y, reps=(len(spat), 1)),
-            values_err=np.sqrt(self.f_obs.Yerr**2 + np.tile(self.f_sky_obs_1d.Yerr, reps=(len(spat), 1)) ** 2),
+            values=self.f_obs.Y - np.tile(self.f_sky_1d.Y, reps=(len(spat), 1)),
+            values_err=np.sqrt(self.f_obs.Yerr**2 + np.tile(self.f_sky_1d.Yerr, reps=(len(spat), 1)) ** 2),
         )
 
         # Mask the trace from the source (|spat| < seeing * mask_wid)
@@ -172,13 +257,10 @@ class Spec2DBase:
         # Central wavelength in each row: spec
         # Total flux in each row: weighted sum of the flux in each row
         print(f"Obtaining the sky-subtracted 1D galaxy spectrum (outside the mask)")
-        self.f_host_1d = SpecWrapper(
-            points=spec,
-            values=np.nanmean(self.f_host.Y, axis=0) * self.host.sum(),
-            values_err=(np.nanmean(self.f_host.Yerr**2, axis=0) * self.host.sum()) ** 0.5,
-        )
+        self.f_host_1d = self.f_host.marginalize(margin_type="sum")
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
+        # TODO: adative batch size on the spectral direction
         self.batch_2d = batch_2d
         print(f"Batching the 2D galaxy spectrum (outside the mask) with the size: {batch_2d}")
         # Spatial batch (only for the host galaxy pixels outside the mask)
@@ -240,8 +322,8 @@ class Spec2DBase:
 
     def model_host(
         self,
-        params_init: dict,
-        params_limit: dict = None,
+        params_init: tuple[dict, dict] | list[dict],
+        params_limit: tuple[dict, dict] | list[dict] = None,
         optimization: bool = False,
         sampling: bool = False,
         optimization_kwargs: dict = {},
@@ -264,30 +346,92 @@ class Spec2DBase:
         if not hasattr(self, "host_flux_prior"):
             raise ValueError("Please build the host flux prior first.")
 
-        params_init = _split_params(params_init, require_all=True)
+        # Initialize the parameters
+        params_init = _init_params(params_init)
+        if params_limit is None:
+            params_limit = [None, None]
+        else:
+            params_limit = _init_params(params_limit, require_all=False, params_type="limit")
+
+        # Default limits for the Gaussian Process parameters
+        # TODO: modify the default limits with a configuration file
+        # 1D spectrum of the host galaxy
+        ## scale >= spectral resolution / 2.355
+        ### here we use a composite kernel
+        ### ExpSquared - slow variation (>> spectral resolution)
+        ### Matern - narrow features (~ spectral resolution)
+        params_limit_1d_default = _init_params(
+            dict(
+                log_scale=np.log10(
+                    [[self.spec_resln / 2.355, self.spec_resln / 2.355], [self.spec_resln * 1e3, self.spec_resln * 2]]
+                ),
+            ),
+            require_all=False,
+            params_type="limit",
+        )
+        # 2D spatial profile & 1D spectrum of the host galaxy
+        ## scale >= spatial resolution, spectral resolution / 2.355
+        ## mean (i.e., deviation fromt the prior) is close to zero
+        params_limit_2d_default = _init_params(
+            dict(
+                log_scale=np.log10([[self.spat_resln, self.spec_resln / 2.355], [1e5, 1e5]]),
+                mean=[-1e-3, 1e-3],
+            ),
+            require_all=False,
+            params_type="limit",
+        )
 
         if optimization:
-            # Default limits for the Gaussian Process parameters
-            # TODO: modify the default limits with a configuration file
-            params_limit_default = dict(
-                log_scale_1d=np.log10([[1, self.spec_resln], [1e5, 1e5]]),  # >= spectral resolution
-                log_scale_2d=np.log10(
-                    [[self.spat_resln, self.spec_resln], [1e3, 1e5]]
-                ),  # >= spatial + spectral resolution
-                mean_2d=np.array([-1e-4, 1e-4]),
-            )
-            if params_limit is None:
-                params_limit = params_limit_default
-            else:
-                for key in params_limit:
-                    if key in params_limit_default:
-                        params_limit_default.pop(key)
-                params_limit = {**params_limit_default, **params_limit}
+            # Fitting the 1D spectrum of the host galaxy
+            print("Round 1: Fitting the 1D spectrum of the host galaxy")
 
-            params_limit = _split_params(params_limit, require_all=False)
+            if params_limit[0] is None:
+                params_limit[0] = params_limit_1d_default
+            else:
+                for key in params_limit[0]:
+                    if key in params_limit_1d_default:
+                        params_limit_1d_default.pop(key)
+                params_limit[0] = {**params_limit_1d_default, **params_limit[0]}
+
+            params_1d = GP(
+                X=self.f_host_1d.X,
+                y=self.f_host_1d.y,
+                yerr=self.f_host_1d.yerr,
+                params_init=params_init[0],
+                params_limit=params_limit[0],
+                kernel_type="composite",
+                optimization=True,
+            ).params
+
+            # Update the initial parameters with the 1D results
+            params_init[0] = params_1d
+            # Update the limits for parameters with the 1D results (within +/- 0.1%)
+            params_limit[0] = _init_params(
+                {
+                    key: (
+                        params_1d[key] - 1e-3 * np.abs(params_1d[key]),
+                        params_1d[key] + 1e-3 * np.abs(params_1d[key]),
+                    )
+                    for key in params_1d
+                },
+                require_all=False,
+                params_type="limit",
+            )
+
+            # Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly
+            print("Round 2: Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly")
+
+            if params_limit[1] is None:
+                params_limit[1] = params_limit_2d_default
+            else:
+                for key in params_limit[1]:
+                    if key in params_limit_2d_default:
+                        params_limit_2d_default.pop(key)
+                params_limit[1] = {**params_limit_2d_default, **params_limit[1]}
+
             self.gp_params = self._model_host_optimization(
-                params_init=params_init,
-                params_limit=params_limit,
+                params_init=tuple(params_init),
+                params_limit=tuple(params_limit),
                 **optimization_kwargs,
             )
 
@@ -385,7 +529,7 @@ class Spec2DBase:
         raise NotImplementedError("Sampling is not implemented yet.")
 
     def _build_host_gp(
-        self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = None
+        self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = (None, None)
     ) -> tuple[GaussianProcess, GaussianProcess]:
         """
         Build the Gaussian Process for the 1D host galaxy spectra and 2D host galaxy spatial profiles.
@@ -402,8 +546,11 @@ class Spec2DBase:
         tuple[GaussianProcess, GaussianProcess]
             tinygp.GaussianProcess objects for the 1D and 2D host galaxy.
         """
-        params_1d, params_2d = _init_params(params[0]), _init_params(params[1])
-        params_limit_1d, params_limit_2d = params_limit if params_limit is not None else (None, None)
+        params_1d, params_2d = _init_params(params)
+        try:
+            params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False, params_type="limit")
+        except:
+            print(params_limit)
         gp_1d = GP(
             X=self.f_host_1d.X,
             y=self.f_host_1d.y,
@@ -423,24 +570,25 @@ class Spec2DBase:
 
         return gp_1d, gp_2d
 
-    def _get_host_neg_log_probability(self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = None) -> float:
+    def _get_host_neg_log_probability(
+        self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = (None, None)
+    ) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
 
         Parameters
         ----------
-        params : dict
-            A dictionary of parameters.
+        params : tuple[dict, dict]
+            A tuple of parameters for the 1D and 2D Gaussian Processes.
         params_limit : dict, optional
-            A dictionary of parameter limits.
+            Limits for the Gaussian Process parameters.
 
         Returns
         -------
         float
             The negative log probability of the host flux.
         """
-        params_bound = _transform_unbound_to_bound(params, params_limit)
-        params_1d, params_2d = _init_params(params_bound[0]), _init_params(params_bound[1])
+        params_1d, params_2d = _init_params(_transform_unbound_to_bound(params, params_limit))
 
         @jax.jit
         def _neg_log_probability(
@@ -732,92 +880,141 @@ class Spec2DBase:
         plt.show()
 
 
-class Spec2D(Spec2DBase):
-    def __init__(
-        self,
-        dat: ArrayLike,  # 2D spectrum (spatial x spectral)
-        dat_err: ArrayLike = None,  # 2D error spectrum
-        *,
-        spat_img: ArrayLike = None,  # spatial grids
-        spec_img: ArrayLike = None,  # spectral grids
-        pixel_scale: float = None,  # arcsec/pixel
-        center_ra: float = None,  # RA of the center
-        center_dec: float = None,  # DEC of the center
-        slit_wid: float = 1.0,  # arcsec
-        slit_len: float = None,  # arcsec
-        position_angle: float = None,  # degree
-        spat_resln: float = 1.0,  # arcsec, FWHM/seeing
-        spec_resln: float = 7.5,  # LRIS, 1'' slit
-        mask_wid: float = 2.0,  # in seeing, mask the trace of the source
-        sky_wid: tuple = (5.0, 5.0),  # sky region
-        batch_2d: tuple = (2, 64),  # batch size for modeling slowing varying host profiles
-        show: bool = False,
-    ):
+# class Spec2D(Spec2DBase):
+#     """
+#     A class to model the host galaxy in the raw (not-rectified) 2D spectrum.
+#     """
 
-        # The 2D grids for the raw data
-        self.f_obs = dat
-        self.f_obs_err = dat_err if dat_err is not None else np.ones_like(dat)
-        if spat_img.ndim == 1:
-            assert dat.shape == (spat_img.size, spec_img.size), "spec2d shape mismatch"
-            super().__init__(
-                dat,
-                dat_err,
-                spat=spat_img,
-                spec=spec_img,
-                pixel_scale=pixel_scale,
-                center_ra=center_ra,
-                center_dec=center_dec,
-                slit_wid=slit_wid,
-                slit_len=slit_len,
-                position_angle=position_angle,
-                spat_resln=spat_resln,
-                spec_resln=spec_resln,
-                mask_wid=mask_wid,
-                sky_wid=sky_wid,
-                batch_2d=batch_2d,
-                show=show,
-            )
-        elif spat_img.ndim == 2:
-            # needs rectification
-            assert dat.shape == spat_img.shape == spec_img.shape, "spec2d shape mismatch"
-            self.spat_img = spat_img
-            self.spec_img = spec_img
+#     def __init__(
+#         self,
+#         dat: ArrayLike,  # 2D spectrum (spatial x spectral)
+#         *,
+#         dat_ivar: ArrayLike = None,  # 2D error spectrum
+#         dat_flag: ArrayLike = None,  # 2D flag spectrum
+#         spat_img: ArrayLike = None,  # spatial grids
+#         spec_img: ArrayLike = None,  # spectral grids
+#         pixel_scale: float = None,  # arcsec/pixel
+#         center_ra: float = None,  # RA of the center
+#         center_dec: float = None,  # DEC of the center
+#         slit_wid: float = 1.0,  # arcsec
+#         slit_len: float = None,  # arcsec
+#         position_angle: float = None,  # degree
+#         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
+#         spec_resln: float = 7.5,  # LRIS, 1'' slit
+#         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
+#         sky_wid: tuple = (5.0, 5.0),  # sky region
+#         batch_2d: tuple = (2, 64),  # batch size for modeling slowing varying host profiles
+#         show: bool = False,
+#     ):
+#         if not (dat.shape == dat_ivar.shape == dat_flag.shape):
+#             raise ValueError("The shape of the data cubes do not match.")
 
-            spat_img_pseudo = np.linspace(spat_img.min(), spat_img.max(), spat_img.shape[0])
-            spec_img_pseudo = np.linspace(spec_img.min(), spec_img.max(), spec_img.shape[1])
+#         invalid_flag = ~jnp.isfinite(dat) | dat_ivar <= 0
+#         dat[invalid_flag] = jnp.nan
+#         dat_ivar[invalid_flag] = jnp.nan
 
-            dat_pseudo, dat_err_pseudo = rectification(
-                (dat, dat_err), spat_img, spec_img, spat_img_pseudo, spec_img_pseudo
-            )
+#         # The 2D grids for the raw data
+#         if spat_img.ndim == 1:
+#             if not (dat.shape == (spat_img.size, spec_img.size)):
+#                 raise ValueError("The shape of the 2D spectrum does not match the grids.")
+#             super().__init__(
+#                 dat,
+#                 dat_ivar**-0.5,
+#                 spat=spat_img,
+#                 spec=spec_img,
+#                 pixel_scale=pixel_scale,
+#                 center_ra=center_ra,
+#                 center_dec=center_dec,
+#                 slit_wid=slit_wid,
+#                 slit_len=slit_len,
+#                 position_angle=position_angle,
+#                 spat_resln=spat_resln,
+#                 spec_resln=spec_resln,
+#                 mask_wid=mask_wid,
+#                 sky_wid=sky_wid,
+#                 batch_2d=batch_2d,
+#                 show=show,
+#             )
+#         elif spat_img.ndim == 2:
+#             # needs rectification
+#             if not (dat.shape == spat_img.shape == spec_img.shape):
+#                 raise ValueError("The shape of the 2D spectrum does not match the grids.")
+#             self.spat_img = spat_img
+#             self.spec_img = spec_img
 
-            super().__init__(
-                dat_pseudo,
-                dat_err_pseudo,
-                spat_img=spat_img_pseudo,
-                spec_img=spec_img_pseudo,
-                pixel_scale=pixel_scale,
-                center_ra=center_ra,
-                center_dec=center_dec,
-                slit_wid=slit_wid,
-                slit_len=slit_len,
-                position_angle=position_angle,
-                spat_resln=spat_resln,
-                spec_resln=spec_resln,
-                mask_wid=mask_wid,
-                sky_wid=sky_wid,
-                batch_2d=batch_2d,
-                show=show,
-            )
+#             spat_rect = np.linspace(spat_img.min(), spat_img.max(), spat_img.shape[0])
+#             spec_rect = np.linspace(spec_img.min(), spec_img.max(), spec_img.shape[1])
 
-            self.f_obs_raw = dat
-            self.f_obs_raw_err = dat_err if dat_err is not None else np.ones_like(dat)
+#             points = jnp.stack([spat_img, spec_img], axis=-1)
 
+#             dat_pseudo, dat_ivar_pseudo = self._rectification(points, (dat, dat_ivar, dat_flag), spat_rect, spec_rect)
 
-@jax.jit
-def rectification(
-    f_values: tuple[Array, Array], *, spat_img: Array, spec_img: Array, spat: Array, spec: Array
-) -> tuple[Array, Array]:
-    """
-    Rectify the 2D spectrum onto a grid.
-    """
-    raise NotImplementedError
+#             super().__init__(
+#                 dat_pseudo,
+#                 dat_ivar_pseudo**-0.5,
+#                 spat_img=spat_rect,
+#                 spec_img=spec_rect,
+#                 pixel_scale=pixel_scale,
+#                 center_ra=center_ra,
+#                 center_dec=center_dec,
+#                 slit_wid=slit_wid,
+#                 slit_len=slit_len,
+#                 position_angle=position_angle,
+#                 spat_resln=spat_resln,
+#                 spec_resln=spec_resln,
+#                 mask_wid=mask_wid,
+#                 sky_wid=sky_wid,
+#                 batch_2d=batch_2d,
+#                 show=show,
+#             )
+
+#     @partial(jax.jit, static_argnums=(0,))
+#     def _rectification(
+#         self,
+#         points: ArrayLike,
+#         f_values: tuple[ArrayLike, ArrayLike, ArrayLike],  # flux, ivar, flag
+#         spat_rect: Array,
+#         spec_rect: Array,
+#         batch_size: int = 8,
+#         padding_size: int = 1,
+#     ) -> tuple[Array, Array]:
+#         """
+#         Rectify the 2D spectrum onto a grid.
+#         """
+#         from .interp import Interp2D_RBF
+
+#         flux, ivar, flag = jnp.array(f_values)
+
+#         spec_batch_idx = jnp.array_split(jnp.arange(len(spec_rect)), len(spec_rect) // batch_size)
+#         spec_pix_rect, spat_pix_rect = jnp.meshgrid(spec_rect, spat_rect)
+
+#         flux_rect = jnp.zeros((len(spat_rect), len(spec_rect)))
+#         flux_ivar_rect = jnp.zeros((len(spat_rect), len(spec_rect)))
+
+#         # Interpolate the flux row by row
+#         for idx_list in spec_batch_idx:
+#             # The range of the spectrum to interpolate
+#             spec_min = max(0, idx_list[0] - padding_size)
+#             spec_max = min(len(spec_rect), idx_list[-1] + padding_size + 1)
+
+#             flag_ = flag[:, spec_min:spec_max]
+#             points_ = points[:, spec_min:spec_max][flag_]
+#             flux_ = flux[:, spec_min:spec_max][flag_]
+#             ivar_ = ivar[:, spec_min:spec_max][flag_]
+#             query_points_ = jnp.stack([spat_pix_rect[:, idx_list].ravel(), spec_pix_rect[:, idx_list].ravel()], axis=-1)
+
+#             # Interpolate the flux with RBF
+#             rbf = Interp2D_RBF(kernel="gaussian", epsilon=1.0, n_neighbors=8, scales=(self.spat_resln, self.spec_resln))
+#             rbf.fit(points=points_, values=flux_)
+#             flux_rect[:, idx_list] = rbf.predict(query_points=query_points_).reshape(flux_rect[:, idx_list].shape)
+#             rbf_ivar = Interp2D_RBF(
+#                 kernel="gaussian", epsilon=1.0, n_neighbors=8, scales=(self.spat_resln, self.spec_resln)
+#             )
+#             rbf_ivar.fit(points=points_, values=ivar_)
+#             flux_ivar_rect[:, idx_list] = rbf_ivar.predict(query_points=query_points_).reshape(
+#                 flux_ivar_rect[:, idx_list].shape
+#             )
+
+#             print(
+#                 f"Interpolating {points_[:, 1].min():.2f} - {points_[:, 1].max():.2f} Ang ({idx_list[0]} - {idx_list[-1]})"
+#             )

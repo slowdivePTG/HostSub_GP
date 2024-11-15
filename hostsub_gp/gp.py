@@ -2,8 +2,6 @@
 
 __all__ = ["GP"]
 
-from tinygp import kernels, GaussianProcess
-
 import jax
 import jax.numpy as jnp
 
@@ -93,7 +91,7 @@ class _build_gp:
     def __init__(self, params: dict, X: Array, yerr: Array):
         # Check if necessary parameters are provided
         try:
-            _check_params(params, required_all=True)
+            _check_params(params)
         except ValueError as e:
             raise ValueError("Building GP: " + str(e))
 

@@ -216,19 +216,20 @@ class HostProfile:
             host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x))
 
         if show:
-            _, ax = plt.subplots(1, 1, figsize=(6, 6))
+            _, ax = plt.subplots(
+                len(self.flts), 1, figsize=(6, 2 * len(self.flts)), sharex=True, sharey=True, constrained_layout=True
+            )
             cmap = plt.cm.get_cmap("coolwarm")
             norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
-            delta = (self.prof.max() - self.prof.min()) * 0.4
             for k in range(len(self.flts)):
-                ax.plot(self.spat_slit[k], self.prof_slit[k] - k * delta, label=f"{self.flts[k]}", color=cmap(norm(k)))
-                ax.plot(
+                ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.flts[k]}", color=cmap(norm(k)))
+                ax[k].plot(
                     self.spat_slit[k],
-                    host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)) - k * delta,
+                    host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)),
                     "--",
                     color=cmap(norm(k)),
                 )
-            ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
-            ax.set_ylabel(r"$\mathrm{Profile + offset}$")
+                ax[k].set_ylabel(r"$\mathrm{Profile}$")
+            ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
 
         return host_prior
