@@ -1,4 +1,4 @@
-# hostsub_gp/host_prof.py
+# hostsub_gp/host_profile.py
 
 __all__ = ["HostProfile"]
 

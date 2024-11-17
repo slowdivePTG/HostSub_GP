@@ -1,6 +1,6 @@
-# hostsub_gp/spec.py
+# hostsub_gp/spectrum_model.py
 
-__all__ = ["Spec2D"]
+__all__ = ["SpecModel"]
 
 import numpy as np
 
@@ -17,7 +17,7 @@ from tinygp import GaussianProcess
 from ._plt_config import plt
 from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
 from .gp import GP
-from .host_prof import HostProfile
+from .host_model import HostProfile
 
 from typing import Callable
 from jax._src.typing import ArrayLike, Array
@@ -114,7 +114,7 @@ class SpecWrapper:
             return SpecWrapper(points=self.spec, values=mean_value * mask.sum(), values_err=mean_value_err * mask.sum())
 
 
-class Spec2D:
+class SpecModel:
     """
     A class for the host galaxy modeling on a rectified 2D spectrum.
 
@@ -878,143 +878,3 @@ class Spec2D:
         ax[2].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
 
         plt.show()
-
-
-# class Spec2D(Spec2DBase):
-#     """
-#     A class to model the host galaxy in the raw (not-rectified) 2D spectrum.
-#     """
-
-#     def __init__(
-#         self,
-#         dat: ArrayLike,  # 2D spectrum (spatial x spectral)
-#         *,
-#         dat_ivar: ArrayLike = None,  # 2D error spectrum
-#         dat_flag: ArrayLike = None,  # 2D flag spectrum
-#         spat_img: ArrayLike = None,  # spatial grids
-#         spec_img: ArrayLike = None,  # spectral grids
-#         pixel_scale: float = None,  # arcsec/pixel
-#         center_ra: float = None,  # RA of the center
-#         center_dec: float = None,  # DEC of the center
-#         slit_wid: float = 1.0,  # arcsec
-#         slit_len: float = None,  # arcsec
-#         position_angle: float = None,  # degree
-#         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
-#         spec_resln: float = 7.5,  # LRIS, 1'' slit
-#         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
-#         sky_wid: tuple = (5.0, 5.0),  # sky region
-#         batch_2d: tuple = (2, 64),  # batch size for modeling slowing varying host profiles
-#         show: bool = False,
-#     ):
-#         if not (dat.shape == dat_ivar.shape == dat_flag.shape):
-#             raise ValueError("The shape of the data cubes do not match.")
-
-#         invalid_flag = ~jnp.isfinite(dat) | dat_ivar <= 0
-#         dat[invalid_flag] = jnp.nan
-#         dat_ivar[invalid_flag] = jnp.nan
-
-#         # The 2D grids for the raw data
-#         if spat_img.ndim == 1:
-#             if not (dat.shape == (spat_img.size, spec_img.size)):
-#                 raise ValueError("The shape of the 2D spectrum does not match the grids.")
-#             super().__init__(
-#                 dat,
-#                 dat_ivar**-0.5,
-#                 spat=spat_img,
-#                 spec=spec_img,
-#                 pixel_scale=pixel_scale,
-#                 center_ra=center_ra,
-#                 center_dec=center_dec,
-#                 slit_wid=slit_wid,
-#                 slit_len=slit_len,
-#                 position_angle=position_angle,
-#                 spat_resln=spat_resln,
-#                 spec_resln=spec_resln,
-#                 mask_wid=mask_wid,
-#                 sky_wid=sky_wid,
-#                 batch_2d=batch_2d,
-#                 show=show,
-#             )
-#         elif spat_img.ndim == 2:
-#             # needs rectification
-#             if not (dat.shape == spat_img.shape == spec_img.shape):
-#                 raise ValueError("The shape of the 2D spectrum does not match the grids.")
-#             self.spat_img = spat_img
-#             self.spec_img = spec_img
-
-#             spat_rect = np.linspace(spat_img.min(), spat_img.max(), spat_img.shape[0])
-#             spec_rect = np.linspace(spec_img.min(), spec_img.max(), spec_img.shape[1])
-
-#             points = jnp.stack([spat_img, spec_img], axis=-1)
-
-#             dat_pseudo, dat_ivar_pseudo = self._rectification(points, (dat, dat_ivar, dat_flag), spat_rect, spec_rect)
-
-#             super().__init__(
-#                 dat_pseudo,
-#                 dat_ivar_pseudo**-0.5,
-#                 spat_img=spat_rect,
-#                 spec_img=spec_rect,
-#                 pixel_scale=pixel_scale,
-#                 center_ra=center_ra,
-#                 center_dec=center_dec,
-#                 slit_wid=slit_wid,
-#                 slit_len=slit_len,
-#                 position_angle=position_angle,
-#                 spat_resln=spat_resln,
-#                 spec_resln=spec_resln,
-#                 mask_wid=mask_wid,
-#                 sky_wid=sky_wid,
-#                 batch_2d=batch_2d,
-#                 show=show,
-#             )
-
-#     @partial(jax.jit, static_argnums=(0,))
-#     def _rectification(
-#         self,
-#         points: ArrayLike,
-#         f_values: tuple[ArrayLike, ArrayLike, ArrayLike],  # flux, ivar, flag
-#         spat_rect: Array,
-#         spec_rect: Array,
-#         batch_size: int = 8,
-#         padding_size: int = 1,
-#     ) -> tuple[Array, Array]:
-#         """
-#         Rectify the 2D spectrum onto a grid.
-#         """
-#         from .interp import Interp2D_RBF
-
-#         flux, ivar, flag = jnp.array(f_values)
-
-#         spec_batch_idx = jnp.array_split(jnp.arange(len(spec_rect)), len(spec_rect) // batch_size)
-#         spec_pix_rect, spat_pix_rect = jnp.meshgrid(spec_rect, spat_rect)
-
-#         flux_rect = jnp.zeros((len(spat_rect), len(spec_rect)))
-#         flux_ivar_rect = jnp.zeros((len(spat_rect), len(spec_rect)))
-
-#         # Interpolate the flux row by row
-#         for idx_list in spec_batch_idx:
-#             # The range of the spectrum to interpolate
-#             spec_min = max(0, idx_list[0] - padding_size)
-#             spec_max = min(len(spec_rect), idx_list[-1] + padding_size + 1)
-
-#             flag_ = flag[:, spec_min:spec_max]
-#             points_ = points[:, spec_min:spec_max][flag_]
-#             flux_ = flux[:, spec_min:spec_max][flag_]
-#             ivar_ = ivar[:, spec_min:spec_max][flag_]
-#             query_points_ = jnp.stack([spat_pix_rect[:, idx_list].ravel(), spec_pix_rect[:, idx_list].ravel()], axis=-1)
-
-#             # Interpolate the flux with RBF
-#             rbf = Interp2D_RBF(kernel="gaussian", epsilon=1.0, n_neighbors=8, scales=(self.spat_resln, self.spec_resln))
-#             rbf.fit(points=points_, values=flux_)
-#             flux_rect[:, idx_list] = rbf.predict(query_points=query_points_).reshape(flux_rect[:, idx_list].shape)
-#             rbf_ivar = Interp2D_RBF(
-#                 kernel="gaussian", epsilon=1.0, n_neighbors=8, scales=(self.spat_resln, self.spec_resln)
-#             )
-#             rbf_ivar.fit(points=points_, values=ivar_)
-#             flux_ivar_rect[:, idx_list] = rbf_ivar.predict(query_points=query_points_).reshape(
-#                 flux_ivar_rect[:, idx_list].shape
-#             )
-
-#             print(
-#                 f"Interpolating {points_[:, 1].min():.2f} - {points_[:, 1].max():.2f} Ang ({idx_list[0]} - {idx_list[-1]})"
-#             )

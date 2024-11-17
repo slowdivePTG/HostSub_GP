@@ -1,3 +1,5 @@
+# hostsub_gp/interp.py
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import solve
@@ -180,7 +182,7 @@ class Interp2D_RBF:
         ----------
         query_points : ArrayLike
             Array of shape (n_queries, 2) containing points to interpolate
-        
+
         Returns
         -------
         Array
