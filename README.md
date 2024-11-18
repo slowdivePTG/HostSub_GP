@@ -45,9 +45,7 @@ The contribution from the host galaxy is modeled as
 
 $$f_\mathrm{Host}(x, \lambda) = F_\mathrm{Host}(\lambda)\cdot \xi(x, \lambda),$$
 
-where $F_\mathrm{Host}(\lambda)$ is the 1D spectrum of the host, and $\xi(x,\lambda)$ is the spatial profile, which is also normalized, 
-
-$$\int_{|x|>x_M} \xi(x,\lambda)\mathrm dx=1,$$
+where $F_\mathrm{Host}(\lambda)$ is the 1D spectrum of the host, and $\xi(x,\lambda)$ is the spatial profile, which is also normalized (see below).
 
 where $x_M$ stands for the radius of the aperture where the SN is masked. This typically requires $x_M\gg$ seeing.
 
@@ -78,6 +76,10 @@ conditioned on the integrated observed flux $\hat C_{\mathrm{1D}}$. Here $\mu_\m
 Independently, the normalized counts at each $\lambda$ is
 
 $$\widetilde C_{\mathrm{2D}}(x,\lambda)\equiv \frac{\widetilde C(x,\lambda)}{\widetilde C_\mathrm{1D}(\lambda)} = \frac{\xi(x,\lambda)-\langle \xi(x,\lambda)\rangle_{|x|>x_G}}{\langle \xi(x,\lambda)\rangle_{|x|>x_M} - \langle \xi(x,\lambda)\rangle_{|x|>x_G}}\frac{1}{l_\mathrm{Slit} - l_\mathrm{Mask}}.$$
+
+With this formulation, we find it more straightforward to normalize $\widetilde C_{\mathrm{2D}}$ (rather than forcing $\int \xi\mathrm dx$ itself to be $1$),
+
+$$\int_{|x|>x_M} \widetilde C_{\mathrm{2D}}(x,\lambda)\mathrm dx=1.$$
 
 We will model it with a 2D GP
 

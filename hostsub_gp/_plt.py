@@ -1,5 +1,7 @@
 # hostsub_gp/_plt_config.py
 import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from jax._src.typing import ArrayLike
 
 plt.rcParams.update(
     {

@@ -19,7 +19,7 @@ import json
 from .interp import Interp1D_Grid, Interp2D_Grid, Interp2D_RBF
 from .spectrum_model import SpecModel
 from .host_model import HostProfile
-from ._plt_config import plt
+from ._plt import plt
 
 
 class SpecData:
@@ -398,8 +398,8 @@ class SpecData:
         if show:
             _, ax = plt.subplots(1, 2, figsize=(12, 6))
             ax[0].plot(offset, ccf)
-            ax[0].set_xlabel("SCI - STD offset (arcsec)")
-            ax[0].set_ylabel("Correlation Coefficient")
+            ax[0].set_xlabel(r"$\mathrm{SCI\ -\ STD offset\ [arcsec]}$")
+            ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
             ax[1].scatter(
                 self.spat_rect - offset_0,
                 obs / obs.max(),
@@ -422,8 +422,8 @@ class SpecData:
                 profile_prior / profile_prior.max(),
                 label="prior",
             )
-            ax[1].set_xlabel("Spatial pixel")
-            ax[1].set_ylabel("Normalized Flux")
+            ax[1].set_xlabel(r"$\mathrm{Spat\ [pixel]}$")
+            ax[1].set_ylabel(r"$\mathrm{Normalized\ Counts}$")
             ax[1].legend()
         plt.show()
 

@@ -14,13 +14,14 @@ from functools import partial
 
 from tinygp import GaussianProcess
 
-from ._plt_config import plt
+from ._plt import plt
 from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
 from .gp import GP
 from .host_model import HostProfile
 
 from typing import Callable
 from jax._src.typing import ArrayLike, Array
+from matplotlib.axes import Axes
 
 import warnings
 
@@ -190,7 +191,7 @@ class SpecModel:
         position_angle: float = None,  # degree
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
-        mask_wid: float = 2.0,  # in seeing, mask the trace of the source
+        mask_wid: float = 1.0,  # in seeing, mask the trace of the source
         sky_wid: tuple[float, float] = (5.0, 5.0),  # sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         show: bool = False,
@@ -363,7 +364,7 @@ class SpecModel:
         params_limit_1d_default = _init_params(
             dict(
                 log_scale=np.log10(
-                    [[self.spec_resln / 2.355, self.spec_resln / 2.355], [self.spec_resln * 1e3, self.spec_resln * 2]]
+                    [[self.spec_resln / 2.355, self.spec_resln / 2.355], [self.spec_resln * 1e4, self.spec_resln * 2]]
                 ),
             ),
             require_all=False,
@@ -375,7 +376,7 @@ class SpecModel:
         params_limit_2d_default = _init_params(
             dict(
                 log_scale=np.log10([[self.spat_resln, self.spec_resln / 2.355], [1e5, 1e5]]),
-                mean=[-1e-3, 1e-3],
+                mean=[-1e-2, 1e-2],
             ),
             require_all=False,
             params_type="limit",
@@ -448,7 +449,7 @@ class SpecModel:
         # Predict the host galaxy flux on the entire 2D grids
         self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
-    def extract_sci(self):
+    def extract_sci(self) -> Axes:
         """
         Extract the science spectrum.
         """
@@ -472,7 +473,8 @@ class SpecModel:
         ax.axhline(0, color="k", ls="--")
         ax.set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         ax.set_ylabel(r"$\mathrm{Counts}$")
-        plt.show()
+        
+        return ax
 
     def _model_host_optimization(
         self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs
@@ -681,7 +683,7 @@ class SpecModel:
         return self.gp_params
 
     ############################ QA Plotting ############################
-    def _plot_raw(self):
+    def _plot_raw(self) -> Axes:
         _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True, sharex=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
@@ -743,9 +745,49 @@ class SpecModel:
             ax_.set_ylim(self.spat.min(), self.spat.max())
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
 
-        plt.show()
+        return ax
 
-    def _plot_host_batch_pred(self):
+    def _plot_host_prior(self) -> Axes:
+        if not hasattr(self, "host_flux_prior"):
+            raise ValueError("Please model the host galaxy first.")
+        _, ax = plt.subplots(figsize=(6, 8), constrained_layout=True, sharex=True)
+        norm = plt.Normalize(0, len(self.f_host_batch_2d.spec))
+        cmap = plt.cm.get_cmap("coolwarm")
+
+        raw = self.f_host_batch_2d.Y
+        prior = self.host_flux_prior(self.f_host_batch_2d.X).reshape(self.f_host_batch_2d.shape)
+
+        offset = (prior.max() - prior.min()) / 3
+
+        for k, (r, p) in enumerate(zip(raw.T, prior.T)):
+            c_raw = cmap(norm(k))
+            ax.plot(self.f_host_batch_2d.spat, r - offset * k, color=c_raw, alpha=0.5, ls="--")
+            ax.plot(self.f_host_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
+            ax.text(
+                0,
+                -offset * (k - 1),
+                f"${self.f_host_batch_2d.spec[k]:.0f}$",
+                ha="center",
+                va="center",
+                fontsize=12,
+                zorder=110,
+                color=c_raw,
+            )
+        ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+        ax.set_ylabel(r"$\mathrm{Counts + offset}$")
+        ylim = ax.get_ylim()
+        ax.fill_betweenx(
+            y=[ylim[0] + offset, ylim[1] - offset],
+            x1=-self.mask_wid * self.spat_resln,
+            x2=self.mask_wid * self.spat_resln,
+            color="w",
+            zorder=100,
+        )
+        ax.set_ylim(ylim)
+        ax.set_yticks([])
+        return ax
+
+    def _plot_host_batch_pred(self) -> Axes:
         if not (hasattr(self, "_gp_1d") and hasattr(self, "_gp_2d")):
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
@@ -839,9 +881,9 @@ class SpecModel:
             ax_.set_ylim(self.spat.min(), self.spat.max())
         ax[3].set_ylabel(r"$\mathrm{Counts}$")
 
-        plt.show()
+        return ax
 
-    def _plot_host_pred(self):
+    def _plot_host_pred(self) -> Axes:
         if not (hasattr(self, "_f_host_pred") and hasattr(self, "_f_pred")):
             raise ValueError("Please model the host galaxy first.")
 
@@ -878,4 +920,4 @@ class SpecModel:
         ax[2].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
         ax[2].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
 
-        plt.show()
+        return ax

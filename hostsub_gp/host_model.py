@@ -14,7 +14,7 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from ._plt_config import plt
+from ._plt import plt
 from .gp import GP
 from .host_image import PS1Image
 
