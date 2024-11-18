@@ -66,7 +66,9 @@ class SpecData:
             if (flux is None) or (flux_ivar is None) or (waveimg is None):
                 raise ValueError("No flux, ivar, or wavelength solution provided.")
 
-            offset = self.get_offset(points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True)
+            offset = self.get_offset(
+                points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True, mask_wid=2.0, slit_len=50.0
+            )
 
             self._points = jnp.stack([dist - offset, waveimg], axis=-1)
 
@@ -243,7 +245,7 @@ class SpecData:
 
     def to_SpecModel(
         self,
-        mask_wid: float = 1.5,
+        mask_wid: float = 1.0,
         sky_wid: tuple = (5.0, 5.0),
         spec_range: tuple[float, float] | list[float] = None,
         show: bool = False,
@@ -350,58 +352,70 @@ class SpecData:
 
         return flux_rect, flux_ivar_rect
 
-    def get_offset(self, points: ArrayLike, flux: ArrayLike, show: bool = True) -> float:
+    def get_offset(
+        self, points: ArrayLike, flux: ArrayLike, show: bool = True, slit_len: float = None, mask_wid: float = 2.0
+    ) -> float:
         """
         Center the trace of the science object.
         """
         from scipy.stats import binned_statistic
 
-        # spec_model = self.to_SpecModel(spec_range=spec_range, show=False)
-        # spec_model.model_host_prior(flts="griz", show=False)
+        if slit_len is None:
+            spat = self.spat_rect
+            slit_len = self.spat_rect.max() - self.spat_rect.min()
+        else:
+            spat = jnp.linspace(
+                -slit_len / 2,
+                slit_len / 2,
+                len(self.spat_rect) * int(slit_len / (self.spat_rect.max() - self.spat_rect.min())),
+            )
 
         host_prior = HostProfile(
             flts="griz",
             center_ra=self.center_ra,
             center_dec=self.center_dec,
             slit_wid=self.slit_wid,
-            slit_len=self.spat_rect.max() - self.spat_rect.min(),
+            slit_len=slit_len,
             position_angle=self.position_angle,
         ).model_host_profile_prior(show=False)
-        plt.show()
 
         flag = (
             jnp.isfinite(points[:, :, 0])
             & jnp.isfinite(flux)
-            & (flux > jnp.nanpercentile(flux, 25))
+            & (flux > jnp.nanpercentile(flux, 50))  # mask the low flux region
         )
 
+        sci_obj_mask = jnp.abs(spat) >= mask_wid
+
+        # Profile from the 2D spectrum - 75 percentile in each spatial bin
         obs, _, _ = binned_statistic(
             points[:, :, 0][flag],
             flux[flag],
             statistic="mean",
-            bins=len(self.spat_rect),
-            range=(self.spat_rect[0] - self.pixel_scale / 2, self.spat_rect[-1] + self.pixel_scale / 2),
+            bins=len(spat),
+            range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
         )
 
-        offset = np.arange(-1, 1 + self.pixel_scale / 5, self.pixel_scale / 5)
+        # Profile from the prior - flux evaluated at the weighted-mean wavelength
+        wv_mean = jnp.mean(points[:, :, 1][flag] * flux[flag]) / jnp.mean(flux[flag]) * jnp.ones_like(spat)
 
         def corr_coef(offset):
-            dist = self.spat_rect - offset
-            wv = jnp.mean(points[:, :, 1][flag] * flux[flag]) / jnp.mean(flux[flag]) * jnp.ones_like(self.spat_rect)
-            prior = host_prior(jnp.stack([dist, wv], axis=-1))
-            return jnp.corrcoef(prior, obs)[0, 1]
+            dist = spat - offset
+            prior = host_prior(jnp.stack([dist, wv_mean], axis=-1))
+            return jnp.corrcoef(prior[sci_obj_mask], obs[sci_obj_mask])[0, 1]
 
-        ccf = jax.vmap(corr_coef)(offset)
+        offset_list = np.arange(-1, 1 + self.pixel_scale / 5, self.pixel_scale / 5)
+        ccf = jax.vmap(corr_coef)(offset_list)
 
-        offset_0 = offset[np.argmax(ccf)]
+        offset = offset_list[np.argmax(ccf)]
 
         if show:
             _, ax = plt.subplots(1, 2, figsize=(12, 6))
-            ax[0].plot(offset, ccf)
+            ax[0].plot(offset_list, ccf)
             ax[0].set_xlabel(r"$\mathrm{SCI - STD\ [arcsec]}$")
             ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
             ax[1].scatter(
-                self.spat_rect - offset_0,
+                spat - offset,
                 obs / obs.max(),
                 label="obs",
             )
@@ -409,16 +423,14 @@ class SpecData:
             profile_prior = host_prior(
                 jnp.stack(
                     [
-                        self.spat_rect - offset_0,
-                        jnp.mean(points[:, :, 1][flag] * flux[flag])
-                        / jnp.mean(flux[flag])
-                        * jnp.ones_like(self.spat_rect),
+                        spat - offset,
+                        jnp.mean(points[:, :, 1][flag] * flux[flag]) / jnp.mean(flux[flag]) * jnp.ones_like(spat),
                     ],
                     axis=-1,
                 )
             )
             ax[1].scatter(
-                self.spat_rect - offset_0,
+                spat - offset,
                 profile_prior / profile_prior.max(),
                 label="prior",
             )
@@ -427,4 +439,4 @@ class SpecData:
             ax[1].legend()
         plt.show()
 
-        return offset_0
+        return offset
