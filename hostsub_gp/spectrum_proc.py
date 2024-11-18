@@ -398,7 +398,7 @@ class SpecData:
         if show:
             _, ax = plt.subplots(1, 2, figsize=(12, 6))
             ax[0].plot(offset, ccf)
-            ax[0].set_xlabel(r"$\mathrm{SCI\ -\ STD offset\ [arcsec]}$")
+            ax[0].set_xlabel(r"$\mathrm{SCI - STD\ [arcsec]}$")
             ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
             ax[1].scatter(
                 self.spat_rect - offset_0,
@@ -422,7 +422,7 @@ class SpecData:
                 profile_prior / profile_prior.max(),
                 label="prior",
             )
-            ax[1].set_xlabel(r"$\mathrm{Spat\ [pixel]}$")
+            ax[1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax[1].set_ylabel(r"$\mathrm{Normalized\ Counts}$")
             ax[1].legend()
         plt.show()
