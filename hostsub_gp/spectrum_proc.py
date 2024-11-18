@@ -18,6 +18,8 @@ import json
 
 from .interp import Interp1D_Grid, Interp2D_Grid, Interp2D_RBF
 from .spectrum_model import SpecModel
+from .host_model import HostProfile
+from ._plt_config import plt
 
 
 class SpecData:
@@ -45,6 +47,8 @@ class SpecData:
         waveimg: ArrayLike = None,
         spat_padding: float = 1.0,
     ):
+        self.spat_rect = jnp.asarray(spat_rect)
+        self.spec_rect = jnp.asarray(spec_rect)
         self.pixel_scale = pixel_scale
         self.center_ra = center_ra
         self.center_dec = center_dec
@@ -52,27 +56,31 @@ class SpecData:
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
-        self.spat_rect = np.asarray(spat_rect)
-        self.spec_rect = np.asarray(spec_rect)
 
         if (flux_rect is not None) and (flux_ivar_rect is not None):
-            self.flux_rect = np.asarray(flux_rect)
-            self.flux_ivar_rect = np.asarray(flux_ivar_rect)
+            self.flux_rect = jnp.asarray(flux_rect)
+            self.flux_ivar_rect = jnp.asarray(flux_ivar_rect)
         else:
             if dist is None:
                 raise ValueError("No distance array provided.")
             if (flux is None) or (flux_ivar is None) or (waveimg is None):
                 raise ValueError("No flux, ivar, or wavelength solution provided.")
-            points = np.stack([dist, waveimg], axis=-1)
+
+            offset = self.get_offset(points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True)
+
+            self._points = jnp.stack([dist - offset, waveimg], axis=-1)
 
             # valid points - not NaN/inf
-            valid_flag = np.isfinite(points).all(axis=-1)
+            valid_flag = jnp.isfinite(self._points).all(axis=-1)
             # valid spatial range - within the slit + padding (in case the trace is not perfectly centered)
             dist_flag = (dist >= spat_rect.min() - spat_padding) & (dist <= spat_rect.max() + spat_padding)
-            flag = np.array(valid_flag & dist_flag, dtype=bool)
+            flag = jnp.array(valid_flag & dist_flag, dtype=bool)
 
             self.flux_rect, self.flux_ivar_rect = self.rectify(
-                points=points, f_values=(flux, flux_ivar, flag), spat_rect=self.spat_rect, spec_rect=self.spec_rect
+                points=self._points,
+                f_values=(flux, flux_ivar, flag),
+                spat_rect=self.spat_rect,
+                spec_rect=self.spec_rect,
             )
             self.to_caches()
 
@@ -88,6 +96,21 @@ class SpecData:
     ):
         """
         Load 2D spectra from PypeIt output files.
+
+        Parameters
+        ----------
+        sci_id : str
+            The ID of the science object.
+        obj_id : str, optional (default: None)
+            The object ID in the science frame.
+        std_id : str, optional (default: None)
+            The ID of the standard star.
+        sci_dir : str, optional (default: "./")
+            The directory of the science frame.
+        spat_resln : float, optional (default: None)
+            The spatial resolution (seeing) of the science frame.
+        slit_len : float, optional (default: 20.0, in arcsec)
+            The length of the slit in the spatial direction.
         """
 
         sci_file = glob.glob(pathname=sci_dir + f"spec2d*{sci_id}*fits")[0]
@@ -127,11 +150,7 @@ class SpecData:
         else:
             raise ValueError("No spec1d file provided for identifying the trace.")
 
-        trace_spat_pix = trace_obj["TRACE_SPAT"]
-
-        # offset = 0.3 / pixel_scale # science trace offset in arcsec
-        # sci_trace = std_trace - offset
-        # std_wv = std1d[0]["OPT_WAVE"] # not equal to the waveimg
+        trace_spat_pix = trace_obj["TRACE_SPAT"]  # spatial pixel of the trace
 
         sci2d = spec2dobj.Spec2DObj.from_file(sci_file, detname=det)
 
@@ -185,6 +204,11 @@ class SpecData:
     def from_caches(cls, cache_path: str = ".cache.json"):
         """
         Load 2D spectra from cache files.
+
+        Parameters
+        ----------
+        cache_path : str, optional (default: ".cache.json")
+            The path to the cache file.
         """
         if hasattr(cls, "_cache_path"):
             cache_file = cls._cache_path
@@ -200,6 +224,11 @@ class SpecData:
     def to_caches(self, cache_path: str = ".cache.json"):
         """
         Save the 2D spectra to cache files.
+
+        Parameters
+        ----------
+        cache_path : str, optional (default: ".cache.json")
+            The path to the cache file.
         """
 
         public_data = {key: value for key, value in self.__dict__.items() if not key.startswith("_")}
@@ -213,13 +242,26 @@ class SpecData:
         self._cache_path = cache_path
 
     def to_SpecModel(
-        self, mask_wid: float = 1.5, sky_wid: tuple = (5.0, 5.0), spec_range: tuple[float, float] | list[float] = None
+        self,
+        mask_wid: float = 1.5,
+        sky_wid: tuple = (5.0, 5.0),
+        spec_range: tuple[float, float] | list[float] = None,
+        show: bool = False,
     ) -> SpecModel:
         """
         Convert the 2D spectra to a SpecModel object.
+
+        Parameters
+        ----------
+        mask_wid : float, optional (default: 1.5, in spat_resln)
+            The width of the mask (science object) region.
+        sky_wid : tuple, optional (default: (5.0, 5.0), in spat_resln)
+            The width of the sky region.
+        spec_range : tuple or list, optional (default: None)
+            The range of the spectral pixels to include.
         """
         if spec_range is None:
-            spec_mask = np.ones_like(self.spec_rect, dtype=bool)
+            spec_mask = jnp.ones_like(self.spec_rect, dtype=bool)
         else:
             spec_mask = (self.spec_rect >= spec_range[0]) & (self.spec_rect <= spec_range[1])
 
@@ -237,7 +279,7 @@ class SpecData:
             spec_resln=self.spec_resln,
             mask_wid=mask_wid,
             sky_wid=sky_wid,
-            show=True,
+            show=show,
         )
 
     def rectify(
@@ -308,9 +350,75 @@ class SpecData:
 
         return flux_rect, flux_ivar_rect
 
-    @partial(jax.jit, static_argnums=(0,))
-    def align(self, spec2d: ArrayLike, spat_img: ArrayLike, spec_img: ArrayLike) -> Array:
+    def get_offset(self, points: ArrayLike, flux: ArrayLike, show: bool = True) -> float:
         """
         Center the trace of the science object.
         """
-        pass
+        #TODO: results are not stable
+        from scipy.stats import binned_statistic
+
+        # spec_model = self.to_SpecModel(spec_range=spec_range, show=False)
+        # spec_model.model_host_prior(flts="griz", show=False)
+
+        host_prior = HostProfile(
+            flts="griz",
+            center_ra=self.center_ra,
+            center_dec=self.center_dec,
+            slit_wid=self.slit_wid,
+            slit_len=self.spat_rect.max() - self.spat_rect.min(),
+            position_angle=self.position_angle,
+        ).model_host_profile_prior(show=False)
+
+        flag = jnp.isfinite(points[:, :, 0]) & jnp.isfinite(flux)
+
+        profile_obs, _, _ = binned_statistic(
+            points[:, :, 0][flag],
+            flux[flag],
+            statistic="median",
+            bins=len(self.spat_rect),
+            range=(self.spat_rect[0] - self.pixel_scale / 2, self.spat_rect[-1] + self.pixel_scale / 2),
+        )
+
+        offset = np.arange(-1, 1 + self.pixel_scale / 5, self.pixel_scale / 5)
+
+        spec_img, spat_img = np.meshgrid(self.spec_rect, self.spat_rect)
+
+        def cross_correlation(offset):
+            dist = spat_img.ravel() - offset
+            wv = spec_img.ravel()
+            prior = jnp.median(
+                host_prior(jnp.stack([dist, wv], axis=-1)).reshape(len(self.spat_rect), len(self.spec_rect)), axis=1
+            )
+            return (prior * profile_obs).sum()
+
+        ccf = jax.vmap(cross_correlation)(offset)
+
+        offset_0 = offset[np.argmax(ccf)]
+
+        if show:
+            _, ax = plt.subplots(1, 2, figsize=(12, 6))
+            ax[0].plot(offset, ccf)
+            ax[0].set_xlabel("SCI - STD offset (arcsec)")
+            ax[0].set_ylabel("Cross-correlation Function")
+            ax[1].scatter(
+                self.spat_rect - offset_0,
+                profile_obs / profile_obs.max(),
+                label="obs",
+            )
+            profile_prior = np.median(
+                host_prior(jnp.stack([spat_img.ravel() - offset_0, spec_img.ravel()], axis=-1)).reshape(
+                    len(self.spat_rect), len(self.spec_rect)
+                ),
+                axis=1,
+            )
+            ax[1].scatter(
+                self.spat_rect - offset_0,
+                profile_prior / profile_prior.max(),
+                label="prior",
+            )
+            ax[1].set_xlabel("Spatial pixel")
+            ax[1].set_ylabel("Normalized Flux")
+            ax[1].legend()
+        plt.show()
+
+        return offset_0

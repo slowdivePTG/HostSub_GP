@@ -16,7 +16,7 @@ jax.config.update("jax_enable_x64", True)
 
 from ._plt_config import plt
 from .gp import GP
-from ._load import load_image, wv_eff_dict
+from .host_image import PS1Image
 
 from typing import Callable
 
@@ -24,8 +24,7 @@ from typing import Callable
 class HostProfile:
     def __init__(
         self,
-        imgs: list = [],
-        flts: list = [],
+        flts: str | list = None,
         cameras: str | list = None,
         spec2d: any = None,
         center_ra: float = None,  # deg
@@ -35,18 +34,6 @@ class HostProfile:
         position_angle: float = None,  # deg
         show: bool = False,
     ):
-        assert len(imgs) == len(flts), "imgs and flts length mismatch"
-
-        self.imgs = imgs
-        self.flts = flts
-        if cameras is None:
-            self.cameras = ["ps1"] * len(flts)
-        elif isinstance(cameras, str):
-            self.cameras = [cameras] * len(flts)
-        else:
-            assert len(cameras) == len(flts), "cameras and flts length mismatch"
-            self.cameras = cameras
-        self.wv_eff = np.array([wv_eff_dict[cam][flt] for cam, flt in zip(self.cameras, self.flts)])
 
         if spec2d is not None:
             self.center_ra = spec2d.center_ra
@@ -55,16 +42,46 @@ class HostProfile:
             self.slit_wid = spec2d.slit_wid
             self.position_angle = spec2d.position_angle
         else:
+            if center_ra is None or center_dec is None:
+                raise ValueError("Coordinates are required")
+            if position_angle is None:
+                raise ValueError("Position angle is required")
             self.center_ra = center_ra
             self.center_dec = center_dec
             self.slit_len = slit_len
             self.slit_wid = slit_wid
             self.position_angle = position_angle
 
-        if len(imgs) > 0:
-            assert self.center_ra is not None, "center_ra is required for image data"
-            assert self.center_dec is not None, "center_dec is required for image data"
-            assert self.position_angle is not None, "position_angle is required for image data"
+        self.flts = flts
+        if cameras is None:
+            self.cameras = ["ps1"] * len(flts)
+        elif isinstance(cameras, str):
+            self.cameras = [cameras] * len(flts)
+        else:
+            if len(cameras) != len(flts):
+                raise ValueError("cameras and flts length mismatch")
+            self.cameras = cameras
+        if any(cam != "ps1" for cam in self.cameras):  # TODO: Add support for other cameras
+            raise NotImplementedError("Only PS1 images are supported")
+
+        data_list, header_list = [], []
+        wv_eff = []
+
+        # Load PS1 images
+        ps1_filters = "".join([flt for cam, flt in zip(self.cameras, self.flts) if cam == "ps1"])
+        if len(ps1_filters) > 0:
+            PS1 = PS1Image(ra=self.center_ra, dec=self.center_dec, filters=ps1_filters, path="./ps1_cutout/")
+            PS1.download()
+            data_list_ps1, header_list_ps1 = PS1.load()
+            data_list.extend(data_list_ps1)
+            header_list.extend(header_list_ps1)
+            wv_eff_ps1 = np.array([PS1.wv_eff_dict[flt] for flt in ps1_filters])
+            wv_eff = wv_eff.extend(wv_eff_ps1)
+
+        # TODO: Load LS images (optional)
+        # TODO: Load acquisition images (optional)
+
+        self.wv_eff = np.array([PS1.wv_eff_dict[flt] for flt in self.flts])
 
         counts_slit, prof_slit = [], []
         spat_slit = []
@@ -78,9 +95,8 @@ class HostProfile:
             ax[-1, 0].set_xlabel("X (pixels)")
             ax[-1, 1].set_xlabel("Spatial coordinate (arcsec)")
 
-        for k, (img, flt, cam) in enumerate(zip(self.imgs, self.flts, self.cameras)):
+        for k, (flt, data, header) in enumerate(zip(self.flts, data_list, header_list)):
             # Load FITS image and WCS info
-            data, header = load_image(img, camera=cam)
             wcs = WCS(header)
             pixel_scale = header["CDELT1"] * 3600
 
@@ -231,5 +247,6 @@ class HostProfile:
                 )
                 ax[k].set_ylabel(r"$\mathrm{Profile}$")
             ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+            plt.show()
 
         return host_prior

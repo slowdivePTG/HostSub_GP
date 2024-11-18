@@ -167,7 +167,7 @@ class SpecModel:
 
     Methods
     -------
-    build_host_prior
+    model_host_prior
         Build the prior of the host galaxy using Gaussian Process regression.
     model_host
         Model the host galaxy using Gaussian Process regression.
@@ -306,7 +306,7 @@ class SpecModel:
         if show:
             self._plot_raw()
 
-    def build_host_prior(self, imgs: list = [], flts: list = [], show: bool = True):
+    def model_host_prior(self, flts: str | list = "griz", show: bool = True):
         """
         Build the prior of the host galaxy using Gaussian Process regression.
 
@@ -317,7 +317,7 @@ class SpecModel:
         flts : list
             Filters of the host galaxy images.
         """
-        host_prof = HostProfile(imgs=imgs, flts=flts, spec2d=self)
+        host_prof = HostProfile(flts=flts, spec2d=self)
         self.host_flux_prior = host_prof.model_host_profile_prior(show=show)
 
     def model_host(
