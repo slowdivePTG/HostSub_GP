@@ -467,11 +467,12 @@ class SpecModel:
             * (~self.host).sum(),
             values_err=np.nanmean(self.f_sci_pred.Yerr**-2, axis=0) ** -0.5,
         )
-        fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+        _, ax = plt.subplots(1, 1, figsize=(10, 4))
         ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="tab:blue")
         ax.axhline(0, color="k", ls="--")
         ax.set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         ax.set_ylabel(r"$\mathrm{Counts}$")
+        plt.show()
 
     def _model_host_optimization(
         self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs

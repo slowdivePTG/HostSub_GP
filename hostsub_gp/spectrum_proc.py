@@ -354,7 +354,6 @@ class SpecData:
         """
         Center the trace of the science object.
         """
-        #TODO: results are not stable
         from scipy.stats import binned_statistic
 
         # spec_model = self.to_SpecModel(spec_range=spec_range, show=False)
@@ -368,30 +367,31 @@ class SpecData:
             slit_len=self.spat_rect.max() - self.spat_rect.min(),
             position_angle=self.position_angle,
         ).model_host_profile_prior(show=False)
+        plt.show()
 
-        flag = jnp.isfinite(points[:, :, 0]) & jnp.isfinite(flux)
+        flag = (
+            jnp.isfinite(points[:, :, 0])
+            & jnp.isfinite(flux)
+            & (flux > jnp.nanpercentile(flux, 25))
+        )
 
-        profile_obs, _, _ = binned_statistic(
+        obs, _, _ = binned_statistic(
             points[:, :, 0][flag],
             flux[flag],
-            statistic="median",
+            statistic="mean",
             bins=len(self.spat_rect),
             range=(self.spat_rect[0] - self.pixel_scale / 2, self.spat_rect[-1] + self.pixel_scale / 2),
         )
 
         offset = np.arange(-1, 1 + self.pixel_scale / 5, self.pixel_scale / 5)
 
-        spec_img, spat_img = np.meshgrid(self.spec_rect, self.spat_rect)
+        def corr_coef(offset):
+            dist = self.spat_rect - offset
+            wv = jnp.mean(points[:, :, 1][flag] * flux[flag]) / jnp.mean(flux[flag]) * jnp.ones_like(self.spat_rect)
+            prior = host_prior(jnp.stack([dist, wv], axis=-1))
+            return jnp.corrcoef(prior, obs)[0, 1]
 
-        def cross_correlation(offset):
-            dist = spat_img.ravel() - offset
-            wv = spec_img.ravel()
-            prior = jnp.median(
-                host_prior(jnp.stack([dist, wv], axis=-1)).reshape(len(self.spat_rect), len(self.spec_rect)), axis=1
-            )
-            return (prior * profile_obs).sum()
-
-        ccf = jax.vmap(cross_correlation)(offset)
+        ccf = jax.vmap(corr_coef)(offset)
 
         offset_0 = offset[np.argmax(ccf)]
 
@@ -399,17 +399,23 @@ class SpecData:
             _, ax = plt.subplots(1, 2, figsize=(12, 6))
             ax[0].plot(offset, ccf)
             ax[0].set_xlabel("SCI - STD offset (arcsec)")
-            ax[0].set_ylabel("Cross-correlation Function")
+            ax[0].set_ylabel("Correlation Coefficient")
             ax[1].scatter(
                 self.spat_rect - offset_0,
-                profile_obs / profile_obs.max(),
+                obs / obs.max(),
                 label="obs",
             )
-            profile_prior = np.median(
-                host_prior(jnp.stack([spat_img.ravel() - offset_0, spec_img.ravel()], axis=-1)).reshape(
-                    len(self.spat_rect), len(self.spec_rect)
-                ),
-                axis=1,
+
+            profile_prior = host_prior(
+                jnp.stack(
+                    [
+                        self.spat_rect - offset_0,
+                        jnp.mean(points[:, :, 1][flag] * flux[flag])
+                        / jnp.mean(flux[flag])
+                        * jnp.ones_like(self.spat_rect),
+                    ],
+                    axis=-1,
+                )
             )
             ax[1].scatter(
                 self.spat_rect - offset_0,
