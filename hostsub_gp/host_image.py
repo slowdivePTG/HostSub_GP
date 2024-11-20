@@ -28,10 +28,10 @@ class PS1Image:
         """
         os.makedirs(self.path, exist_ok=True)
         for k, flt in enumerate(self.filters):
-            fitsurl = self._geturl()
             fitspath = f"{self.path}{flt}.fits"
             if os.path.exists(fitspath) and not overwrite:
                 continue
+            fitsurl = self._geturl()
             subprocess.run(["wget", fitsurl[k], "-O", fitspath])
 
     def load(self) -> tuple[list, list]:

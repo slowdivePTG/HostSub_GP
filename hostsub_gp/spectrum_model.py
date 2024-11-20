@@ -145,7 +145,7 @@ class SpecModel:
         The spectral resolution of the 2D spectrum (angstrom).
     mask_wid : float
         The width of the mask to mask the source trace (in spat_resln/seeing).
-    sky_wid : tuple[float, float]
+    sky_wid : float
         The width of the sky region (in spat_resln/seeing).
     batch_2d : tuple
         The batch size for modeling the slowly varying host profiles.
@@ -191,8 +191,8 @@ class SpecModel:
         position_angle: float = None,  # degree
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
-        mask_wid: float = 1.0,  # in seeing, mask the trace of the source
-        sky_wid: float = 5.0,  # sky region
+        mask_wid: float = 2.0,  # in seeing, mask the trace of the source
+        sky_wid: float = 10.0,  # sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         show: bool = False,
     ):
@@ -222,12 +222,12 @@ class SpecModel:
         # The width of the sky region
         # Adjust the sky width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the sky boundary is at the edge of the pixel
-        self.sky_wid = (jnp.round(jnp.array(sky_wid) / pixel_scale) + 0.5) * pixel_scale
-        print(f"Sky radius: {self.sky_wid:.2f} arcsec = {self.sky_wid / pixel_scale:.2f} pixels")
+        self.sky_wid = (jnp.round(sky_wid * spat_resln / 2 / pixel_scale) * 2 + 1) * pixel_scale
+        print(f"Sky width: {self.sky_wid:.2f} arcsec = {self.sky_wid / pixel_scale:.0f} pixels")
 
-        # The global sky region (|spat| > sky_wid)
-        sky_left = spat < -self.sky_wid
-        sky_right = spat > self.sky_wid
+        # The global sky region (|spat| > sky_wid / 2)
+        sky_left = spat < -self.sky_wid / 2
+        sky_right = spat > self.sky_wid / 2
         self.sky = sky_left | sky_right
         if np.nansum(self.sky) / self.sky.ravel().size < 0.1:
             warnings.warn(r"Sky region is < 10% of the overall pixels.")
@@ -246,17 +246,17 @@ class SpecModel:
             values_err=np.sqrt(self.f_obs.Yerr**2 + np.tile(self.f_sky_1d.Yerr, reps=(len(spat), 1)) ** 2),
         )
 
-        # Mask the trace from the source (|spat| < mask_wid)
+        # Mask the trace from the source (|spat| < mask_wid / 2)
         # Adjust the mask width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the mask boundary is at the edge of the pixel
-        self.mask_wid = (jnp.round(mask_wid * spat_resln / pixel_scale) + 0.5) * pixel_scale
+        self.mask_wid = (jnp.round(mask_wid * spat_resln / 2 / pixel_scale) * 2 + 1) * pixel_scale
         print(
-            f"Masking the source trace with the width: {self.mask_wid:.2f} arcsec = {self.mask_wid / pixel_scale:.2f} pixels"
+            f"Masking the source trace with the width: {self.mask_wid:.2f} arcsec = {self.mask_wid / pixel_scale:.0f} pixels"
         )
         if sky_wid <= mask_wid:
             raise ValueError("sky_wid should be larger than mask_wid")
-        host_left = self.spat < -self.mask_wid
-        host_right = self.spat > self.mask_wid
+        host_left = self.spat < -self.mask_wid / 2
+        host_right = self.spat > self.mask_wid / 2
         self.host = host_left | host_right
         self.f_host = SpecWrapper(
             points=(self.spat[self.host], spec),
@@ -399,7 +399,7 @@ class SpecModel:
         params_limit_2d_default = _init_params(
             dict(
                 log_scale=np.log10([[self.spat_resln, self.spec_resln / 2.355], [1e5, 1e5]]),
-                mean=[-1e-2, 1e-2],
+                # mean=[-1e-3, 1e-3],
             ),
             require_all=False,
             params_type="limit",
@@ -758,10 +758,10 @@ class SpecModel:
         # Labels
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         for ax_ in ax[:-1]:
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(-self.mask_wid / 2, color="w", linestyle="--", lw=3)
+            ax_.axhline(self.mask_wid / 2, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax_.set_xlim(self.spec.min(), self.spec.max())
@@ -801,8 +801,8 @@ class SpecModel:
         ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
-            x1=-self.mask_wid * self.spat_resln,
-            x2=self.mask_wid * self.spat_resln,
+            x1=-self.mask_wid / 2,
+            x2=self.mask_wid / 2,
             color="w",
             zorder=100,
             alpha=0.75,
@@ -846,8 +846,8 @@ class SpecModel:
         ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
-            x1=-self.mask_wid * self.spat_resln,
-            x2=self.mask_wid * self.spat_resln,
+            x1=-self.mask_wid / 2,
+            x2=self.mask_wid / 2,
             color="w",
             zorder=100,
             alpha=0.75,
@@ -938,10 +938,10 @@ class SpecModel:
         # # Labels
         # ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         # for ax_ in ax[:3]:
-        #     # ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-        #     # ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-        #     ax_.axhline(-self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-        #     ax_.axhline(self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+        #     # ax_.axhline(-self.mask_wid, color="w", linestyle="--", lw=3)
+        #     # ax_.axhline(self.mask_wid, color="w", linestyle="--", lw=3)
+        #     ax_.axhline(-self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
+        #     ax_.axhline(self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
         #     ax_.set_aspect("auto")
         #     ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         #     ax_.set_xlim(self.spec.min(), self.spec.max())
@@ -977,10 +977,10 @@ class SpecModel:
         ax[1].imshow(self._f_pred.reshape(-1, self.shape[1]), **source_params)
         ax[2].imshow(f_res_Y, **residual_params)
         for ax_ in ax:
-            ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(-self.mask_wid / 2, color="w", linestyle="--", lw=3)
+            ax_.axhline(self.mask_wid / 2, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
         ax[1].set_title(r"$\mathrm{Model}$")

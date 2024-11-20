@@ -71,7 +71,7 @@ class SpecData:
                 flux=flux,
                 show=True,
                 mask_wid=2.5,
-                slit_len=(spat_rect.max() - spat_rect.min()) * 2.0,
+                slit_len=(spat_rect.max() - spat_rect.min()) * 2.5,
             )
 
             self._points = jnp.stack([dist - offset, waveimg], axis=-1)
@@ -257,10 +257,6 @@ class SpecData:
 
         Parameters
         ----------
-        mask_wid : float, optional (default: 1.5, in spat_resln)
-            The width of the mask (science object) region.
-        sky_wid : tuple, optional (default: (5.0, 5.0), in spat_resln)
-            The width of the sky region.
         spec_range : tuple or list, optional (default: None)
             The range of the spectral pixels to include.
         """
@@ -408,7 +404,7 @@ class SpecData:
                 (obs[sci_obj_mask] - obs[sci_obj_mask].min()) / (obs[sci_obj_mask].max() - obs[sci_obj_mask].min()),
             )[0, 1]
 
-        offset_list = np.arange(-1, 1 + self.pixel_scale / 5, self.pixel_scale / 5)
+        offset_list = np.arange(-1, 1 + self.pixel_scale / 10, self.pixel_scale / 10)
         ccf = jax.vmap(corr_coef)(offset_list)
 
         offset = offset_list[np.argmax(ccf)]

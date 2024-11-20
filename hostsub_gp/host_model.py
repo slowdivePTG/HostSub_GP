@@ -17,6 +17,7 @@ jax.config.update("jax_enable_x64", True)
 from ._plt import plt
 from .gp import GP
 from .host_image import PS1Image
+from .interp import Interp2D_Grid
 
 from typing import Callable
 from jax._src.typing import Array
@@ -33,7 +34,6 @@ class HostProfile:
         slit_len: float = None,  # arcsec
         slit_wid: float = 1.0,  # arcsec
         position_angle: float = None,  # deg
-        show: bool = False,
     ):
 
         if spec2d is not None:
@@ -88,14 +88,6 @@ class HostProfile:
         spat_slit = []
         wv_slit = []
 
-        if show:
-            # Plot the image and the slit
-            _, ax = plt.subplots(
-                len(flts), 2, figsize=(9, 4 * len(flts)), constrained_layout=True, sharex="col"
-            )  # plt.subplots(subplot_kw={'projection': wcs})
-            ax[-1, 0].set_xlabel("X (pixels)")
-            ax[-1, 1].set_xlabel("Spatial coordinate (arcsec)")
-
         for k, (flt, data, header) in enumerate(zip(self.flts, data_list, header_list)):
             # Load FITS image and WCS info
             wcs = WCS(header)
@@ -109,33 +101,50 @@ class HostProfile:
             coord = SkyCoord(ra=self.center_ra * u.deg, dec=self.center_dec * u.deg, frame="icrs")
             center_x, center_y = wcs.world_to_pixel(coord)
 
-            # Rotate the image
-            data_fill = data.copy()
-            data_fill[np.isnan(data_fill)] = np.nanmedian(data_fill)
-            data_rot = rotate(data_fill, self.position_angle, reshape=False, order=5, cval=np.nan)
-
-            # Obtain the new pixel coordinates of the target
-            theta = np.deg2rad(self.position_angle)
-            rot_matrix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]).T
-            center_x_rot, center_y_rot = (
-                np.dot(rot_matrix, np.array([center_x, center_y]) - data.shape[0] / 2) + data.shape[0] / 2
+            # Create a slit with the specified size/position angle
+            slit_y_0, slit_x_0 = np.meshgrid(
+                np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5,
+                np.arange(-np.ceil(slit_len_pix / 2), np.ceil(slit_len_pix / 2)) + 0.5,
             )
 
-            # Extract the host galaxy spatial profile
-            data_slit = data_rot[
-                int(np.floor(center_y_rot - (slit_len_pix - 1) / 2)) - 1 : int(np.ceil(center_y_rot + (slit_len_pix - 1) / 2)) - 1,
-                int(np.floor(center_x_rot - (slit_wid_pix - 1) / 2)) - 1 : int(np.ceil(center_x_rot + (slit_wid_pix - 1) / 2)) - 1,
-            ]
-            counts_slit.append(np.mean(data_slit, axis=1))  # Average along the slit width
-            spat_slit.append(
-                np.linspace(-(self.slit_len - pixel_scale) / 2, (self.slit_len - pixel_scale) / 2, counts_slit[-1].size)
-            )
+            # Obtain the pixel coordinates of the slit
+            theta = np.deg2rad(self.position_angle + 90)  # w.r.t. the west
+            rot_matrix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+            slit_x_rot, slit_y_rot = np.dot(rot_matrix, np.array([slit_x_0.flatten(), slit_y_0.flatten()]))
+            slit_x_rot += center_x
+            slit_y_rot += center_y
+            # Resample the image along the slit
+            spat_slit.append((np.arange(-np.ceil(slit_len_pix / 2), np.ceil(slit_len_pix / 2)) + 0.5) * pixel_scale)
+            data_slit = Interp2D_Grid(
+                points=(np.arange(data.shape[1]) + 1, np.arange(data.shape[0]) + 1), values=data.T
+            )(np.stack([slit_x_rot, slit_y_rot], axis=-1)).reshape(slit_x_0.shape)
+            counts_slit.append(
+                np.array(
+                    [
+                        bound_mean(
+                            (np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5) * pixel_scale,
+                            d,
+                            x_bound=(-self.slit_wid / 2, self.slit_wid / 2),
+                        )
+                        for d in data_slit
+                    ]
+                )
+            )  # Average along the slit width
+            # counts_slit.append(np.mean(data_slit, axis=1))
+
+            # _, ax = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
+            # ax[0].imshow(data, origin="lower", cmap="viridis")
+            # ax[0].scatter(slit_x_rot, slit_y_rot, c="r", marker="x")
+            # ax[0].scatter(center_x, center_y, c="r", marker="o")
+
+            # ax[1].scatter(np.arange(data_slit.shape[0]), counts_slit[-1], label=f"{flt}")
+            # plt.show()
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
             if spec2d is not None:
-                host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid)
-                host_right = (spec2d.mask_wid, spec2d.slit_len / 2)
-                sky_left = (-spec2d.slit_len / 2, -spec2d.sky_wid)
-                sky_right = (spec2d.sky_wid, spec2d.slit_len / 2)
+                host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid / 2)
+                host_right = (spec2d.mask_wid / 2, spec2d.slit_len / 2)
+                sky_left = (-spec2d.slit_len / 2, -spec2d.sky_wid / 2)
+                sky_right = (spec2d.sky_wid / 2, spec2d.slit_len / 2)
                 xi = counts_slit[-1]
                 xi_sky_mean = (
                     bound_mean(spat_slit[-1], xi, x_bound=sky_left) + bound_mean(spat_slit[-1], xi, x_bound=sky_right)
@@ -146,46 +155,12 @@ class HostProfile:
                 prof_slit.append(
                     (xi - xi_sky_mean)
                     / (xi_host_mean - xi_sky_mean)
-                    / (spec2d.slit_len - spec2d.mask_wid * 2)
+                    / (spec2d.slit_len - spec2d.mask_wid)
                     * spec2d.pixel_scale
                 )
             else:  # No mask
                 xi = counts_slit[-1] / np.sum(counts_slit[-1])
                 prof_slit.append(xi)
-
-            if show:
-                # Plot the image and the slit
-                ax[k, 0].imshow(
-                    data_rot,
-                    origin="lower",
-                    cmap="gray",
-                    vmin=np.nanpercentile(data_rot, 5),
-                    vmax=np.nanpercentile(data_rot, 99),
-                )
-                rect = Rectangle(
-                    (center_x_rot - slit_wid_pix / 2, center_y_rot - slit_len_pix / 2),
-                    slit_wid_pix,
-                    slit_len_pix,
-                    edgecolor="red",
-                    facecolor="none",
-                )
-                ax[k, 0].add_patch(rect)
-                ax[k, 0].scatter(center_x_rot, center_y_rot, color="blue")  # Mark the center point
-                ax[k, 0].set_xlim(center_x_rot - 40, center_x_rot + 40)
-                ax[k, 0].set_ylim(center_y_rot - 40, center_y_rot + 40)
-
-                # Plot the spatial profile of the galaxy
-                ax[k, 1].plot(spat_slit[-1], counts_slit[-1])
-
-                ax[k, 0].set_ylabel("Y (pixels)")
-                ax[k, 1].set_ylabel("Counts")
-                ax[k, 0].set_title(f"{flt} Image")
-                ax[k, 1].set_title(f"{flt} Profile")
-
-                ax[k, 0].set_aspect("auto")
-
-        if show:
-            plt.show()
 
         self.prof_slit = prof_slit
         self.spat_slit = spat_slit
@@ -208,14 +183,13 @@ class HostProfile:
                 log_jitter=jnp.float64(-6),
                 mean=jnp.float64(1 / self.slit_len),
             )
-            params_limit = dict(log_scale=np.log10([1, 3]))
+            params_limit = dict(log_scale=np.log10([0.5, 10]))
             gp_host_prior = GP(
                 X=self.X[:, 0][:, None],  # Spatial coordinate only
                 y=self.prof,
                 params=params,
                 params_init=params,
                 params_limit=params_limit,
-                kernel_type="Matern",
                 optimization=True,
             )
             host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None]))
@@ -244,6 +218,7 @@ class HostProfile:
             _, ax = plt.subplots(
                 len(self.flts), 1, figsize=(6, 2 * len(self.flts)), sharex=True, sharey=True, constrained_layout=True
             )
+            ax = np.atleast_1d(ax)
             cmap = plt.cm.get_cmap("coolwarm")
             norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
             for k in range(len(self.flts)):
