@@ -2,6 +2,9 @@
 
 __all__ = ["GP"]
 
+import numpy as np
+from scipy import integrate
+
 import jax
 import jax.numpy as jnp
 
@@ -85,6 +88,17 @@ class GP:
         return params_unbound
 
 
+@partial(jax.jit, static_argnames=("kernel_type",))
+def _neg_log_prob(
+    params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str = "ExpSquared"
+) -> jnp.float64:
+    """Negative log-probability of the Gaussian Process."""
+    params = _transform_unbound_to_bound(params, params_limit)
+    gp = _build_gp(params, X, yerr)(kernel_type=kernel_type)
+    neg_log_prob = -gp.log_probability(y)
+    return neg_log_prob
+
+
 class _build_gp:
     """Build the Gaussian Process."""
 
@@ -129,14 +143,3 @@ class _build_gp:
         else:
             raise ValueError("Invalid kernel type: supported types are 'ExpSquared', 'Matern', and 'composite'")
         return kernel
-
-
-@partial(jax.jit, static_argnames=("kernel_type",))
-def _neg_log_prob(
-    params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str = "ExpSquared"
-) -> jnp.float64:
-    """Negative log-probability of the Gaussian Process."""
-    params = _transform_unbound_to_bound(params, params_limit)
-    gp = _build_gp(params, X, yerr)(kernel_type=kernel_type)
-    neg_log_prob = -gp.log_probability(y)
-    return neg_log_prob

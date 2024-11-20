@@ -67,7 +67,11 @@ class SpecData:
                 raise ValueError("No flux, ivar, or wavelength solution provided.")
 
             offset = self.get_offset(
-                points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True, mask_wid=2.0, slit_len=50.0
+                points=jnp.stack([dist, waveimg], axis=-1),
+                flux=flux,
+                show=True,
+                mask_wid=2.5,
+                slit_len=(spat_rect.max() - spat_rect.min()) * 2.0,
             )
 
             self._points = jnp.stack([dist - offset, waveimg], axis=-1)
@@ -245,10 +249,8 @@ class SpecData:
 
     def to_SpecModel(
         self,
-        mask_wid: float = 1.0,
-        sky_wid: tuple = (5.0, 5.0),
         spec_range: tuple[float, float] | list[float] = None,
-        show: bool = False,
+        **kwargs,
     ) -> SpecModel:
         """
         Convert the 2D spectra to a SpecModel object.
@@ -279,9 +281,7 @@ class SpecData:
             position_angle=self.position_angle,
             spat_resln=self.spat_resln,
             spec_resln=self.spec_resln,
-            mask_wid=mask_wid,
-            sky_wid=sky_wid,
-            show=show,
+            **kwargs,
         )
 
     def rectify(
@@ -367,7 +367,7 @@ class SpecData:
             spat = jnp.linspace(
                 -slit_len / 2,
                 slit_len / 2,
-                len(self.spat_rect) * int(slit_len / (self.spat_rect.max() - self.spat_rect.min())),
+                int(len(self.spat_rect) * jnp.round(slit_len / (self.spat_rect.max() - self.spat_rect.min())) // 2),
             )
 
         host_prior = HostProfile(
@@ -382,7 +382,7 @@ class SpecData:
         flag = (
             jnp.isfinite(points[:, :, 0])
             & jnp.isfinite(flux)
-            & (flux > jnp.nanpercentile(flux, 50))  # mask the low flux region
+            & (flux > jnp.nanpercentile(flux, 25))  # mask the low flux region
         )
 
         sci_obj_mask = jnp.abs(spat) >= mask_wid
@@ -391,7 +391,7 @@ class SpecData:
         obs, _, _ = binned_statistic(
             points[:, :, 0][flag],
             flux[flag],
-            statistic="mean",
+            statistic="median",
             bins=len(spat),
             range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
         )
@@ -402,7 +402,11 @@ class SpecData:
         def corr_coef(offset):
             dist = spat - offset
             prior = host_prior(jnp.stack([dist, wv_mean], axis=-1))
-            return jnp.corrcoef(prior[sci_obj_mask], obs[sci_obj_mask])[0, 1]
+            return jnp.corrcoef(
+                (prior[sci_obj_mask] - prior[sci_obj_mask].min())
+                / (prior[sci_obj_mask].max() - prior[sci_obj_mask].min()),
+                (obs[sci_obj_mask] - obs[sci_obj_mask].min()) / (obs[sci_obj_mask].max() - obs[sci_obj_mask].min()),
+            )[0, 1]
 
         offset_list = np.arange(-1, 1 + self.pixel_scale / 5, self.pixel_scale / 5)
         ccf = jax.vmap(corr_coef)(offset_list)
@@ -410,13 +414,17 @@ class SpecData:
         offset = offset_list[np.argmax(ccf)]
 
         if show:
-            _, ax = plt.subplots(1, 2, figsize=(12, 6))
+            _, ax = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
             ax[0].plot(offset_list, ccf)
             ax[0].set_xlabel(r"$\mathrm{SCI - STD\ [arcsec]}$")
             ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
+            ax[0].xaxis.set_major_locator(plt.MultipleLocator(0.5))
+            ax[0].xaxis.set_minor_locator(plt.MultipleLocator(0.1))
+            ax[0].axvline(offset, color="k", linestyle="--")
+
             ax[1].scatter(
                 spat - offset,
-                obs / obs.max(),
+                (obs - obs.min()) / (obs.max() - obs.min()),
                 label="obs",
             )
 
@@ -431,11 +439,13 @@ class SpecData:
             )
             ax[1].scatter(
                 spat - offset,
-                profile_prior / profile_prior.max(),
+                (profile_prior - profile_prior.min()) / (profile_prior.max() - profile_prior.min()),
                 label="prior",
             )
             ax[1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax[1].set_ylabel(r"$\mathrm{Normalized\ Counts}$")
+            ax[1].xaxis.set_major_locator(plt.MultipleLocator(5))
+            ax[1].xaxis.set_minor_locator(plt.MultipleLocator(1))
             ax[1].legend()
         plt.show()
 

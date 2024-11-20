@@ -19,6 +19,7 @@ from .gp import GP
 from .host_image import PS1Image
 
 from typing import Callable
+from jax._src.typing import Array
 
 
 class HostProfile:
@@ -122,23 +123,30 @@ class HostProfile:
 
             # Extract the host galaxy spatial profile
             data_slit = data_rot[
-                int(np.floor(center_y_rot - slit_len_pix / 2)) - 1 : int(np.ceil(center_y_rot + slit_len_pix / 2)) - 1,
-                int(np.floor(center_x_rot - slit_wid_pix / 2)) - 1 : int(np.ceil(center_x_rot + slit_wid_pix / 2)) - 1,
+                int(np.floor(center_y_rot - (slit_len_pix - 1) / 2)) - 1 : int(np.ceil(center_y_rot + (slit_len_pix - 1) / 2)) - 1,
+                int(np.floor(center_x_rot - (slit_wid_pix - 1) / 2)) - 1 : int(np.ceil(center_x_rot + (slit_wid_pix - 1) / 2)) - 1,
             ]
             counts_slit.append(np.mean(data_slit, axis=1))  # Average along the slit width
-            spat_slit.append(np.linspace(-self.slit_len / 2, self.slit_len / 2, counts_slit[-1].size))
+            spat_slit.append(
+                np.linspace(-(self.slit_len - pixel_scale) / 2, (self.slit_len - pixel_scale) / 2, counts_slit[-1].size)
+            )
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
             if spec2d is not None:
-                # Mask the SN aperture
-                mask = np.abs(spat_slit[-1]) < spec2d.spat_resln * spec2d.mask_wid
-                # Subtract the sky background
-                sky = (spat_slit[-1] < spec2d.spat_resln * -spec2d.sky_wid[0]) | (
-                    spat_slit[-1] > spec2d.spat_resln * spec2d.sky_wid[-1]
-                )
+                host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid)
+                host_right = (spec2d.mask_wid, spec2d.slit_len / 2)
+                sky_left = (-spec2d.slit_len / 2, -spec2d.sky_wid)
+                sky_right = (spec2d.sky_wid, spec2d.slit_len / 2)
                 xi = counts_slit[-1]
+                xi_sky_mean = (
+                    bound_mean(spat_slit[-1], xi, x_bound=sky_left) + bound_mean(spat_slit[-1], xi, x_bound=sky_right)
+                ) / 2
+                xi_host_mean = (
+                    bound_mean(spat_slit[-1], xi, x_bound=host_left) + bound_mean(spat_slit[-1], xi, x_bound=host_right)
+                ) / 2
                 prof_slit.append(
-                    (xi - xi[sky].mean())
-                    / ((xi[~mask].mean() - xi[sky].mean()) * (~mask).sum() * pixel_scale)
+                    (xi - xi_sky_mean)
+                    / (xi_host_mean - xi_sky_mean)
+                    / (spec2d.slit_len - spec2d.mask_wid * 2)
                     * spec2d.pixel_scale
                 )
             else:  # No mask
@@ -167,7 +175,7 @@ class HostProfile:
                 ax[k, 0].set_ylim(center_y_rot - 40, center_y_rot + 40)
 
                 # Plot the spatial profile of the galaxy
-                ax[k, 1].plot(np.linspace(-self.slit_len / 2, self.slit_len / 2, counts_slit[-1].size), counts_slit[-1])
+                ax[k, 1].plot(spat_slit[-1], counts_slit[-1])
 
                 ax[k, 0].set_ylabel("Y (pixels)")
                 ax[k, 1].set_ylabel("Counts")
@@ -207,6 +215,7 @@ class HostProfile:
                 params=params,
                 params_init=params,
                 params_limit=params_limit,
+                kernel_type="Matern",
                 optimization=True,
             )
             host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None]))
@@ -250,3 +259,44 @@ class HostProfile:
             plt.show()
 
         return host_prior
+
+
+def bound_mean(x: jax.Array, y: jax.Array, x_bound: tuple[float, float] = None) -> jnp.float64:
+    """
+    Compute the mean values in a bounded region.
+    """
+    bin_size = jnp.append(x[1] - x[0], jnp.diff(x))
+    if x_bound is None:
+        x_bound = (x[0] - bin_size[0] / 2, x[-1] + bin_size[-1] / 2)
+    # sum up all pixels that are fully contained in the region
+    idx_center = (x > x_bound[0] + bin_size[0] / 2) & (x < x_bound[1] - bin_size[-1] / 2)
+    sum_center = jnp.sum(y[idx_center] * bin_size[idx_center])
+    # print("Pixels fully contained in the region:")
+    # print(x[idx_center])
+
+    # leftmost pixel that is partially contained in the region (if any)
+    idx_left = jnp.where(x >= x_bound[0] - bin_size[0] / 2)[0]
+    if idx_left.size > 0:
+        y_left = y[idx_left[0]]
+        frac_left = x[idx_left[0]] - (x_bound[0] - bin_size[0] / 2)
+        sum_left = y_left * frac_left
+    else:
+        raise ValueError("Invalid left bound")
+    # print("Pixel on the left edge:")
+    # print(x[idx_left[0]])
+    # print("Coverage:")
+    # print(frac_left)
+
+    # rightmost pixel that is partially contained in the region (if any)
+    idx_right = jnp.where(x <= x_bound[1] + bin_size[-1] / 2)[-1]
+    if idx_right.size > 0:
+        y_right = y[idx_right[-1]]
+        frac_right = (x_bound[1] + bin_size[-1] / 2) - x[idx_right[-1]]
+        sum_right = y_right * frac_right
+    else:
+        raise ValueError("Invalid right bound")
+    # print("Pixel on the right edge:")
+    # print(x[idx_right[-1]])
+    # print("Coverage:")
+    # print(frac_right)
+    return (sum_center + sum_left + sum_right) / (x_bound[1] - x_bound[0])

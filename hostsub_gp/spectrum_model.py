@@ -192,7 +192,7 @@ class SpecModel:
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
         mask_wid: float = 1.0,  # in seeing, mask the trace of the source
-        sky_wid: tuple[float, float] = (5.0, 5.0),  # sky region
+        sky_wid: float = 5.0,  # sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         show: bool = False,
     ):
@@ -201,14 +201,12 @@ class SpecModel:
         self.center_dec = center_dec
         self.slit_wid = slit_wid
         if slit_len is None:
-            self.slit_len = spat.max() - spat.min()
+            self.slit_len = spat.max() - spat.min() + spat[2] - spat[1]
         else:
             self.slit_len = slit_len
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
-        self.mask_wid = mask_wid
-        self.sky_wid = sky_wid
 
         self.spat, self.spec = spat, spec
         self.shape = (len(spat), len(spec))
@@ -221,9 +219,15 @@ class SpecModel:
         )
         print(f"Loading the 2D spectrum with the shape: {self.f_obs.shape}")
 
-        # The global sky region (spat < -sky_wid[0] * seeing) or (spat > sky_wid[1] * seeing)
-        sky_left = spat < -self.spat_resln * self.sky_wid[0]
-        sky_right = spat > self.spat_resln * self.sky_wid[1]
+        # The width of the sky region
+        # Adjust the sky width to the nearest integer multiple of the pixel scale
+        # Add 0.5 so the sky boundary is at the edge of the pixel
+        self.sky_wid = (jnp.round(jnp.array(sky_wid) / pixel_scale) + 0.5) * pixel_scale
+        print(f"Sky radius: {self.sky_wid:.2f} arcsec = {self.sky_wid / pixel_scale:.2f} pixels")
+
+        # The global sky region (|spat| > sky_wid)
+        sky_left = spat < -self.sky_wid
+        sky_right = spat > self.sky_wid
         self.sky = sky_left | sky_right
         if np.nansum(self.sky) / self.sky.ravel().size < 0.1:
             warnings.warn(r"Sky region is < 10% of the overall pixels.")
@@ -242,11 +246,17 @@ class SpecModel:
             values_err=np.sqrt(self.f_obs.Yerr**2 + np.tile(self.f_sky_1d.Yerr, reps=(len(spat), 1)) ** 2),
         )
 
-        # Mask the trace from the source (|spat| < seeing * mask_wid)
-        if min(sky_wid) <= mask_wid:
+        # Mask the trace from the source (|spat| < mask_wid)
+        # Adjust the mask width to the nearest integer multiple of the pixel scale
+        # Add 0.5 so the mask boundary is at the edge of the pixel
+        self.mask_wid = (jnp.round(mask_wid * spat_resln / pixel_scale) + 0.5) * pixel_scale
+        print(
+            f"Masking the source trace with the width: {self.mask_wid:.2f} arcsec = {self.mask_wid / pixel_scale:.2f} pixels"
+        )
+        if sky_wid <= mask_wid:
             raise ValueError("sky_wid should be larger than mask_wid")
-        host_left = self.spat < -self.mask_wid * self.spat_resln
-        host_right = self.spat > self.mask_wid * self.spat_resln
+        host_left = self.spat < -self.mask_wid
+        host_right = self.spat > self.mask_wid
         self.host = host_left | host_right
         self.f_host = SpecWrapper(
             points=(self.spat[self.host], spec),
@@ -275,9 +285,17 @@ class SpecModel:
             )
         else:
             spat_batch_2d_idx_right = []
-        spat_batch_2d_idx = spat_batch_2d_idx_left + spat_batch_2d_idx_right
-        if len(spat_batch_2d_idx) == 0:
+        if len(spat_batch_2d_idx_left + spat_batch_2d_idx_right) == 0:
             raise ValueError("No host galaxy pixels found.")
+        if (~self.host).sum() > 0:
+            spat_batch_2d_idx_sci = np.array_split(np.arange(self.shape[0])[~self.host], (~self.host).sum())
+        else:
+            raise ValueError("No pixels within the mask.")
+        spat_batch_2d_idx = spat_batch_2d_idx_left + spat_batch_2d_idx_sci + spat_batch_2d_idx_right
+        host_batch_2d = (jnp.arange(len(spat_batch_2d_idx)) < len(spat_batch_2d_idx_left)) | (
+            jnp.arange(len(spat_batch_2d_idx)) >= len(spat_batch_2d_idx_left + spat_batch_2d_idx_sci)
+        )
+
         # Spectral batch
         spec_batch_2d_idx = np.array_split(np.arange(self.shape[1]), self.shape[1] // batch_2d[1])
 
@@ -298,6 +316,11 @@ class SpecModel:
                     (self.f_sky_sub.Yerr / self.f_host_1d.Y)[spat_batch_2d_idx[x], :][:, spec_batch_2d_idx[y]]
                 )
         self.f_host_batch_2d = SpecWrapper(
+            points=(spat_batch_2d[host_batch_2d], spec_batch_2d),
+            values=values_batch_2d[host_batch_2d, :],
+            values_err=values_err_batch_2d[host_batch_2d, :],
+        )
+        self.f_batch_2d = SpecWrapper(
             points=(spat_batch_2d, spec_batch_2d),
             values=values_batch_2d,
             values_err=values_err_batch_2d,
@@ -473,7 +496,7 @@ class SpecModel:
         ax.axhline(0, color="k", ls="--")
         ax.set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         ax.set_ylabel(r"$\mathrm{Counts}$")
-        
+
         return ax
 
     def _model_host_optimization(
@@ -737,8 +760,8 @@ class SpecModel:
         for ax_ in ax[:-1]:
             ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
             ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(-self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax_.set_xlim(self.spec.min(), self.spec.max())
@@ -747,26 +770,26 @@ class SpecModel:
 
         return ax
 
-    def _plot_host_prior(self) -> Axes:
+    def _plot_host_profile_prior(self) -> Axes:
         if not hasattr(self, "host_flux_prior"):
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(figsize=(6, 8), constrained_layout=True, sharex=True)
-        norm = plt.Normalize(0, len(self.f_host_batch_2d.spec))
+        norm = plt.Normalize(0, len(self.f_batch_2d.spec))
         cmap = plt.cm.get_cmap("coolwarm")
 
-        raw = self.f_host_batch_2d.Y
-        prior = self.host_flux_prior(self.f_host_batch_2d.X).reshape(self.f_host_batch_2d.shape)
+        raw = self.f_batch_2d.Y
+        prior = self.host_flux_prior(self.f_batch_2d.X).reshape(self.f_batch_2d.shape)
 
         offset = (prior.max() - prior.min()) / 3
 
         for k, (r, p) in enumerate(zip(raw.T, prior.T)):
             c_raw = cmap(norm(k))
-            ax.plot(self.f_host_batch_2d.spat, r - offset * k, color=c_raw, alpha=0.5, ls="--")
-            ax.plot(self.f_host_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
+            ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, alpha=0.5, ls="--")
+            ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
                 0,
                 -offset * (k - 1),
-                f"${self.f_host_batch_2d.spec[k]:.0f}$",
+                f"${self.f_batch_2d.spec[k]:.0f}$",
                 ha="center",
                 va="center",
                 fontsize=12,
@@ -782,108 +805,152 @@ class SpecModel:
             x2=self.mask_wid * self.spat_resln,
             color="w",
             zorder=100,
+            alpha=0.75,
         )
         ax.set_ylim(ylim)
         ax.set_yticks([])
         return ax
 
-    def _plot_host_batch_pred(self) -> Axes:
-        if not (hasattr(self, "_gp_1d") and hasattr(self, "_gp_2d")):
+    def _plot_host_profile_pred(self) -> Axes:
+        if not hasattr(self, "_gp_2d"):
             raise ValueError("Please model the host galaxy first.")
-        _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
-        # Plot the 2D batched spectrum
-        batch_size = (
-            (self.spat[1] - self.spat[0]) * self.batch_2d[0],
-            (self.spec[1] - self.spec[0]) * self.batch_2d[1],
-        )
-        norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
-        norm_residual = plt.Normalize(-1e-2, 1e-2)
-        cmap = plt.cm.get_cmap("gray")
-        cmap_residual = plt.cm.get_cmap("RdBu_r")
-        pred_1d = self._gp_1d.predict(y=self.f_host_1d.y, X_test=self._gp_1d.X)
-        pred_2d = self._gp_2d.predict(
-            y=self.f_host_batch_2d.y - self.host_flux_prior(self._gp_2d.X), X_test=self._gp_2d.X
-        ) + self.host_flux_prior(self._gp_2d.X)
-        for k in range(len(self.f_host_batch_2d.X[:, 0])):
-            c_raw = cmap(norm(self.f_host_batch_2d.y[k]))
-            c_model = cmap(norm(pred_2d[k]))
-            c_residual = cmap_residual(norm_residual(self.f_host_batch_2d.y[k] - pred_2d[k]))
-            ax[0].add_patch(
-                plt.Rectangle(
-                    (
-                        self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-                        self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
-                    ),
-                    batch_size[1],
-                    batch_size[0],
-                    color=c_raw,
-                )
-            )
-            ax[1].add_patch(
-                plt.Rectangle(
-                    (
-                        self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-                        self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
-                    ),
-                    batch_size[1],
-                    batch_size[0],
-                    color=c_model,
-                )
-            )
-            ax[2].add_patch(
-                plt.Rectangle(
-                    (
-                        self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-                        self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
-                    ),
-                    batch_size[1],
-                    batch_size[0],
-                    color=c_residual,
-                )
-            )
+        _, ax = plt.subplots(figsize=(6, 8), constrained_layout=True, sharex=True)
+        norm = plt.Normalize(0, len(self.f_batch_2d.spec))
+        cmap = plt.cm.get_cmap("coolwarm")
 
-        # Plot the 1D batched spectrum
-        ax[3].plot(self.f_host_1d.spec, self.f_host_1d.y)
-        ax[3].fill_between(
-            self.f_host_1d.spec,
-            self.f_host_1d.y - self.f_host_1d.yerr,
-            self.f_host_1d.y + self.f_host_1d.yerr,
-            color="tab:blue",
-            alpha=0.3,
-        )
-        ax[3].plot(self.f_host_1d.spec, pred_1d, "--k", lw=2)
-        ax[4].plot(self.f_host_1d.spec, self.f_host_1d.y - pred_1d)
-        ax[4].fill_between(
-            self.f_host_1d.spec,
-            -self.f_host_1d.yerr,
-            +self.f_host_1d.yerr,
-            color="tab:blue",
-            alpha=0.3,
-        )
+        raw = self.f_batch_2d.Y - self.host_flux_prior(self.f_batch_2d.X).reshape(self.f_batch_2d.shape)
+        pred = (
+            self._gp_2d.predict(
+                y=self.f_host_batch_2d.y - self.host_flux_prior(self._gp_2d.X), X_test=self.f_batch_2d.X
+            )
+        ).reshape(self.f_batch_2d.shape)
 
-        # Titles
-        ax[0].set_title(r"$\mathrm{2D\ Spectrum}$")
-        ax[1].set_title(r"$\mathrm{Model}$")
-        ax[2].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
-        ax[3].set_title(r"$\mathrm{1D\ Spectrum}$")
-        ax[4].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
+        offset = (pred.max() - pred.min()) / 2
 
-        # Labels
-        ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-        for ax_ in ax[:3]:
-            # ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            # ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-            ax_.set_aspect("auto")
-            ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
-            ax_.set_xlim(self.spec.min(), self.spec.max())
-            ax_.set_ylim(self.spat.min(), self.spat.max())
-        ax[3].set_ylabel(r"$\mathrm{Counts}$")
+        for k, (r, p) in enumerate(zip(raw.T, pred.T)):
+            c_raw = cmap(norm(k))
+            ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, ls="--")
+            ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
+            ax.text(
+                0,
+                -offset * k,
+                f"${self.f_batch_2d.spec[k]:.0f}$",
+                ha="center",
+                va="center",
+                fontsize=12,
+                zorder=110,
+                color=c_raw,
+            )
+        ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+        ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
+        ylim = ax.get_ylim()
+        ax.fill_betweenx(
+            y=[ylim[0] + offset, ylim[1] - offset],
+            x1=-self.mask_wid * self.spat_resln,
+            x2=self.mask_wid * self.spat_resln,
+            color="w",
+            zorder=100,
+            alpha=0.75,
+        )
+        ax.set_ylim(ylim)
+        ax.set_yticks([])
+        return ax
+        # if not (hasattr(self, "_gp_1d") and hasattr(self, "_gp_2d")):
+        #     raise ValueError("Please model the host galaxy first.")
+        # _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
+        # # Plot the 2D batched spectrum
+        # batch_size = (
+        #     (self.spat[1] - self.spat[0]) * self.batch_2d[0],
+        #     (self.spec[1] - self.spec[0]) * self.batch_2d[1],
+        # )
+        # norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
+        # norm_residual = plt.Normalize(-1e-2, 1e-2)
+        # cmap = plt.cm.get_cmap("gray")
+        # cmap_residual = plt.cm.get_cmap("RdBu_r")
+        # pred_1d = self._gp_1d.predict(y=self.f_host_1d.y, X_test=self._gp_1d.X)
+        # pred_2d = self._gp_2d.predict(
+        #     y=self.f_host_batch_2d.y - self.host_flux_prior(self._gp_2d.X), X_test=self._gp_2d.X
+        # ) + self.host_flux_prior(self._gp_2d.X)
+        # for k in range(len(self.f_host_batch_2d.X[:, 0])):
+        #     c_raw = cmap(norm(self.f_host_batch_2d.y[k]))
+        #     c_model = cmap(norm(pred_2d[k]))
+        #     c_residual = cmap_residual(norm_residual(self.f_host_batch_2d.y[k] - pred_2d[k]))
+        #     ax[0].add_patch(
+        #         plt.Rectangle(
+        #             (
+        #                 self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
+        #                 self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
+        #             ),
+        #             batch_size[1],
+        #             batch_size[0],
+        #             color=c_raw,
+        #         )
+        #     )
+        #     ax[1].add_patch(
+        #         plt.Rectangle(
+        #             (
+        #                 self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
+        #                 self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
+        #             ),
+        #             batch_size[1],
+        #             batch_size[0],
+        #             color=c_model,
+        #         )
+        #     )
+        #     ax[2].add_patch(
+        #         plt.Rectangle(
+        #             (
+        #                 self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
+        #                 self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
+        #             ),
+        #             batch_size[1],
+        #             batch_size[0],
+        #             color=c_residual,
+        #         )
+        #     )
+
+        # # Plot the 1D batched spectrum
+        # ax[3].plot(self.f_host_1d.spec, self.f_host_1d.y)
+        # ax[3].fill_between(
+        #     self.f_host_1d.spec,
+        #     self.f_host_1d.y - self.f_host_1d.yerr,
+        #     self.f_host_1d.y + self.f_host_1d.yerr,
+        #     color="tab:blue",
+        #     alpha=0.3,
+        # )
+        # ax[3].plot(self.f_host_1d.spec, pred_1d, "--k", lw=2)
+        # ax[4].plot(self.f_host_1d.spec, self.f_host_1d.y - pred_1d)
+        # ax[4].fill_between(
+        #     self.f_host_1d.spec,
+        #     -self.f_host_1d.yerr,
+        #     +self.f_host_1d.yerr,
+        #     color="tab:blue",
+        #     alpha=0.3,
+        # )
+
+        # # Titles
+        # ax[0].set_title(r"$\mathrm{2D\ Spectrum}$")
+        # ax[1].set_title(r"$\mathrm{Model}$")
+        # ax[2].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
+        # ax[3].set_title(r"$\mathrm{1D\ Spectrum}$")
+        # ax[4].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
+
+        # # Labels
+        # ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+        # for ax_ in ax[:3]:
+        #     # ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+        #     # ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
+        #     ax_.axhline(-self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+        #     ax_.axhline(self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+        #     ax_.set_aspect("auto")
+        #     ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
+        #     ax_.set_xlim(self.spec.min(), self.spec.max())
+        #     ax_.set_ylim(self.spat.min(), self.spat.max())
+        # ax[3].set_ylabel(r"$\mathrm{Counts}$")
 
         return ax
 
-    def _plot_host_pred(self) -> Axes:
+    def _plot_pred(self) -> Axes:
         if not (hasattr(self, "_f_host_pred") and hasattr(self, "_f_pred")):
             raise ValueError("Please model the host galaxy first.")
 
@@ -912,8 +979,8 @@ class SpecModel:
         for ax_ in ax:
             ax_.axhline(-self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
             ax_.axhline(self.mask_wid * self.spat_resln, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.sky_wid[0] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_wid[1] * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(-self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_wid * self.spat_resln, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
         ax[1].set_title(r"$\mathrm{Model}$")
