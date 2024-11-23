@@ -192,6 +192,7 @@ class SpecModel:
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
+        mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
         sky_wid: float = 10.0,  # sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         show: bool = False,
@@ -250,13 +251,14 @@ class SpecModel:
         # Adjust the mask width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the mask boundary is at the edge of the pixel
         self.mask_wid = (jnp.round(mask_wid * spat_resln / 2 / pixel_scale) * 2 + 1) * pixel_scale
+        self.mask_offset = jnp.round(mask_offset / pixel_scale) * pixel_scale
         print(
             f"Masking the source trace with the width: {self.mask_wid:.2f} arcsec = {self.mask_wid / pixel_scale:.0f} pixels"
         )
         if sky_wid <= mask_wid:
             raise ValueError("sky_wid should be larger than mask_wid")
-        host_left = self.spat < -self.mask_wid / 2
-        host_right = self.spat > self.mask_wid / 2
+        host_left = self.spat < -self.mask_wid / 2 + self.mask_offset
+        host_right = self.spat > self.mask_wid / 2 + self.mask_offset
         self.host = host_left | host_right
         self.f_host = SpecWrapper(
             points=(self.spat[self.host], spec),
@@ -398,8 +400,8 @@ class SpecModel:
         ## mean (i.e., deviation fromt the prior) is close to zero
         params_limit_2d_default = _init_params(
             dict(
-                log_scale=np.log10([[self.spat_resln, self.spec_resln / 2.355], [1e5, 1e5]]),
-                # mean=[-1e-3, 1e-3],
+                log_scale=np.log10([[self.spat_resln / 2.355, self.spec_resln / 2.355], [1e5, 1e5]]),
+                mean=[-1e-3, 1e-3],
             ),
             require_all=False,
             params_type="limit",
@@ -758,8 +760,8 @@ class SpecModel:
         # Labels
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         for ax_ in ax[:-1]:
-            ax_.axhline(-self.mask_wid / 2, color="w", linestyle="--", lw=3)
-            ax_.axhline(self.mask_wid / 2, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
+            ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_aspect("auto")
@@ -787,7 +789,7 @@ class SpecModel:
             ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, alpha=0.5, ls="--")
             ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
-                0,
+                self.mask_offset,
                 -offset * (k - 1),
                 f"${self.f_batch_2d.spec[k]:.0f}$",
                 ha="center",
@@ -801,8 +803,8 @@ class SpecModel:
         ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
-            x1=-self.mask_wid / 2,
-            x2=self.mask_wid / 2,
+            x1=-self.mask_wid / 2 + self.mask_offset,
+            x2=self.mask_wid / 2 + self.mask_offset,
             color="w",
             zorder=100,
             alpha=0.75,
@@ -832,7 +834,7 @@ class SpecModel:
             ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, ls="--")
             ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
-                0,
+                self.mask_offset,
                 -offset * k,
                 f"${self.f_batch_2d.spec[k]:.0f}$",
                 ha="center",
@@ -841,13 +843,14 @@ class SpecModel:
                 zorder=110,
                 color=c_raw,
             )
+            ax.axhline(-offset * k, color=c_raw, ls="--", lw=1)
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
         ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
-            x1=-self.mask_wid / 2,
-            x2=self.mask_wid / 2,
+            x1=-self.mask_wid / 2 + self.mask_offset,
+            x2=self.mask_wid / 2 + self.mask_offset,
             color="w",
             zorder=100,
             alpha=0.75,
@@ -938,8 +941,8 @@ class SpecModel:
         # # Labels
         # ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         # for ax_ in ax[:3]:
-        #     # ax_.axhline(-self.mask_wid, color="w", linestyle="--", lw=3)
-        #     # ax_.axhline(self.mask_wid, color="w", linestyle="--", lw=3)
+        #     # ax_.axhline(-self.mask_wid + self.mask_offset, color="w", linestyle="--", lw=3)
+        #     # ax_.axhline(self.mask_wid + self.mask_offset, color="w", linestyle="--", lw=3)
         #     ax_.axhline(-self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
         #     ax_.axhline(self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
         #     ax_.set_aspect("auto")
@@ -977,8 +980,8 @@ class SpecModel:
         ax[1].imshow(self._f_pred.reshape(-1, self.shape[1]), **source_params)
         ax[2].imshow(f_res_Y, **residual_params)
         for ax_ in ax:
-            ax_.axhline(-self.mask_wid / 2, color="w", linestyle="--", lw=3)
-            ax_.axhline(self.mask_wid / 2, color="w", linestyle="--", lw=3)
+            ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
+            ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")

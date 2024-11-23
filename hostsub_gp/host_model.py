@@ -88,7 +88,7 @@ class HostProfile:
         spat_slit = []
         wv_slit = []
 
-        for k, (flt, data, header) in enumerate(zip(self.flts, data_list, header_list)):
+        for k, (data, header) in enumerate(zip(data_list, header_list)):
             # Load FITS image and WCS info
             wcs = WCS(header)
             pixel_scale = header["CDELT1"] * 3600
@@ -141,8 +141,8 @@ class HostProfile:
             # plt.show()
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
             if spec2d is not None:
-                host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid / 2)
-                host_right = (spec2d.mask_wid / 2, spec2d.slit_len / 2)
+                host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid / 2 + spec2d.mask_offset)
+                host_right = (spec2d.mask_wid / 2 + spec2d.mask_offset, spec2d.slit_len / 2)
                 sky_left = (-spec2d.slit_len / 2, -spec2d.sky_wid / 2)
                 sky_right = (spec2d.sky_wid / 2, spec2d.slit_len / 2)
                 xi = counts_slit[-1]
@@ -236,7 +236,7 @@ class HostProfile:
         return host_prior
 
 
-def bound_mean(x: jax.Array, y: jax.Array, x_bound: tuple[float, float] = None) -> jnp.float64:
+def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
     """
     Compute the mean values in a bounded region.
     """

@@ -97,6 +97,8 @@ class SpecData:
         obj_id: str = None,
         std_id: str = None,
         sci_dir: str = "./",
+        ra: float = None,
+        dec: float = None,
         spat_resln: float = None,
         slit_len: float = 20.0,
     ):
@@ -113,6 +115,8 @@ class SpecData:
             The ID of the standard star.
         sci_dir : str, optional (default: "./")
             The directory of the science frame.
+        ra, dec : float, optional (default: None)
+            The RA and DEC of the science object.
         spat_resln : float, optional (default: None)
             The spatial resolution (seeing) of the science frame.
         slit_len : float, optional (default: 20.0, in arcsec)
@@ -124,7 +128,8 @@ class SpecData:
 
         if pypeit_header["PYP_SPEC"] in ["keck_lris_blue", "keck_lris_red", "keck_lris_red_mark4"]:
             position_angle = pypeit_header["ROTPOSN"] + 90
-            ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
+            if ra is None or dec is None:
+                ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
             binning = int(
                 pypeit_header["BINNING"].split(",")[-1]
             )  # TODO: handle different binning in spatial and spectral directions
