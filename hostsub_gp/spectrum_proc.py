@@ -391,7 +391,7 @@ class SpecData:
         obs, _, _ = binned_statistic(
             points[:, :, 0][flag],
             flux[flag],
-            statistic="median",
+            statistic="mean",
             bins=len(spat),
             range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
         )

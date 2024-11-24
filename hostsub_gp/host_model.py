@@ -149,6 +149,7 @@ class HostProfile:
             data_slit = Interp2D_Grid(
                 points=(np.arange(data.shape[1]) + 1, np.arange(data.shape[0]) + 1), values=data.T
             )(np.stack([slit_x_rot, slit_y_rot], axis=-1)).reshape(slit_x_0.shape)
+            # Estimate the counts: average along the slit width
             counts_slit.append(
                 np.array(
                     [
@@ -160,8 +161,12 @@ class HostProfile:
                         for d in data_slit
                     ]
                 )
-            )  # Average along the slit width
-            counts_err_slit.append(np.nanstd(data_slit - counts_slit[-1][:, None]) * np.ones_like(counts_slit[-1]))
+            )
+            # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
+            err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1) #/ np.sqrt(data_slit.shape[1])
+            # Smooth the error: convolution with a boxcar filter
+            err = np.convolve(err, np.ones(5) / 5, mode="same")
+            counts_err_slit.append(err)
 
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
             if spec2d is not None:
