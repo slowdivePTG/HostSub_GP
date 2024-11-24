@@ -71,7 +71,7 @@ class SpecData:
                 flux=flux,
                 show=True,
                 mask_wid=2.5,
-                slit_len=(spat_rect.max() - spat_rect.min()) * 2.5,
+                slit_len=(spat_rect.max() - spat_rect.min()) * 1.25,
             )
 
             self._points = jnp.stack([dist - offset, waveimg], axis=-1)
@@ -372,18 +372,17 @@ class SpecData:
             )
 
         host_prior = HostProfile(
-            flts="griz",
             center_ra=self.center_ra,
             center_dec=self.center_dec,
             slit_wid=self.slit_wid,
             slit_len=slit_len,
             position_angle=self.position_angle,
-        ).model_host_profile_prior(show=False)
+        ).model_host_profile_prior(show=True)
 
         flag = (
             jnp.isfinite(points[:, :, 0])
             & jnp.isfinite(flux)
-            & (flux > jnp.nanpercentile(flux, 25))  # mask the low flux region
+            & (flux > jnp.nanpercentile(flux, 50))  # mask the low flux region
         )
 
         sci_obj_mask = jnp.abs(spat) >= mask_wid

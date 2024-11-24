@@ -332,18 +332,16 @@ class SpecModel:
         if show:
             self._plot_raw()
 
-    def model_host_prior(self, flts: str | list = "griz", show: bool = True):
+    def model_host_prior(self, show: bool = True):
         """
         Build the prior of the host galaxy using Gaussian Process regression.
 
         Parameters
         ----------
-        imgs : list
-            Names of the fits files of host galaxy images.
-        flts : list
-            Filters of the host galaxy images.
+        show : bool, optional (default: True)
+            Whether to show the prior of the host galaxy.
         """
-        host_prof = HostProfile(flts=flts, spec2d=self)
+        host_prof = HostProfile(spec2d=self)
         self.host_flux_prior = host_prof.model_host_profile_prior(show=show)
 
     def model_host(

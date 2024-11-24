@@ -4,6 +4,7 @@ __all__ = ["HostProfile"]
 
 import numpy as np
 from astropy.wcs import WCS
+from astropy.wcs.utils import proj_plane_pixel_scales
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from matplotlib.patches import Rectangle
@@ -16,7 +17,7 @@ jax.config.update("jax_enable_x64", True)
 
 from ._plt import plt
 from .gp import GP
-from .host_image import PS1Image
+from .host_image import PS1Image, SDSSImage
 from .interp import Interp2D_Grid
 
 from typing import Callable
@@ -26,8 +27,8 @@ from jax._src.typing import Array
 class HostProfile:
     def __init__(
         self,
-        flts: str | list = None,
-        cameras: str | list = None,
+        # flts: str | list = None,
+        # cameras: str | list = None,
         spec2d: any = None,
         center_ra: float = None,  # deg
         center_dec: float = None,  # deg
@@ -53,23 +54,38 @@ class HostProfile:
             self.slit_wid = slit_wid
             self.position_angle = position_angle
 
-        self.flts = flts
-        if cameras is None:
-            self.cameras = ["ps1"] * len(flts)
-        elif isinstance(cameras, str):
-            self.cameras = [cameras] * len(flts)
-        else:
-            if len(cameras) != len(flts):
-                raise ValueError("cameras and flts length mismatch")
-            self.cameras = cameras
-        if any(cam != "ps1" for cam in self.cameras):  # TODO: Add support for other cameras
-            raise NotImplementedError("Only PS1 images are supported")
+        # self.flts = flts
+        # if cameras is None:
+        #     self.cameras = ["ps1"] * len(flts)
+        # elif isinstance(cameras, str):
+        #     self.cameras = [cameras] * len(flts)
+        # else:
+        #     if len(cameras) != len(flts):
+        #         raise ValueError("cameras and flts length mismatch")
+        #     self.cameras = cameras
+        # if not all(cam in ["ps1", "sdss"] for cam in self.cameras):  # TODO: Add support for other cameras
+        #     raise NotImplementedError("Only PS1 and SDSS images are supported")
 
         data_list, header_list = [], []
         wv_eff = []
+        flts = []
+
+        # Load SDSS images
+        # sdss_filters = "".join([flt for cam, flt in zip(self.cameras, self.flts) if cam == "sdss"])
+        sdss_filters = "u"
+        if len(sdss_filters) > 0:
+            SDSS = SDSSImage(ra=self.center_ra, dec=self.center_dec, filters=sdss_filters, path="./sdss_cutout/")
+            SDSS.download()
+            data_list_sdss, header_list_sdss = SDSS.load()
+            data_list.extend(data_list_sdss)
+            header_list.extend(header_list_sdss)
+            wv_eff_sdss = np.array([SDSS.wv_eff_dict[flt] for flt in sdss_filters])
+            wv_eff.extend(wv_eff_sdss)
+            flts.extend(SDSS.filters)
 
         # Load PS1 images
-        ps1_filters = "".join([flt for cam, flt in zip(self.cameras, self.flts) if cam == "ps1"])
+        # ps1_filters = "".join([flt for cam, flt in zip(self.cameras, self.flts) if cam == "ps1"])
+        ps1_filters = "grizy"
         if len(ps1_filters) > 0:
             PS1 = PS1Image(ra=self.center_ra, dec=self.center_dec, filters=ps1_filters, path="./ps1_cutout/")
             PS1.download()
@@ -77,21 +93,36 @@ class HostProfile:
             data_list.extend(data_list_ps1)
             header_list.extend(header_list_ps1)
             wv_eff_ps1 = np.array([PS1.wv_eff_dict[flt] for flt in ps1_filters])
-            wv_eff = wv_eff.extend(wv_eff_ps1)
+            wv_eff.extend(wv_eff_ps1)
+            flts.extend(PS1.filters)
 
-        # TODO: Load LS images (optional)
         # TODO: Load acquisition images (optional)
 
-        self.wv_eff = np.array([PS1.wv_eff_dict[flt] for flt in self.flts])
+        # Order data_list and header_list by wavelength
+        data_list = [data for _, data in sorted(zip(wv_eff, data_list))]
+        header_list = [header for _, header in sorted(zip(wv_eff, header_list))]
+        self.flts = [flt for _, flt in sorted(zip(wv_eff, flts))]
+        self.wv_eff = sorted(wv_eff)
 
-        counts_slit, prof_slit = [], []
+        counts_slit, counts_err_slit = [], []
+        prof_slit, prof_err_slit = [], []
         spat_slit = []
         wv_slit = []
 
         for k, (data, header) in enumerate(zip(data_list, header_list)):
             # Load FITS image and WCS info
             wcs = WCS(header)
-            pixel_scale = header["CDELT1"] * 3600
+
+            # Get the position angle of the image cutout
+            # Get the CD or PC matrix from WCS
+            if wcs.wcs.has_cd():  # Check if CD matrix is present
+                cd = wcs.wcs.cd
+                pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
+                pa_img = jnp.arctan2(cd[0, 1], cd[1, 1]) + np.pi  # Arctangent of the y-x ratio
+            else:  # Otherwise, use PC matrix with CDELT
+                cd = wcs.wcs.pc * wcs.wcs.cdelt
+                pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
+                pa_img = jnp.arctan2(cd[0, 1], cd[1, 1])  # Arctangent of the y-x ratio
 
             # Define the rectangle size in pixels or arcminutes (angular size)
             slit_len_pix = self.slit_len / pixel_scale  # Slit length in pixels
@@ -108,8 +139,8 @@ class HostProfile:
             )
 
             # Obtain the pixel coordinates of the slit
-            theta = np.deg2rad(self.position_angle + 90)  # w.r.t. the west
-            rot_matrix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+            pa_slit = pa_img + np.deg2rad(self.position_angle) + np.pi / 2  # w.r.t. the west
+            rot_matrix = np.array([[np.cos(pa_slit), -np.sin(pa_slit)], [np.sin(pa_slit), np.cos(pa_slit)]])
             slit_x_rot, slit_y_rot = np.dot(rot_matrix, np.array([slit_x_0.flatten(), slit_y_0.flatten()]))
             slit_x_rot += center_x
             slit_y_rot += center_y
@@ -130,15 +161,8 @@ class HostProfile:
                     ]
                 )
             )  # Average along the slit width
-            # counts_slit.append(np.mean(data_slit, axis=1))
+            counts_err_slit.append(np.nanstd(data_slit - counts_slit[-1][:, None]) * np.ones_like(counts_slit[-1]))
 
-            # _, ax = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
-            # ax[0].imshow(data, origin="lower", cmap="viridis")
-            # ax[0].scatter(slit_x_rot, slit_y_rot, c="r", marker="x")
-            # ax[0].scatter(center_x, center_y, c="r", marker="o")
-
-            # ax[1].scatter(np.arange(data_slit.shape[0]), counts_slit[-1], label=f"{flt}")
-            # plt.show()
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
             if spec2d is not None:
                 host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid / 2 + spec2d.mask_offset)
@@ -146,6 +170,7 @@ class HostProfile:
                 sky_left = (-spec2d.slit_len / 2, -spec2d.sky_wid / 2)
                 sky_right = (spec2d.sky_wid / 2, spec2d.slit_len / 2)
                 xi = counts_slit[-1]
+                xi_err = counts_err_slit[-1]
                 xi_sky_mean = (
                     bound_mean(spat_slit[-1], xi, x_bound=sky_left) + bound_mean(spat_slit[-1], xi, x_bound=sky_right)
                 ) / 2
@@ -158,14 +183,22 @@ class HostProfile:
                     / (spec2d.slit_len - spec2d.mask_wid)
                     * spec2d.pixel_scale
                 )
+                prof_err_slit.append(
+                    xi_err / (xi_host_mean - xi_sky_mean) / (spec2d.slit_len - spec2d.mask_wid) * spec2d.pixel_scale
+                )
+
             else:  # No mask
-                xi = counts_slit[-1] / np.sum(counts_slit[-1])
+                xi = counts_slit[-1] / np.sum(counts_slit[-1]) / pixel_scale
+                xi_err = counts_err_slit[-1] / np.sum(counts_slit[-1]) / pixel_scale
                 prof_slit.append(xi)
+                prof_err_slit.append(xi_err)
 
         self.prof_slit = prof_slit
+        self.prof_err_slit = prof_err_slit
         self.spat_slit = spat_slit
         self.wv_slit = wv_slit
         self.prof = jnp.concatenate(prof_slit)
+        self.prof_err = jnp.concatenate(prof_err_slit)
         self.X = jnp.stack([jnp.concatenate(spat_slit), jnp.concatenate(wv_slit)], axis=-1)
 
     def model_host_profile_prior(self, show: bool = False) -> Callable[[jax.Array], jax.Array]:
@@ -180,13 +213,14 @@ class HostProfile:
             params = dict(
                 log_amp=jnp.float64(-3),
                 log_scale=jnp.float64(0.5),
-                log_jitter=jnp.float64(-6),
+                # log_jitter=jnp.float64(-6),
                 mean=jnp.float64(1 / self.slit_len),
             )
-            params_limit = dict(log_scale=np.log10([0.5, 10]))
+            params_limit = dict(log_scale=np.log10([1e-1, 10]))
             gp_host_prior = GP(
                 X=self.X[:, 0][:, None],  # Spatial coordinate only
                 y=self.prof,
+                yerr=self.prof_err,
                 params=params,
                 params_init=params,
                 params_limit=params_limit,
@@ -198,15 +232,15 @@ class HostProfile:
             params = dict(
                 log_amp=jnp.float64(-2),
                 log_scale=jnp.asarray([0.1, 5], dtype=jnp.float64),
-                log_jitter=jnp.float64(-4),
                 mean=jnp.float64(1 / self.slit_len),
             )
             params_limit = dict(
-                log_scale=np.log10([[1.0, 1e3], [3.0, 1e7]]),
+                log_scale=np.log10([[1e-1, 1e3], [1e1, 1e7]]),
             )
             gp_host_prior = GP(
                 X=self.X,
                 y=self.prof,
+                yerr=self.prof_err,
                 params=params,
                 params_init=params,
                 params_limit=params_limit,
@@ -228,6 +262,13 @@ class HostProfile:
                     host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)),
                     "--",
                     color=cmap(norm(k)),
+                )
+                ax[k].fill_between(
+                    self.spat_slit[k],
+                    self.prof_slit[k] - self.prof_err_slit[k],
+                    self.prof_slit[k] + self.prof_err_slit[k],
+                    color=cmap(norm(k)),
+                    alpha=0.2,
                 )
                 ax[k].set_ylabel(r"$\mathrm{Profile}$")
             ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")

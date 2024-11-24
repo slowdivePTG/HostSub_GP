@@ -112,7 +112,7 @@ class _build_gp:
         # Initialize the parameters
         self.log_amp = params.get("log_amp")
         self.log_scale = params.get("log_scale")
-        self.log_jitter = params.get("log_jitter")
+        # self.log_jitter = params.get("log_jitter")
         self.mean = params.get("mean")
 
         self.X = jnp.asarray(X)
@@ -120,7 +120,7 @@ class _build_gp:
 
     def __call__(self, kernel_type: str = "ExpSquared") -> GaussianProcess:
         kernel = self._build_kernel(kernel_type)
-        return GaussianProcess(kernel=kernel, X=self.X, diag=10**self.log_jitter + self.yerr**2, mean=self.mean)
+        return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
 
     def _build_kernel(self, kernel_type: str) -> kernels.Kernel:
         amp = 10**self.log_amp
