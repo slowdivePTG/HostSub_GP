@@ -163,7 +163,7 @@ class HostProfile:
                 )
             )
             # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
-            err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1) #/ np.sqrt(data_slit.shape[1])
+            err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1)
             # Smooth the error: convolution with a boxcar filter
             err = np.convolve(err, np.ones(5) / 5, mode="same")
             counts_err_slit.append(err)

@@ -14,7 +14,7 @@ from functools import partial
 
 from tinygp import GaussianProcess
 
-from ._plt import plt
+from ._plt import plt, MultipleLocator
 from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
 from .gp import GP
 from .host_model import HostProfile
@@ -106,7 +106,7 @@ class SpecWrapper:
             raise ValueError("Invalid weights.")
         mean_value = jnp.nanmean(self.Y[mask, :] * w, axis=0) / jnp.nanmean(w, axis=0)
         mean_value_err = (
-            jnp.nanmean((self.Yerr[mask, :] * w) ** 2, axis=0) / (jnp.nanmean(w) * mask.sum()) ** 2
+            (jnp.nanmean((self.Yerr[mask, :] * w) ** 2, axis=0) * mask.sum()) / (jnp.nanmean(w) * mask.sum()) ** 2
         ) ** 0.5
 
         if margin_type == "mean":
@@ -309,14 +309,28 @@ class SpecModel:
         # New values: mean of the batch
         values_batch_2d = np.empty(shape_batch_2d)
         values_err_batch_2d = np.empty(shape_batch_2d)
+        batch_size = np.empty(shape_batch_2d, dtype=object)
         for x in range(shape_batch_2d[0]):
             for y in range(shape_batch_2d[1]):
                 values_batch_2d[x, y] = np.nanmean(
                     (self.f_sky_sub.Y / self.f_host_1d.Y)[spat_batch_2d_idx[x], :][:, spec_batch_2d_idx[y]]
                 )
-                values_err_batch_2d[x, y] = np.nanmean(
-                    (self.f_sky_sub.Yerr / self.f_host_1d.Y)[spat_batch_2d_idx[x], :][:, spec_batch_2d_idx[y]]
+                values_err_batch_2d[x, y] = np.sqrt(
+                    np.nanmean(
+                        (self.f_sky_sub.Yerr / self.f_host_1d.Y)[spat_batch_2d_idx[x], :][:, spec_batch_2d_idx[y]] ** 2
+                    )
+                    * (len(spat_batch_2d_idx[x]) * len(spec_batch_2d_idx[y]))
+                ) / (len(spat_batch_2d_idx[x]) * len(spec_batch_2d_idx[y]))
+                batch_size[x, y] = (
+                    (self.spat[spat_batch_2d_idx[x]].max() - self.spat[spat_batch_2d_idx[x]].min())
+                    / (len(spat_batch_2d_idx[x]) - 1)
+                    * len(spat_batch_2d_idx[x]),
+                    (self.spec[spec_batch_2d_idx[y]].max() - self.spec[spec_batch_2d_idx[y]].min())
+                    / (len(spec_batch_2d_idx[y]) - 1)
+                    * len(spec_batch_2d_idx[y]),
                 )
+        self.host_batch_size = batch_size[host_batch_2d, :]
+        self.batch_size = batch_size
         self.f_host_batch_2d = SpecWrapper(
             points=(spat_batch_2d[host_batch_2d], spec_batch_2d),
             values=values_batch_2d[host_batch_2d, :],
@@ -707,7 +721,9 @@ class SpecModel:
 
     ############################ QA Plotting ############################
     def _plot_raw(self) -> Axes:
-        _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True, sharex=True)
+        from scipy.interpolate import interp1d
+
+        _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
             self.f_obs.Y,
@@ -726,10 +742,7 @@ class SpecModel:
             extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
         )
         # Plot the 2D batched spectrum
-        batch_size = (
-            (self.spat[1] - self.spat[0]) * self.batch_2d[0],
-            (self.spec[1] - self.spec[0]) * self.batch_2d[1],
-        )
+        batch_size = self.host_batch_size.ravel()
         norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
         cmap = plt.cm.get_cmap("gray")
         for k in range(len(self.f_host_batch_2d.X[:, 0])):
@@ -737,17 +750,23 @@ class SpecModel:
             ax[2].add_patch(
                 plt.Rectangle(
                     (
-                        self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-                        self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
+                        self.f_host_batch_2d.X[k, 1] - batch_size[k][1] / 2,
+                        self.f_host_batch_2d.X[k, 0] - batch_size[k][0] / 2,
                     ),
-                    batch_size[1],
-                    batch_size[0],
+                    batch_size[k][1],
+                    batch_size[k][0],
                     color=c_raw,
                 )
             )
 
         # Plot the 1D batched spectrum
-        ax[-1].plot(self.f_host_1d.X.ravel(), self.f_host_1d.y)
+        ax[-1].plot(np.arange(len(self.spec)) + 1, self.f_host_1d.y)
+        ax[-1].fill_between(
+            np.arange(len(self.spec)) + 1,
+            self.f_host_1d.y - self.f_host_1d.yerr,
+            self.f_host_1d.y + self.f_host_1d.yerr,
+            alpha=0.5,
+        )
 
         # Titles
         ax[0].set_title(r"$\mathrm{Source}$")
@@ -766,7 +785,26 @@ class SpecModel:
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax_.set_xlim(self.spec.min(), self.spec.max())
             ax_.set_ylim(self.spat.min(), self.spat.max())
+            ax_.set_xticks([])
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
+        transform = interp1d(self.spec, np.arange(len(self.spec)) + 1, kind="linear", fill_value="extrapolate")
+        major_tick_size = 500 if self.spec.max() - self.spec.min() < 4000 else 5000
+        original_ticks = (
+            np.arange(np.ceil(self.spec.min() / major_tick_size), np.ceil(self.spec.max() / major_tick_size))
+            * major_tick_size
+        )
+        original_minor_ticks = (
+            np.arange(np.ceil(self.spec.min() / major_tick_size * 5), np.ceil(self.spec.max() / major_tick_size * 5))
+            * major_tick_size
+            / 5
+        )
+        transformed_ticks = transform(original_ticks)
+        transformed_minor_ticks = transform(original_minor_ticks)
+
+        ax[-1].set_xticks(transformed_ticks, minor=False)
+        ax[-1].set_xticks(transformed_minor_ticks, minor=True)
+        ax[-1].set_xticklabels([f"${tick:.0f}$" for tick in original_ticks])
+        ax[-1].set_xlim(transform(self.spec.min()), transform(self.spec.max()))
 
         return ax
 
