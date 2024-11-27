@@ -14,6 +14,7 @@ import jaxopt
 from functools import partial
 
 from tinygp import GaussianProcess, kernels, transforms
+from tinygp.kernels.distance import L2Distance
 
 from jax._src.typing import ArrayLike, Array
 
@@ -112,7 +113,6 @@ class _build_gp:
         # Initialize the parameters
         self.log_amp = params.get("log_amp")
         self.log_scale = params.get("log_scale")
-        # self.log_jitter = params.get("log_jitter")
         self.mean = params.get("mean")
 
         self.X = jnp.asarray(X)
@@ -131,14 +131,15 @@ class _build_gp:
             if kernel_type == "ExpSquared":
                 kernel = amp * transforms.Linear(1 / scale, kernel=kernels.ExpSquared())
             elif kernel_type == "Matern":
-                kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52())
+                kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
         elif kernel_type == "composite":
+            breakpoint()
             if self.log_amp.size != 2:
                 raise ValueError("The composite kernel requires 2 set of parameters")
             # kernel1 : ExpSquared - long-term variations (continuum)
             kernel_expsqr = amp[0] * transforms.Linear(1 / scale[0], kernel=kernels.ExpSquared())
             # kernel2 : Matern - short-term variations (sky lines, emission lines)
-            kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52())
+            kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52(distance=L2Distance()))
             kernel = kernel_expsqr + kernel_matern
         else:
             raise ValueError("Invalid kernel type: supported types are 'ExpSquared', 'Matern', and 'composite'")

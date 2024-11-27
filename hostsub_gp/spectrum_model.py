@@ -397,7 +397,16 @@ class SpecModel:
         params_limit_1d_default = _init_params(
             dict(
                 log_scale=np.log10(
-                    [[self.spec_resln / 2.355, self.spec_resln / 2.355], [self.spec_resln * 1e4, self.spec_resln * 2]]
+                    [
+                        [
+                            self.spec_resln / 2.355,  # Limit for the ExpSquared kernel
+                            self.spec_resln / 2.355,  # Limit for the Matern kernel
+                        ],
+                        [
+                            self.spec_resln * 1e4,  # Limit for the ExpSquared kernel
+                            self.spec_resln * 2,  # Limit for the Matern kernel
+                        ],
+                    ]
                 ),
             ),
             require_all=False,
@@ -405,10 +414,24 @@ class SpecModel:
         )
         # 2D spatial profile & 1D spectrum of the host galaxy
         ## scale >= spatial resolution, spectral resolution / 2.355
+        ### here we use a composite kernel
+        ### ExpSquared - slow variation (>> spectral resolution)
+        ### Matern - narrow features (~ spectral resolution)
         ## mean (i.e., deviation fromt the prior) is close to zero
         params_limit_2d_default = _init_params(
             dict(
-                log_scale=np.log10([[self.spat_resln / 2.355, self.spec_resln / 2.355], [1e5, 1e5]]),
+                log_scale=np.log10(
+                    [
+                        [
+                            [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the ExpSquared kernel
+                            [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the Matern kernel
+                        ],
+                        [
+                            [1e5, 1e5],  # Limit for the ExpSquared kernel
+                            [1e5, self.spec_resln * 2],  # Limit for the Matern kernel
+                        ],
+                    ]
+                ),
                 mean=[-1e-3, 1e-3],
             ),
             require_all=False,
@@ -533,9 +556,18 @@ class SpecModel:
         """
         params_init_unbound = _transform_bound_to_unbound(params_init, params_limit)
         print("Optimizing the host galaxy model...")
-        print("Initial parameters:")
-        _print_params(params_init)
         print(f"Initial negative log-probability: {self._get_host_neg_log_probability(params_init):.1f}")
+        if ~np.isfinite(self._get_host_neg_log_probability(params_init)):
+            print("Initial parameters:")
+            _print_params(params_init)
+            print("Parameter limits:")
+            print(params_limit[0])
+            print(params_limit[1])
+            print("\n")
+            print("Initial unbound parameters:")
+            _print_params(params_init_unbound)
+            raise ValueError("Invalid initial parameters: please check the limits.")
+
         solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, **kwargs)
         soln = solver.run(params_init_unbound, params_limit)
         if soln.state.status != 0:
@@ -605,7 +637,7 @@ class SpecModel:
             yerr=self.f_host_batch_2d.y,
             params=params_2d,
             params_limit=params_limit_2d,
-            kernel_type="ExpSquared",
+            kernel_type="composite",
         ).gp
 
         return gp_1d, gp_2d
@@ -650,7 +682,7 @@ class SpecModel:
             Compute the negative log probability of the host galaxy model
             """
             gp_1d = GP(X=f_1d_X, yerr=f_1d_yerr, params=params_1d, kernel_type="composite").gp
-            gp_2d = GP(X=f_2d_X, yerr=f_2d_yerr, params=params_2d, kernel_type="ExpSquared").gp
+            gp_2d = GP(X=f_2d_X, yerr=f_2d_yerr, params=params_2d, kernel_type="composite").gp
             log_prob_1d = gp_1d.log_probability(f_1d_y)
             log_prob_2d = gp_2d.log_probability(f_2d_y)
 
@@ -658,6 +690,10 @@ class SpecModel:
             y_host_2d = gp_2d.predict(y=f_2d_y - f_2d_mean, X_test=f_X) + f_mean
             y_host = y_host_1d * y_host_2d
             log_prob_obs = jnp.sum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
+
+            # jax.debug.print("1D log-probability: {}", log_prob_1d)
+            # jax.debug.print("2D log-probability: {}", log_prob_2d)
+            # jax.debug.print("Observed log-probability: {}", log_prob_obs)
 
             return -(log_prob_1d + log_prob_2d + log_prob_obs)
 
@@ -859,20 +895,20 @@ class SpecModel:
 
             check_spectrum_length(left, right)
 
-            # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^0) * min_batch_size
-            # These batches add up to L_right = (2^(K_max+1) - 1) * min_batch_size
+            # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^1, 2^0, 2^0) * min_batch_size
+            # These batches add up to L_right = 2^(K_max+1) * min_batch_size
             # K_max is limited by:
             # 1. 2^K_max * min_batch_size + L_right <= right - left
             # 2. 2^K_max * min_batch_size <= max_batch_size
-            # n_batch_right = K_max + 1
+            # n_batch_right = K_max + 2
             n_batch_right = (
                 min(
-                    int(np.floor(np.log2((right - left) / min_batch_size / 3 + 1 / 3))),
+                    int(np.floor(np.log2((right - left) / min_batch_size / 3))),
                     int(np.log2(max_batch_size / min_batch_size)),
                 )
-                + 1
+                + 2
             )
-            batch_edges_right = (-min_batch_size * (2 * 2 ** np.arange(0, n_batch_right) - 1) + right)[::-1]
+            batch_edges_right = (-min_batch_size * 2 ** np.arange(0, n_batch_right) + right)[::-1]
 
             # Batches on the left have the same sizes
             # i.e., the maximum batch size below 2^K_max * min_batch_size, which can divide the remaining spectrum nearly equally
@@ -890,7 +926,7 @@ class SpecModel:
 
             check_spectrum_length(left, right)
 
-            # Batches on the left have the sizes: (2^0, 2^1, ..., 2^K_max) * min_batch_size
+            # Batches on the left have the sizes: (2^0, 2^0, 2^1, ..., 2^K_max) * min_batch_size
             # These batches add up to L_left = (2^(K_max+1) - 1) * min_batch_size
             # K_max is limited by:
             # 1. 2^K_max * min_batch_size + L_left <= right - left
@@ -898,12 +934,12 @@ class SpecModel:
             # n_batch_left = K_max + 1
             n_batch_left = (
                 min(
-                    int(np.floor(np.log2((right - left) / min_batch_size / 3 + 1 / 3))),
+                    int(np.floor(np.log2((right - left) / min_batch_size / 3))),
                     int(np.log2(max_batch_size / min_batch_size)),
                 )
-                + 1
+                + 2
             )
-            batch_edges_left = min_batch_size * (2 * 2 ** np.arange(0, n_batch_left) - 1) + left
+            batch_edges_left = min_batch_size * 2 ** np.arange(0, n_batch_left) + left
 
             # Batches on the right have the same sizes
             # i.e., the maximum batch size below 2^(K_max+1) * min_batch_size, which can divide the remaining spectrum nearly equally
@@ -921,8 +957,8 @@ class SpecModel:
 
             check_spectrum_length(left, right)
 
-            # Batches on the left have the sizes: (2^0, 2^1, ..., 2^K_max) * min_batch_size
-            # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^0) * min_batch_size
+            # Batches on the left have the sizes: (2^0, 2^0, 2^1, ..., 2^K_max) * min_batch_size
+            # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^1, 2^0, 2^0) * min_batch_size
             # These batches add up to L_left_right = 2 * (2^(K_max+1) - 1) * min_batch_size
             # K_max is limited by:
             # 1. 2^K_max * min_batch_size + L_left_right <= right - left
@@ -930,13 +966,13 @@ class SpecModel:
             # n_batch_left = n_batch_right = K_max + 1
             n_batch_left = n_batch_right = (
                 min(
-                    int(np.floor(np.log2((right - left) / min_batch_size / 5 + 2 / 5))),
+                    int(np.floor(np.log2((right - left) / min_batch_size / 5))),
                     int(np.log2(max_batch_size / min_batch_size)),
                 )
-                + 1
+                + 2
             )
-            batch_edges_left = min_batch_size * (2 * 2 ** np.arange(0, n_batch_left) - 1) + left
-            batch_edges_right = (-min_batch_size * (2 * 2 ** np.arange(0, n_batch_right) - 1) + right)[::-1]
+            batch_edges_left = min_batch_size * 2 ** np.arange(0, n_batch_left) + left
+            batch_edges_right = (-min_batch_size * 2 ** np.arange(0, n_batch_right) + right)[::-1]
 
             # Batches in the middle have the same sizes
             # i.e., the maximum batch size below min(2^(K_max+1) * min_batch_size, max_batch_size), which can divide the remaining spectrum nearly equally
@@ -1075,7 +1111,7 @@ class SpecModel:
     def _plot_host_profile_prior(self) -> Axes:
         if not hasattr(self, "host_flux_prior"):
             raise ValueError("Please model the host galaxy first.")
-        _, ax = plt.subplots(figsize=(6, 8), constrained_layout=True, sharex=True)
+        _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 3), constrained_layout=True, sharex=True)
         norm = plt.Normalize(0, len(self.f_batch_2d.spec))
         cmap = plt.cm.get_cmap("coolwarm")
 
@@ -1116,7 +1152,7 @@ class SpecModel:
     def _plot_host_profile_pred(self) -> Axes:
         if not hasattr(self, "_gp_2d"):
             raise ValueError("Please model the host galaxy first.")
-        _, ax = plt.subplots(figsize=(6, 8), constrained_layout=True, sharex=True)
+        _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 3), constrained_layout=True, sharex=True)
         norm = plt.Normalize(0, len(self.f_batch_2d.spec))
         cmap = plt.cm.get_cmap("coolwarm")
 
@@ -1157,100 +1193,6 @@ class SpecModel:
         )
         ax.set_ylim(ylim)
         ax.set_yticks([])
-        return ax
-        # if not (hasattr(self, "_gp_1d") and hasattr(self, "_gp_2d")):
-        #     raise ValueError("Please model the host galaxy first.")
-        # _, ax = plt.subplots(5, 1, figsize=(20, 12.5), constrained_layout=True, sharex=True)
-        # # Plot the 2D batched spectrum
-        # batch_size = (
-        #     (self.spat[1] - self.spat[0]) * self.batch_2d[0],
-        #     (self.spec[1] - self.spec[0]) * self.batch_2d[1],
-        # )
-        # norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
-        # norm_residual = plt.Normalize(-1e-2, 1e-2)
-        # cmap = plt.cm.get_cmap("gray")
-        # cmap_residual = plt.cm.get_cmap("RdBu_r")
-        # pred_1d = self._gp_1d.predict(y=self.f_host_1d.y, X_test=self._gp_1d.X)
-        # pred_2d = self._gp_2d.predict(
-        #     y=self.f_host_batch_2d.y - self.host_flux_prior(self._gp_2d.X), X_test=self._gp_2d.X
-        # ) + self.host_flux_prior(self._gp_2d.X)
-        # for k in range(len(self.f_host_batch_2d.X[:, 0])):
-        #     c_raw = cmap(norm(self.f_host_batch_2d.y[k]))
-        #     c_model = cmap(norm(pred_2d[k]))
-        #     c_residual = cmap_residual(norm_residual(self.f_host_batch_2d.y[k] - pred_2d[k]))
-        #     ax[0].add_patch(
-        #         plt.Rectangle(
-        #             (
-        #                 self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-        #                 self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
-        #             ),
-        #             batch_size[1],
-        #             batch_size[0],
-        #             color=c_raw,
-        #         )
-        #     )
-        #     ax[1].add_patch(
-        #         plt.Rectangle(
-        #             (
-        #                 self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-        #                 self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
-        #             ),
-        #             batch_size[1],
-        #             batch_size[0],
-        #             color=c_model,
-        #         )
-        #     )
-        #     ax[2].add_patch(
-        #         plt.Rectangle(
-        #             (
-        #                 self.f_host_batch_2d.X[k, 1] - batch_size[1] / 2,
-        #                 self.f_host_batch_2d.X[k, 0] - batch_size[0] / 2,
-        #             ),
-        #             batch_size[1],
-        #             batch_size[0],
-        #             color=c_residual,
-        #         )
-        #     )
-
-        # # Plot the 1D batched spectrum
-        # ax[3].plot(self.f_host_1d.spec, self.f_host_1d.y)
-        # ax[3].fill_between(
-        #     self.f_host_1d.spec,
-        #     self.f_host_1d.y - self.f_host_1d.yerr,
-        #     self.f_host_1d.y + self.f_host_1d.yerr,
-        #     color="tab:blue",
-        #     alpha=0.3,
-        # )
-        # ax[3].plot(self.f_host_1d.spec, pred_1d, "--k", lw=2)
-        # ax[4].plot(self.f_host_1d.spec, self.f_host_1d.y - pred_1d)
-        # ax[4].fill_between(
-        #     self.f_host_1d.spec,
-        #     -self.f_host_1d.yerr,
-        #     +self.f_host_1d.yerr,
-        #     color="tab:blue",
-        #     alpha=0.3,
-        # )
-
-        # # Titles
-        # ax[0].set_title(r"$\mathrm{2D\ Spectrum}$")
-        # ax[1].set_title(r"$\mathrm{Model}$")
-        # ax[2].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
-        # ax[3].set_title(r"$\mathrm{1D\ Spectrum}$")
-        # ax[4].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
-
-        # # Labels
-        # ax[4].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-        # for ax_ in ax[:3]:
-        #     # ax_.axhline(-self.mask_wid + self.mask_offset, color="w", linestyle="--", lw=3)
-        #     # ax_.axhline(self.mask_wid + self.mask_offset, color="w", linestyle="--", lw=3)
-        #     ax_.axhline(-self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
-        #     ax_.axhline(self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
-        #     ax_.set_aspect("auto")
-        #     ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
-        #     ax_.set_xlim(self.spec[0], self.spec[-1])
-        #     ax_.set_ylim(self.spat[0], self.spat[-1])
-        # ax[3].set_ylabel(r"$\mathrm{Counts}$")
-
         return ax
 
     def _plot_pred(self) -> Axes:

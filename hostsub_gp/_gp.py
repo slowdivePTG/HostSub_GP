@@ -70,11 +70,6 @@ def _init_params(params: dict, require_all: bool = True, params_type: str = "val
         if key in params:
             params_output[key] = ensure_scalar_or_array(params.get(key))
 
-    # if "log_jitter" in params:
-    #     params_output["log_jitter"] = ensure_scalar_or_array(params.get("log_jitter"))
-    # elif params_type == "value":
-    #     params_output["log_jitter"] = jnp.asarray(-6.0, dtype=jnp.float64)
-
     return params_output
 
 
@@ -95,9 +90,8 @@ def _print_params(params: dict):
         _check_params(params)
         _print_param(params, "log_amp", "Amp")
         _print_param(params, "log_scale", "Scale")
-        # if "log_jitter" in params:
-        #     _print_param(params, "log_jitter", "Jitter")
         _print_param(params, "mean", "Mean")
+        print("\n")
     except TypeError as e:
         raise TypeError("Invalid type for params: " + str(e))
 
