@@ -202,7 +202,7 @@ class SpecModel:
         self.center_dec = center_dec
         self.slit_wid = slit_wid
         if slit_len is None:
-            self.slit_len = spat.max() - spat.min() + spat[2] - spat[1]
+            self.slit_len = spat[-1] - spat[0] + spat[2] - spat[1]
         else:
             self.slit_len = slit_len
         self.position_angle = position_angle
@@ -273,64 +273,60 @@ class SpecModel:
         self.f_host_1d = self.f_host.marginalize(margin_type="sum")
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
-        # TODO: adative batch size on the spectral direction
         self.batch_2d = batch_2d
         print(f"Batching the 2D galaxy spectrum (outside the mask) with the size: {batch_2d}")
         # Spatial batch (only for the host galaxy pixels outside the mask)
         if host_left.sum() > 0:
-            spat_batch_2d_idx_left = np.array_split(np.arange(self.shape[0])[host_left], host_left.sum() // batch_2d[0])
+            self._spat_batch_2d_idx_left = np.array_split(
+                np.arange(self.shape[0])[host_left], host_left.sum() // batch_2d[0]
+            )
         else:
-            spat_batch_2d_idx_left = []
+            self._spat_batch_2d_idx_left = []
         if host_right.sum() > 0:
-            spat_batch_2d_idx_right = np.array_split(
+            self._spat_batch_2d_idx_right = np.array_split(
                 np.arange(self.shape[0])[host_right], host_right.sum() // batch_2d[0]
             )
         else:
-            spat_batch_2d_idx_right = []
-        if len(spat_batch_2d_idx_left + spat_batch_2d_idx_right) == 0:
+            self._spat_batch_2d_idx_right = []
+        if len(self._spat_batch_2d_idx_left + self._spat_batch_2d_idx_right) == 0:
             raise ValueError("No host galaxy pixels found.")
         if (~self.host).sum() > 0:
-            spat_batch_2d_idx_sci = np.array_split(np.arange(self.shape[0])[~self.host], (~self.host).sum())
+            self._spat_batch_2d_idx_sci = np.array_split(np.arange(self.shape[0])[~self.host], (~self.host).sum())
         else:
             raise ValueError("No pixels within the mask.")
-        spat_batch_2d_idx = spat_batch_2d_idx_left + spat_batch_2d_idx_sci + spat_batch_2d_idx_right
-        host_batch_2d = (jnp.arange(len(spat_batch_2d_idx)) < len(spat_batch_2d_idx_left)) | (
-            jnp.arange(len(spat_batch_2d_idx)) >= len(spat_batch_2d_idx_left + spat_batch_2d_idx_sci)
+        self._spat_batch_2d_idx = (
+            self._spat_batch_2d_idx_left + self._spat_batch_2d_idx_sci + self._spat_batch_2d_idx_right
+        )
+        host_batch_2d = (jnp.arange(len(self._spat_batch_2d_idx)) < len(self._spat_batch_2d_idx_left)) | (
+            jnp.arange(len(self._spat_batch_2d_idx)) >= len(self._spat_batch_2d_idx_left + self._spat_batch_2d_idx_sci)
         )
 
         # Spectral batch
-        spec_batch_2d_idx = np.array_split(np.arange(self.shape[1]), self.shape[1] // batch_2d[1])
+        self._spec_batch_2d_idx = self._get_spec_batches()
 
         # New coordinates: mean of the batch
-        shape_batch_2d = (len(spat_batch_2d_idx), len(spec_batch_2d_idx))
-        spat_batch_2d = jnp.asarray([self.spat[idx].mean() for idx in spat_batch_2d_idx])
-        spec_batch_2d = jnp.asarray([self.spec[idx].mean() for idx in spec_batch_2d_idx])
+        shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
+        spat_batch_2d = jnp.asarray([self.spat[idx].mean() for idx in self._spat_batch_2d_idx])
+        spec_batch_2d = jnp.asarray([self.spec[idx].mean() for idx in self._spec_batch_2d_idx])
 
         # New values: mean of the batch
         values_batch_2d = np.empty(shape_batch_2d)
         values_err_batch_2d = np.empty(shape_batch_2d)
-        batch_size = np.empty(shape_batch_2d, dtype=object)
         for x in range(shape_batch_2d[0]):
             for y in range(shape_batch_2d[1]):
                 values_batch_2d[x, y] = np.nanmean(
-                    (self.f_sky_sub.Y / self.f_host_1d.Y)[spat_batch_2d_idx[x], :][:, spec_batch_2d_idx[y]]
+                    (self.f_sky_sub.Y / self.f_host_1d.Y)[self._spat_batch_2d_idx[x], :][:, self._spec_batch_2d_idx[y]]
                 )
                 values_err_batch_2d[x, y] = np.sqrt(
                     np.nanmean(
-                        (self.f_sky_sub.Yerr / self.f_host_1d.Y)[spat_batch_2d_idx[x], :][:, spec_batch_2d_idx[y]] ** 2
+                        (self.f_sky_sub.Yerr / self.f_host_1d.Y)[self._spat_batch_2d_idx[x], :][
+                            :, self._spec_batch_2d_idx[y]
+                        ]
+                        ** 2
                     )
-                    * (len(spat_batch_2d_idx[x]) * len(spec_batch_2d_idx[y]))
-                ) / (len(spat_batch_2d_idx[x]) * len(spec_batch_2d_idx[y]))
-                batch_size[x, y] = (
-                    (self.spat[spat_batch_2d_idx[x]].max() - self.spat[spat_batch_2d_idx[x]].min())
-                    / (len(spat_batch_2d_idx[x]) - 1)
-                    * len(spat_batch_2d_idx[x]),
-                    (self.spec[spec_batch_2d_idx[y]].max() - self.spec[spec_batch_2d_idx[y]].min())
-                    / (len(spec_batch_2d_idx[y]) - 1)
-                    * len(spec_batch_2d_idx[y]),
-                )
-        self.host_batch_size = batch_size[host_batch_2d, :]
-        self.batch_size = batch_size
+                    * (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
+                ) / (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
+
         self.f_host_batch_2d = SpecWrapper(
             points=(spat_batch_2d[host_batch_2d], spec_batch_2d),
             values=values_batch_2d[host_batch_2d, :],
@@ -512,6 +508,10 @@ class SpecModel:
         ax.set_ylabel(r"$\mathrm{Counts}$")
 
         return ax
+
+    ###############################################################################
+    ############################ Host Galaxy Modeling #############################
+    ###############################################################################
 
     def _model_host_optimization(
         self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs
@@ -719,7 +719,220 @@ class SpecModel:
         _print_params(self.gp_params)
         return self.gp_params
 
-    ############################ QA Plotting ############################
+    ###############################################################################
+    ############################# Adaptive Batch Size #############################
+    ###############################################################################
+
+    def _get_spec_batches(self) -> list[list[int]]:
+        """
+        Get the batch indices for the spectral direction.
+
+        Returns
+        -------
+        list[list[int]]
+            The indices of the spectral batches.
+        """
+        host_emission = self._find_host_emission()
+        print(f"Emission lines found at: {[self.spec[idx].item() for idx in host_emission]}")
+
+        host_emission = np.concatenate([[0], host_emission, [self.spec.size - 1]])
+        batch_edges = []
+        for i in range(len(host_emission) - 1):
+            batch_edges.extend(self._find_batch_edges(left=host_emission[i], right=host_emission[i + 1]))
+
+        batch_idx = []
+        for i in range(len(batch_edges) - 1):
+            batch_idx.append(np.arange(batch_edges[i], batch_edges[i + 1]))
+
+        return batch_idx
+
+    def _find_host_emission(self, sigma_thresh: float = 5, kernel_wid: int = None) -> list[int]:
+        """
+        Find the edges of the host galaxy emission using the 1D spectrum.
+
+        Parameters
+        ----------
+        sigma_thresh : float, optional (default: 3.0)
+            The threshold for the detection of the host galaxy emission.
+        kernel_wid : int, optional (default: None)
+            The width of the kernel for smoothing the standard deviation of the galaxy spatial profile.
+
+        Returns
+        -------
+        list[int]
+            The indices of the host galaxy emission.
+        """
+        from scipy.signal import find_peaks
+        from astropy.stats import mad_std
+
+        # Define the kernel for smoothing the standard deviation of the galaxy spatial profile
+        if kernel_wid is None:
+            kernel_wid = int(self.spec_resln / np.diff(self.spec).min())
+        kernel = np.ones(kernel_wid * 2)
+        kernel = kernel / np.sum(kernel)
+
+        # Standard deviation of the galaxy spatial profile - how much the profile varies
+        prof_std = np.nanstd(self.f_host.Y, axis=0)
+        # Smooth the standard deviation to estimate the continuum
+        prof_std_smooth = np.convolve(prof_std, kernel, mode="same")
+        # Subtract the continuum and normalize
+        prof_std_norm = (prof_std - prof_std_smooth) / np.nanmean(self.f_host.Yerr, axis=0)
+
+        peaks, _ = find_peaks(
+            prof_std_norm[kernel_wid:-kernel_wid],
+            height=np.median(prof_std_norm[kernel_wid:-kernel_wid])
+            + mad_std(prof_std_norm[kernel_wid:-kernel_wid]) * sigma_thresh,
+        )
+
+        return peaks
+
+    def _find_batch_edges(self, left: int = None, right: int = None) -> ArrayLike:
+        """
+        Find the edges of the batches with adaptive sizes for the 2D spectrum.
+
+        Parameters
+        ----------
+        left, right : int, optional (default: None)
+            The left and right edges of the narrow lines in the spectrum.
+            None means the beginning and the end of the spectrum, respectively.
+
+        Returns
+        -------
+        ArrayLike
+            The indices of the batch edges.
+        """
+        left_edge = 0
+        right_edge = self.spec.size - 1
+
+        if left is None:
+            left = left_edge
+        if right is None:
+            right = right_edge
+
+        min_batch_size = 2 * int(np.ceil(self.spec_resln / np.diff(self.spec).min()))
+        max_batch_size = self.batch_2d[1]
+
+        def check_spectrum_length(left, right):
+            if right - left < min_batch_size * 2:
+                raise ValueError("The spectrum is too short for the batch size")
+
+        # No narrow lines in the spectrum
+        # Use the largest possible batch size
+        if (left == left_edge) and (right == right_edge):
+
+            check_spectrum_length(left, right)
+
+            # The number of batches is determined such that by dividing the spectrum into n_batch (n_batch > 2) nearly equal bins,
+            # the batch size is the largest possible value below max_batch_size
+            n_batch = int(np.ceil((right - left) / max_batch_size))
+            batch_edges = np.linspace(left, right, n_batch + 1).astype(int)
+
+        # The left edge is the beginning of the spectrum
+        # The right edge is a narrow line
+        elif left == left_edge:
+            right = min(right + min_batch_size / 2, right_edge)  # Ending at the right edge of the narrow line
+
+            check_spectrum_length(left, right)
+
+            # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^0) * min_batch_size
+            # These batches add up to L_right = (2^(K_max+1) - 1) * min_batch_size
+            # K_max is limited by:
+            # 1. 2^K_max * min_batch_size + L_right <= right - left
+            # 2. 2^K_max * min_batch_size <= max_batch_size
+            # n_batch_right = K_max + 1
+            n_batch_right = (
+                min(
+                    int(np.floor(np.log2((right - left) / min_batch_size / 3 + 1 / 3))),
+                    int(np.log2(max_batch_size / min_batch_size)),
+                )
+                + 1
+            )
+            batch_edges_right = (-min_batch_size * (2 * 2 ** np.arange(0, n_batch_right) - 1) + right)[::-1]
+
+            # Batches on the left have the same sizes
+            # i.e., the maximum batch size below 2^K_max * min_batch_size, which can divide the remaining spectrum nearly equally
+            n_batch_left = int(
+                np.ceil((batch_edges_right[0] - left) / min(2**n_batch_right * min_batch_size, max_batch_size))
+            )
+            batch_edges_left = np.linspace(left, batch_edges_right[0], n_batch_left + 1).astype(int)[:-1]
+
+            batch_edges = np.concatenate([batch_edges_left, batch_edges_right])
+
+        # The left edge is a narrow line
+        # The right edge is the end of the spectrum
+        elif right == right_edge:
+            left = max(left - min_batch_size / 2, left_edge)
+
+            check_spectrum_length(left, right)
+
+            # Batches on the left have the sizes: (2^0, 2^1, ..., 2^K_max) * min_batch_size
+            # These batches add up to L_left = (2^(K_max+1) - 1) * min_batch_size
+            # K_max is limited by:
+            # 1. 2^K_max * min_batch_size + L_left <= right - left
+            # 2. 2^K_max * min_batch_size <= max_batch_size
+            # n_batch_left = K_max + 1
+            n_batch_left = (
+                min(
+                    int(np.floor(np.log2((right - left) / min_batch_size / 3 + 1 / 3))),
+                    int(np.log2(max_batch_size / min_batch_size)),
+                )
+                + 1
+            )
+            batch_edges_left = min_batch_size * (2 * 2 ** np.arange(0, n_batch_left) - 1) + left
+
+            # Batches on the right have the same sizes
+            # i.e., the maximum batch size below 2^(K_max+1) * min_batch_size, which can divide the remaining spectrum nearly equally
+            n_batch_right = int(
+                np.ceil((right - batch_edges_left[-1]) / min(2**n_batch_left * min_batch_size, max_batch_size))
+            )
+            batch_edges_right = np.linspace(batch_edges_left[-1], right, n_batch_right + 1).astype(int)[1:]
+
+            batch_edges = np.concatenate([batch_edges_left, batch_edges_right])
+
+        # Both edges are narrow lines
+        else:
+            left = max(left - min_batch_size / 2, left_edge)
+            right = min(right + min_batch_size / 2, right_edge)
+
+            check_spectrum_length(left, right)
+
+            # Batches on the left have the sizes: (2^0, 2^1, ..., 2^K_max) * min_batch_size
+            # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^0) * min_batch_size
+            # These batches add up to L_left_right = 2 * (2^(K_max+1) - 1) * min_batch_size
+            # K_max is limited by:
+            # 1. 2^K_max * min_batch_size + L_left_right <= right - left
+            # 2. 2^K_max * min_batch_size <= max_batch_size
+            # n_batch_left = n_batch_right = K_max + 1
+            n_batch_left = n_batch_right = (
+                min(
+                    int(np.floor(np.log2((right - left) / min_batch_size / 5 + 2 / 5))),
+                    int(np.log2(max_batch_size / min_batch_size)),
+                )
+                + 1
+            )
+            batch_edges_left = min_batch_size * (2 * 2 ** np.arange(0, n_batch_left) - 1) + left
+            batch_edges_right = (-min_batch_size * (2 * 2 ** np.arange(0, n_batch_right) - 1) + right)[::-1]
+
+            # Batches in the middle have the same sizes
+            # i.e., the maximum batch size below min(2^(K_max+1) * min_batch_size, max_batch_size), which can divide the remaining spectrum nearly equally
+            n_batch_middle = int(
+                np.ceil(
+                    (batch_edges_right[0] - batch_edges_left[-1])
+                    / min(2**n_batch_left * min_batch_size, max_batch_size)
+                )
+            )
+            batch_edges_middle = np.linspace(batch_edges_left[-1], batch_edges_right[0], n_batch_middle + 1).astype(
+                int
+            )[1:-1]
+
+            batch_edges = np.concatenate([batch_edges_left, batch_edges_middle, batch_edges_right])
+
+        return np.asarray(batch_edges, dtype=int)
+
+    ###############################################################################
+    ################################# QA Plotting #################################
+    ###############################################################################
+
     def _plot_raw(self) -> Axes:
         from scipy.interpolate import interp1d
 
@@ -731,7 +944,7 @@ class SpecModel:
             cmap="gray",
             vmin=np.nanpercentile(self.f_obs.y, 1),
             vmax=np.nanpercentile(self.f_obs.y, 99),
-            extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
+            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         ax[1].imshow(
             self.f_sky_sub.Y,
@@ -739,25 +952,39 @@ class SpecModel:
             cmap="gray",
             vmin=np.nanpercentile(self.f_sky_sub.y, 1),
             vmax=np.nanpercentile(self.f_sky_sub.y, 99),
-            extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
+            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         # Plot the 2D batched spectrum
-        batch_size = self.host_batch_size.ravel()
-        norm = plt.Normalize(self.f_host_batch_2d.y.min(), self.f_host_batch_2d.y.max())
-        cmap = plt.cm.get_cmap("gray")
-        for k in range(len(self.f_host_batch_2d.X[:, 0])):
-            c_raw = cmap(norm(self.f_host_batch_2d.y[k]))
-            ax[2].add_patch(
-                plt.Rectangle(
-                    (
-                        self.f_host_batch_2d.X[k, 1] - batch_size[k][1] / 2,
-                        self.f_host_batch_2d.X[k, 0] - batch_size[k][0] / 2,
-                    ),
-                    batch_size[k][1],
-                    batch_size[k][0],
-                    color=c_raw,
+        # Convert the pixel coordinate to a uniform pseudo-spectral coordinate
+        spec_to_pseudo_spec = interp1d(
+            self.spec,
+            np.linspace(self.spec[0], self.spec[-1], len(self.spec)),
+            kind="linear",
+            fill_value="extrapolate",
+        )
+        norm = plt.Normalize(self.f_batch_2d.y.min(), self.f_batch_2d.y.max())
+        cmap = plt.cm.get_cmap("gray") if np.mean(self.f_host_1d.y) > 0 else plt.cm.get_cmap("gray_r")
+        
+        shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
+        delta_spat_typical = np.diff(self.spat).mean()
+        delta_spec_typical = np.diff(self.spec).mean()
+        for y in range(shape_batch_2d[1]):
+            spec_min = spec_to_pseudo_spec(self.spec[self._spec_batch_2d_idx[y][0]] - 0.5 * delta_spec_typical)
+            spec_max = spec_to_pseudo_spec(self.spec[self._spec_batch_2d_idx[y][-1]] + 0.5 * delta_spec_typical)
+            ax[2].axvline(spec_max, color="0.8", linestyle=":", lw=2, zorder=100)
+            for x in range(shape_batch_2d[0]):
+                spat_min = self.spat[self._spat_batch_2d_idx[x][0]] - 0.5 * delta_spat_typical
+                spat_max = self.spat[self._spat_batch_2d_idx[x][-1]] + 0.5 * delta_spat_typical
+
+                c_raw = cmap(norm(self.f_batch_2d.Y[x, y]))
+                ax[2].add_patch(
+                    plt.Rectangle(
+                        (spec_min, spat_min),
+                        spec_max - spec_min,
+                        spat_max - spat_min,
+                        color=c_raw,
+                    )
                 )
-            )
 
         # Plot the 1D batched spectrum
         ax[-1].plot(np.arange(len(self.spec)) + 1, self.f_host_1d.y)
@@ -777,34 +1004,46 @@ class SpecModel:
         # Labels
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         for ax_ in ax[:-1]:
+            ax_.set_aspect("auto")
+            ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
+            ax_.set_xlim(self.spec[0], self.spec[-1])
+            ax_.set_ylim(self.spat[0], self.spat[-1])
+            ax_.set_xticks([])
+        for ax_ in ax[:-2]:
             ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
-            ax_.set_aspect("auto")
-            ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
-            ax_.set_xlim(self.spec.min(), self.spec.max())
-            ax_.set_ylim(self.spat.min(), self.spat.max())
-            ax_.set_xticks([])
+
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
-        transform = interp1d(self.spec, np.arange(len(self.spec)) + 1, kind="linear", fill_value="extrapolate")
-        major_tick_size = 500 if self.spec.max() - self.spec.min() < 4000 else 5000
+        major_tick_size = 500 if self.spec[-1] - self.spec[0] < 4000 else 5000
         original_ticks = (
-            np.arange(np.ceil(self.spec.min() / major_tick_size), np.ceil(self.spec.max() / major_tick_size))
+            np.arange(np.ceil(self.spec[0] / major_tick_size), np.ceil(self.spec[-1] / major_tick_size))
             * major_tick_size
         )
         original_minor_ticks = (
-            np.arange(np.ceil(self.spec.min() / major_tick_size * 5), np.ceil(self.spec.max() / major_tick_size * 5))
+            np.arange(np.ceil(self.spec[0] / major_tick_size * 5), np.ceil(self.spec[-1] / major_tick_size * 5))
             * major_tick_size
             / 5
         )
-        transformed_ticks = transform(original_ticks)
-        transformed_minor_ticks = transform(original_minor_ticks)
+        # Convert the non-uniform spectral coordinate to pixel coordinate
+        spec_to_pixel = interp1d(self.spec, np.arange(len(self.spec)) + 1, kind="linear", fill_value="extrapolate")
+        transformed_ticks = spec_to_pixel(original_ticks)
+        transformed_minor_ticks = spec_to_pixel(original_minor_ticks)
 
         ax[-1].set_xticks(transformed_ticks, minor=False)
         ax[-1].set_xticks(transformed_minor_ticks, minor=True)
         ax[-1].set_xticklabels([f"${tick:.0f}$" for tick in original_ticks])
-        ax[-1].set_xlim(transform(self.spec.min()), transform(self.spec.max()))
+        ax[-1].set_xlim(spec_to_pixel(self.spec[0]), spec_to_pixel(self.spec[-1]))
+
+        # Mask the SN trace in the 2D spectrum
+        ax[2].fill_between(
+            ax[2].get_xlim(),
+            -self.mask_wid / 2 + self.mask_offset,
+            self.mask_wid / 2 + self.mask_offset,
+            color="w",
+            zorder=100,
+        )
 
         return ax
 
@@ -983,8 +1222,8 @@ class SpecModel:
         #     ax_.axhline(self.sky_wid, color="darkgreen", linestyle="-.", lw=3)
         #     ax_.set_aspect("auto")
         #     ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
-        #     ax_.set_xlim(self.spec.min(), self.spec.max())
-        #     ax_.set_ylim(self.spat.min(), self.spat.max())
+        #     ax_.set_xlim(self.spec[0], self.spec[-1])
+        #     ax_.set_ylim(self.spat[0], self.spat[-1])
         # ax[3].set_ylabel(r"$\mathrm{Counts}$")
 
         return ax
@@ -999,7 +1238,7 @@ class SpecModel:
             aspect="auto",
             vmin=np.nanpercentile(self.f_sky_sub.y, 1),
             vmax=np.nanpercentile(self.f_sky_sub.y, 99),
-            extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
+            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         f_res_Y = self.f_sky_sub.Y - self._f_pred.reshape(-1, self.shape[1])
         residual_params = dict(
@@ -1008,7 +1247,7 @@ class SpecModel:
             aspect="auto",
             vmin=np.nanmedian(self.f_host.yerr) * -1,
             vmax=np.nanmedian(self.f_host.yerr) * 1,
-            extent=[self.spec.min(), self.spec.max(), self.spat.min(), self.spat.max()],
+            extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
 
         _, ax = plt.subplots(3, 1, figsize=(20, 7.5), sharex=True, sharey=True, constrained_layout=True)
