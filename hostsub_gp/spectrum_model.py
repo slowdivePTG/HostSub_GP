@@ -746,7 +746,7 @@ class SpecModel:
 
         return batch_idx
 
-    def _find_host_emission(self, sigma_thresh: float = 5, kernel_wid: int = None) -> list[int]:
+    def _find_host_emission(self, sigma_thresh: float = 5, kernel_wid: int = None, show: bool = False) -> list[int]:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 
@@ -768,21 +768,46 @@ class SpecModel:
         # Define the kernel for smoothing the standard deviation of the galaxy spatial profile
         if kernel_wid is None:
             kernel_wid = int(self.spec_resln / np.diff(self.spec).min())
-        kernel = np.ones(kernel_wid * 2)
+        kernel = np.ones(int(kernel_wid * 2))
         kernel = kernel / np.sum(kernel)
 
-        # Standard deviation of the galaxy spatial profile - how much the profile varies
-        prof_std = np.nanstd(self.f_host.Y, axis=0)
-        # Smooth the standard deviation to estimate the continuum
-        prof_std_smooth = np.convolve(prof_std, kernel, mode="same")
+        f_host_Y_smooth = np.empty_like(self.f_host.Y[:, kernel_wid:-kernel_wid])
+        f_host_Yerr_smooth = np.empty_like(self.f_host.Yerr[:, kernel_wid:-kernel_wid])
+        for i in np.arange(len(self.spec))[kernel_wid:-kernel_wid]:
+            f_host_Y_smooth[:, i - kernel_wid] = np.nanmean(
+                self.f_host.Y[:, i - int(kernel_wid / 2) : i + int(kernel_wid / 2) + 1], axis=1
+            )
+            f_host_Yerr_smooth[:, i - kernel_wid] = np.nanmean(
+                self.f_host.Yerr[:, i - int(kernel_wid / 2) : i + int(kernel_wid / 2) + 1], axis=1
+            )
+
+        # The difference between the 95th and 5th percentiles of the profile
+        prof_range = np.nanpercentile(f_host_Y_smooth, 95, axis=0) - np.nanpercentile(f_host_Y_smooth, 5, axis=0)
+        # Smooth prof_range to estimate the continuum
+        prof_range_smooth = np.convolve(prof_range, kernel, mode="same")
         # Subtract the continuum and normalize
-        prof_std_norm = (prof_std - prof_std_smooth) / np.nanmean(self.f_host.Yerr, axis=0)
+        prof_range_norm = (prof_range - prof_range_smooth) / np.nanmedian(f_host_Yerr_smooth, axis=0)
 
         peaks, _ = find_peaks(
-            prof_std_norm[kernel_wid:-kernel_wid],
-            height=np.median(prof_std_norm[kernel_wid:-kernel_wid])
-            + mad_std(prof_std_norm[kernel_wid:-kernel_wid]) * sigma_thresh,
+            prof_range_norm,
+            height=np.median(prof_range_norm) + mad_std(prof_range_norm) * sigma_thresh,
         )
+        peaks = peaks + kernel_wid  # Shift the indices back
+
+        if show:
+            _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
+            ax[0].plot(self.spec, self.f_host_1d.Y, color="tab:blue")
+            ax[1].plot(self.spec[kernel_wid:-kernel_wid], prof_range_norm, color="tab:blue")
+            ax[1].axhline(
+                np.median(prof_range_norm) + mad_std(prof_range_norm) * sigma_thresh,
+                color="0.5",
+                ls="--",
+            )
+            for peak in peaks:
+                ax[1].axvline(self.spec[peak], color="tab:red", ls=":")
+            ax[1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+            ax[1].set_ylabel(r"$\mathrm{Normalized\ Standard\ Deviation}$")
+            plt.show()
 
         return peaks
 
@@ -809,7 +834,7 @@ class SpecModel:
         if right is None:
             right = right_edge
 
-        min_batch_size = 2 * int(np.ceil(self.spec_resln / np.diff(self.spec).min()))
+        min_batch_size = 2 * (int(self.spec_resln / np.diff(self.spec).min()) + 1)
         max_batch_size = self.batch_2d[1]
 
         def check_spectrum_length(left, right):
@@ -964,7 +989,7 @@ class SpecModel:
         )
         norm = plt.Normalize(self.f_batch_2d.y.min(), self.f_batch_2d.y.max())
         cmap = plt.cm.get_cmap("gray") if np.mean(self.f_host_1d.y) > 0 else plt.cm.get_cmap("gray_r")
-        
+
         shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
         delta_spat_typical = np.diff(self.spat).mean()
         delta_spec_typical = np.diff(self.spec).mean()
