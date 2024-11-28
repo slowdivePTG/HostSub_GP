@@ -66,7 +66,7 @@ def _init_params(params: dict, require_all: bool = True, params_type: str = "val
             return jnp.asarray(x[0], dtype=jnp.float64)  # Scalar[float64]
 
     params_output = {}
-    for key in ["log_amp", "log_scale", "mean"]:
+    for key in ["log_amp", "log_scale", "mean", "amp_line", "scale_line"]:
         if key in params:
             params_output[key] = ensure_scalar_or_array(params.get(key))
 
@@ -78,7 +78,8 @@ def _print_params(params: dict):
     """Print the parameters."""
 
     def _print_param(params, key, key_str):
-        vals = 10 ** params.get(key) if "log" in key else params.get(key)
+        vals = jnp.asarray(params.get(key))
+        vals = 10 ** vals if "log" in key else vals
         if jnp.ndim(vals) == 0:
             print(f"{key_str}: {vals:.3e}")
         elif jnp.ndim(vals) == 1:
@@ -91,6 +92,9 @@ def _print_params(params: dict):
         _print_param(params, "log_amp", "Amp")
         _print_param(params, "log_scale", "Scale")
         _print_param(params, "mean", "Mean")
+        if "amp_line" in params:
+            _print_param(params, "amp_line", "Amp_line")
+            _print_param(params, "scale_line", "Scale_line")
         print("\n")
     except TypeError as e:
         raise TypeError("Invalid type for params: " + str(e))

@@ -420,19 +420,27 @@ class SpecModel:
         ## mean (i.e., deviation fromt the prior) is close to zero
         params_limit_2d_default = _init_params(
             dict(
+                # log_scale=np.log10(
+                #     [
+                #         [
+                #             [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the ExpSquared kernel
+                #             [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the Matern kernel
+                #         ],
+                #         [
+                #             [1e5, 1e5],  # Limit for the ExpSquared kernel
+                #             [1e5, self.spec_resln * 2],  # Limit for the Matern kernel
+                #         ],
+                #     ]
+                # ),
                 log_scale=np.log10(
                     [
-                        [
-                            [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the ExpSquared kernel
-                            [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the Matern kernel
-                        ],
-                        [
-                            [1e5, 1e5],  # Limit for the ExpSquared kernel
-                            [1e5, self.spec_resln * 2],  # Limit for the Matern kernel
-                        ],
+                        [self.spat_resln / 2.355, self.spec_resln / 2.355],
+                        [self.spat_resln * 1e4, self.spec_resln * 1e4],
                     ]
                 ),
                 mean=[-1e-3, 1e-3],
+                amp_line=[1, 1e5],
+                scale_line=[self.spec_resln / 2.355, self.spec_resln * 1e4],
             ),
             require_all=False,
             params_type="limit",
@@ -561,9 +569,7 @@ class SpecModel:
             print("Initial parameters:")
             _print_params(params_init)
             print("Parameter limits:")
-            print(params_limit[0])
-            print(params_limit[1])
-            print("\n")
+            _print_params(params_limit)
             print("Initial unbound parameters:")
             _print_params(params_init_unbound)
             raise ValueError("Invalid initial parameters: please check the limits.")
@@ -637,7 +643,8 @@ class SpecModel:
             yerr=self.f_host_batch_2d.y,
             params=params_2d,
             params_limit=params_limit_2d,
-            kernel_type="composite",
+            kernel_type="EmissionLine",
+            emission_lines=self.emission_lines,
         ).gp
 
         return gp_1d, gp_2d
@@ -677,12 +684,19 @@ class SpecModel:
             f_2d_yerr: Array,
             f_2d_mean: Array,
             f_mean: Array,
+            emission_lines: Array,
         ) -> float:
             """
             Compute the negative log probability of the host galaxy model
             """
             gp_1d = GP(X=f_1d_X, yerr=f_1d_yerr, params=params_1d, kernel_type="composite").gp
-            gp_2d = GP(X=f_2d_X, yerr=f_2d_yerr, params=params_2d, kernel_type="composite").gp
+            gp_2d = GP(
+                X=f_2d_X,
+                yerr=f_2d_yerr,
+                params=params_2d,
+                kernel_type="EmissionLine",
+                emission_lines=emission_lines,
+            ).gp
             log_prob_1d = gp_1d.log_probability(f_1d_y)
             log_prob_2d = gp_2d.log_probability(f_2d_y)
 
@@ -714,6 +728,7 @@ class SpecModel:
             f_2d_yerr=self.f_host_batch_2d.yerr,
             f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X),
             f_mean=self.host_flux_prior(self.f_host.X[mask_obs]),
+            emission_lines=self.emission_lines,
         )
 
     def _get_pred(self, gp_1d: GaussianProcess, gp_2d: GaussianProcess, X: Array) -> Array:
@@ -769,7 +784,8 @@ class SpecModel:
             The indices of the spectral batches.
         """
         host_emission = self._find_host_emission()
-        print(f"Emission lines found at: {[self.spec[idx].item() for idx in host_emission]}")
+        self.emission_lines = self.spec[host_emission]
+        print(f"Emission lines found at: {self.emission_lines}")
 
         host_emission = np.concatenate([[0], host_emission, [self.spec.size - 1]])
         batch_edges = []
@@ -782,7 +798,7 @@ class SpecModel:
 
         return batch_idx
 
-    def _find_host_emission(self, sigma_thresh: float = 5, kernel_wid: int = None, show: bool = False) -> list[int]:
+    def _find_host_emission(self, sigma_thresh: float = 3, kernel_wid: int = None, show: bool = False) -> list[int]:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 
@@ -818,24 +834,44 @@ class SpecModel:
             )
 
         # The difference between the 95th and 5th percentiles of the profile
-        prof_range = np.nanpercentile(f_host_Y_smooth, 95, axis=0) - np.nanpercentile(f_host_Y_smooth, 5, axis=0)
-        # Smooth prof_range to estimate the continuum
-        prof_range_smooth = np.convolve(prof_range, kernel, mode="same")
+        f_host_1d_Y = np.nanmean(
+            f_host_Y_smooth, axis=0
+        )  # np.nanpercentile(f_host_Y_smooth, 95, axis=0) - np.nanpercentile(f_host_Y_smooth, 5, axis=0)
+        # Smooth f_host_1d_Y to estimate the continuum
+        f_host_1d_Y_smooth = np.convolve(f_host_1d_Y, kernel, mode="same")
         # Subtract the continuum and normalize
-        prof_range_norm = (prof_range - prof_range_smooth) / np.nanmedian(f_host_Yerr_smooth, axis=0)
+        f_host_1d_Y_norm = (f_host_1d_Y - f_host_1d_Y_smooth) / np.nanmedian(f_host_Yerr_smooth, axis=0)
 
-        peaks, _ = find_peaks(
-            prof_range_norm,
-            height=np.median(prof_range_norm) + mad_std(prof_range_norm) * sigma_thresh,
+        peaks_pos, _ = find_peaks(
+            f_host_1d_Y_norm,
+            height=np.median(f_host_1d_Y_norm) + mad_std(f_host_1d_Y_norm) * sigma_thresh,
         )
-        peaks = peaks + kernel_wid  # Shift the indices back
+        peaks_neg, _ = find_peaks(
+            -f_host_1d_Y_norm,
+            height=-np.median(f_host_1d_Y_norm) + mad_std(f_host_1d_Y_norm) * sigma_thresh,
+        )
+        peaks_pos = peaks_pos + kernel_wid  # Shift the indices back
+        peaks_neg = peaks_neg + kernel_wid  # Shift the indices back
+        print(f"Positive peaks found at: {self.spec[peaks_pos]}")
+        print(f"Negative peaks found at: {self.spec[peaks_neg]}")
+
+        peaks = np.array([], dtype=int)
+        for peak in peaks_pos:
+            peak_neg_close = peaks_neg[np.argmin(np.abs(peaks_neg - peak))]
+            if kernel_wid <= np.abs(peak - peak_neg_close) < kernel_wid * 2:
+                peaks = np.append(peaks, int((peak + peak_neg_close) / 2))
 
         if show:
             _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
             ax[0].plot(self.spec, self.f_host_1d.Y, color="tab:blue")
-            ax[1].plot(self.spec[kernel_wid:-kernel_wid], prof_range_norm, color="tab:blue")
+            ax[1].plot(self.spec[kernel_wid:-kernel_wid], f_host_1d_Y_norm, color="tab:blue")
             ax[1].axhline(
-                np.median(prof_range_norm) + mad_std(prof_range_norm) * sigma_thresh,
+                np.median(f_host_1d_Y_norm) + mad_std(f_host_1d_Y_norm) * sigma_thresh,
+                color="0.5",
+                ls="--",
+            )
+            ax[1].axhline(
+                -np.median(f_host_1d_Y_norm) - mad_std(f_host_1d_Y_norm) * sigma_thresh,
                 color="0.5",
                 ls="--",
             )
@@ -1163,7 +1199,7 @@ class SpecModel:
             )
         ).reshape(self.f_batch_2d.shape)
 
-        offset = (pred.max() - pred.min()) / 2
+        offset = (pred.max() - pred.min()) / 3
 
         for k, (r, p) in enumerate(zip(raw.T, pred.T)):
             c_raw = cmap(norm(k))

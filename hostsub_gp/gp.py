@@ -14,11 +14,13 @@ import jaxopt
 from functools import partial
 
 from tinygp import GaussianProcess, kernels, transforms
-from tinygp.kernels.distance import L2Distance
+from tinygp.kernels.distance import L1Distance, L2Distance
 
 from jax._src.typing import ArrayLike, Array
 
 from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
+
+import warnings
 
 
 class GP:
@@ -37,6 +39,7 @@ class GP:
         params_limit: dict = None,
         kernel_type: str = "ExpSquared",
         optimization: bool = False,
+        **kwargs,
     ):
         """Initialize the Gaussian Process."""
         # Initialize the input arrays
@@ -70,7 +73,7 @@ class GP:
             self.params_unbound = _transform_bound_to_unbound(self.params, self.params_limit)
 
         # Build the GP
-        self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type)
+        self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type, **kwargs)
 
     def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
         solver = jaxopt.ScipyMinimize(fun=partial(_neg_log_prob, kernel_type=self.kernel_type))
@@ -114,26 +117,38 @@ class _build_gp:
         self.log_amp = params.get("log_amp")
         self.log_scale = params.get("log_scale")
         self.mean = params.get("mean")
+        # For EmissionLine kernel only
+        self.amp_line = params.get("amp_line")
+        self.scale_line = params.get("scale_line")
 
         self.X = jnp.asarray(X)
         self.yerr = jnp.asarray(yerr)
 
-    def __call__(self, kernel_type: str = "ExpSquared") -> GaussianProcess:
-        kernel = self._build_kernel(kernel_type)
-        return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
+    def __call__(self, kernel_type: str = "ExpSquared", **kwargs) -> GaussianProcess:
+        kernel = self._build_kernel(kernel_type, **kwargs)
+        try:
+            return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
+        except Exception as e:
+            print("X:", self.X)
+            print("X shape:", self.X.shape)
+            print(kernel.evaluate(self.X, self.X))
+            raise ValueError("Building GP: " + str(e))
 
-    def _build_kernel(self, kernel_type: str) -> kernels.Kernel:
+    def _build_kernel(self, kernel_type: str, **kwargs) -> kernels.Kernel:
         amp = 10**self.log_amp
         scale = 10**self.log_scale
-        if kernel_type != "composite":
+
+        # Standard single kernel types
+        if (kernel_type != "composite") and (kernel_type != "EmissionLine"):
             if self.log_amp.size != 1:
                 raise ValueError(f"The {kernel_type} kernel requires only 1 set of parameters")
             if kernel_type == "ExpSquared":
                 kernel = amp * transforms.Linear(1 / scale, kernel=kernels.ExpSquared())
             elif kernel_type == "Matern":
                 kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
+
+        # Composite kernel - combination of ExpSquared and Matern52
         elif kernel_type == "composite":
-            breakpoint()
             if self.log_amp.size != 2:
                 raise ValueError("The composite kernel requires 2 set of parameters")
             # kernel1 : ExpSquared - long-term variations (continuum)
@@ -141,6 +156,65 @@ class _build_gp:
             # kernel2 : Matern - short-term variations (sky lines, emission lines)
             kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52(distance=L2Distance()))
             kernel = kernel_expsqr + kernel_matern
+
+        # EmissionLine kernel - to handle discontinuities at narrow emission lines
+        elif kernel_type == "EmissionLine":
+            if self.amp_line is None or self.scale_line is None:
+                raise ValueError("EmissionLine kernel requires 'amp_line' and 'scale_line' parameters")
+            emission_lines = kwargs.get("emission_lines")
+            if emission_lines is None:
+                warnings.warn(
+                    "EmissionLine kernel: emission_lines not provided, the kernel is equivalent to ExpSquared"
+                )
+            base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.ExpSquared())
+            emission_line_kernel = EmissionLineKernel(
+                amp_line=self.amp_line,
+                scale_line=self.scale_line,
+                emission_lines=emission_lines,
+            )
+            breakpoint()
+            kernel = base_kernel * emission_line_kernel
+
+        # Invalid kernel type
         else:
-            raise ValueError("Invalid kernel type: supported types are 'ExpSquared', 'Matern', and 'composite'")
+            raise ValueError(
+                "Invalid kernel type: supported types are 'ExpSquared', 'Matern', 'composite', 'EmissionLine'"
+            )
+
         return kernel
+
+
+class EmissionLineKernel(kernels.Kernel):
+    """A kernel to handle discontinuities at narrow emission lines in the spectroscopic data."""
+
+    amp_line: float
+    scale_line: float
+    emission_lines: ArrayLike
+
+    def evaluate(self, X1: Array, X2: Array) -> Array:
+        """Evaluate the kernel."""
+
+        # Split coordinates
+        x1_spec, x2_spec = X1[..., -1], X2[..., -1]
+
+        k_x1_x2 = 1
+        # Add emission line effects
+        for line in self.emission_lines:
+            # Calculate proximity to emission line for each point
+            x1_close = jnp.exp(-0.5 * (x1_spec - line)**2 / self.scale_line**2)
+            x2_close = jnp.exp(-0.5 * (x2_spec - line)**2 / self.scale_line**2)
+
+            # Effect when both x1 and x2 are close to the line
+            both_close = x1_close * x2_close
+
+            # Effect when exactly one of x1 and x2 is close to the line
+            one_close = x1_close * (1 - x2_close) + (1 - x1_close) * x2_close
+
+            # Emission line effect
+            # - decrease the covariance when exactly one point is close to the line
+            # - increase the covariance when both points are close to the line
+            emission_line_effect = 1.0 - one_close + self.amp_line * both_close
+
+            k_x1_x2 *= emission_line_effect 
+
+        return k_x1_x2
