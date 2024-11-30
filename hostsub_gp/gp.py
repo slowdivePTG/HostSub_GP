@@ -118,6 +118,7 @@ class _build_gp:
         self.log_scale = params.get("log_scale")
         self.mean = params.get("mean")
         # For EmissionLine kernel only
+        self.amp_line_cont = params.get("amp_line_cont")
         self.amp_line = params.get("amp_line")
         self.scale_line = params.get("scale_line")
 
@@ -126,13 +127,7 @@ class _build_gp:
 
     def __call__(self, kernel_type: str = "ExpSquared", **kwargs) -> GaussianProcess:
         kernel = self._build_kernel(kernel_type, **kwargs)
-        try:
-            return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
-        except Exception as e:
-            print("X:", self.X)
-            print("X shape:", self.X.shape)
-            print(kernel.evaluate(self.X, self.X))
-            raise ValueError("Building GP: " + str(e))
+        return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
 
     def _build_kernel(self, kernel_type: str, **kwargs) -> kernels.Kernel:
         amp = 10**self.log_amp
@@ -159,20 +154,20 @@ class _build_gp:
 
         # EmissionLine kernel - to handle discontinuities at narrow emission lines
         elif kernel_type == "EmissionLine":
-            if self.amp_line is None or self.scale_line is None:
-                raise ValueError("EmissionLine kernel requires 'amp_line' and 'scale_line' parameters")
+            if self.amp_line_cont is None or self.amp_line is None or self.scale_line is None:
+                raise ValueError("EmissionLine kernel requires 'amp_line_cont', 'amp_line', and 'scale_line' parameters")
             emission_lines = kwargs.get("emission_lines")
             if emission_lines is None:
                 warnings.warn(
                     "EmissionLine kernel: emission_lines not provided, the kernel is equivalent to ExpSquared"
                 )
-            base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.ExpSquared())
+            base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
             emission_line_kernel = EmissionLineKernel(
+                amp_line_cont=self.amp_line_cont,
                 amp_line=self.amp_line,
                 scale_line=self.scale_line,
                 emission_lines=emission_lines,
             )
-            breakpoint()
             kernel = base_kernel * emission_line_kernel
 
         # Invalid kernel type
@@ -187,6 +182,7 @@ class _build_gp:
 class EmissionLineKernel(kernels.Kernel):
     """A kernel to handle discontinuities at narrow emission lines in the spectroscopic data."""
 
+    amp_line_cont: float
     amp_line: float
     scale_line: float
     emission_lines: ArrayLike
@@ -201,8 +197,8 @@ class EmissionLineKernel(kernels.Kernel):
         # Add emission line effects
         for line in self.emission_lines:
             # Calculate proximity to emission line for each point
-            x1_close = jnp.exp(-0.5 * (x1_spec - line)**2 / self.scale_line**2)
-            x2_close = jnp.exp(-0.5 * (x2_spec - line)**2 / self.scale_line**2)
+            x1_close = jnp.exp(-0.5 * (x1_spec - line) ** 2 / self.scale_line**2)
+            x2_close = jnp.exp(-0.5 * (x2_spec - line) ** 2 / self.scale_line**2)
 
             # Effect when both x1 and x2 are close to the line
             both_close = x1_close * x2_close
@@ -215,6 +211,26 @@ class EmissionLineKernel(kernels.Kernel):
             # - increase the covariance when both points are close to the line
             emission_line_effect = 1.0 - one_close + self.amp_line * both_close
 
-            k_x1_x2 *= emission_line_effect 
+            k_x1_x2 *= emission_line_effect
 
         return k_x1_x2
+
+        # # Calculate proximity to any emission line for each point
+        # x1_line_sep = jnp.min(jnp.abs(x1_spec - self.emission_lines))
+        # x2_line_sep = jnp.min(jnp.abs(x2_spec - self.emission_lines))
+
+        # x1_close = jnp.exp(-0.5 * x1_line_sep**2 / self.scale_line**2)
+        # x2_close = jnp.exp(-0.5 * x2_line_sep**2 / self.scale_line**2)
+
+        # # Effect when both x1 and x2 are close to the line
+        # both_close = x1_close * x2_close
+
+        # # Effect when exactly one of x1 and x2 is close to the line
+        # one_close = x1_close * (1 - x2_close) + (1 - x1_close) * x2_close
+
+        # # Emission line effect
+        # # - decrease the covariance when exactly one point is close to the line
+        # # - increase the covariance when both points are close to the line
+        # emission_line_effect = 1 - one_close * self.amp_line_cont + both_close * self.amp_line
+
+        # return emission_line_effect

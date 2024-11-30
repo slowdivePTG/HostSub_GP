@@ -439,8 +439,9 @@ class SpecModel:
                     ]
                 ),
                 mean=[-1e-3, 1e-3],
-                amp_line=[1, 1e5],
-                scale_line=[self.spec_resln / 2.355, self.spec_resln * 1e4],
+                amp_line_cont=[0.9, 1],
+                amp_line=[0, 1e3],
+                scale_line=[self.spec_resln / 2.355 / 2, self.spec_resln * 1e4],
             ),
             require_all=False,
             params_type="limit",
@@ -509,9 +510,9 @@ class SpecModel:
 
         self._gp_1d, self._gp_2d = self._build_host_gp(params=self.gp_params)
         # Predict the host galaxy flux outside the mask
-        self._f_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_host.X)
+        _, _, self._f_host_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_host.X)
         # Predict the host galaxy flux on the entire 2D grids
-        self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
+        self._f_1d_pred, self._f_2d_pred, self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
     def extract_sci(self) -> Axes:
         """
@@ -749,12 +750,12 @@ class SpecModel:
         Array
             The predicted host galaxy flux.
         """
-        y_host_1d = gp_1d.predict(y=self.f_host_1d.y, X_test=X[:, 1][:, None])
-        y_host_2d = gp_2d.predict(
-            y=self.f_host_batch_2d.y - self.host_flux_prior(gp_2d.X), X_test=X
-        ) + self.host_flux_prior(X)
+        y_1d = gp_1d.predict(y=self.f_host_1d.y, X_test=X[:, 1][:, None])
+        y_2d = gp_2d.predict(y=self.f_host_batch_2d.y - self.host_flux_prior(gp_2d.X), X_test=X) + self.host_flux_prior(
+            X
+        )
 
-        return y_host_1d * y_host_2d
+        return y_1d, y_2d, y_1d * y_2d
 
     def _get_gp_params(self) -> dict:
         """
@@ -798,90 +799,81 @@ class SpecModel:
 
         return batch_idx
 
-    def _find_host_emission(self, sigma_thresh: float = 3, kernel_wid: int = None, show: bool = False) -> list[int]:
+    def _find_host_emission(self, p_value: float = 1e-8, kernel_wid: int = None, show: bool = False) -> Array:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 
         Parameters
         ----------
-        sigma_thresh : float, optional (default: 3.0)
-            The threshold for the detection of the host galaxy emission.
+        p_value : float, optional (default: 1e-5)
+            The p-value for emission line detection.
         kernel_wid : int, optional (default: None)
-            The width of the kernel for smoothing the standard deviation of the galaxy spatial profile.
+            The width of the kernel for smoothing the profile.
+        show : bool, optional (default: False)
+            Whether to plot the results.
 
         Returns
         -------
-        list[int]
+        Array
             The indices of the host galaxy emission.
         """
         from scipy.signal import find_peaks
+        from scipy.stats import chi2
         from astropy.stats import mad_std
 
         # Define the kernel for smoothing the standard deviation of the galaxy spatial profile
         if kernel_wid is None:
-            kernel_wid = int(self.spec_resln / np.diff(self.spec).min())
-        kernel = np.ones(int(kernel_wid * 2))
-        kernel = kernel / np.sum(kernel)
+            kernel_wid = int(self.spec_resln / jnp.diff(self.spec).min()) + 1
 
-        f_host_Y_smooth = np.empty_like(self.f_host.Y[:, kernel_wid:-kernel_wid])
-        f_host_Yerr_smooth = np.empty_like(self.f_host.Yerr[:, kernel_wid:-kernel_wid])
-        for i in np.arange(len(self.spec))[kernel_wid:-kernel_wid]:
-            f_host_Y_smooth[:, i - kernel_wid] = np.nanmean(
-                self.f_host.Y[:, i - int(kernel_wid / 2) : i + int(kernel_wid / 2) + 1], axis=1
-            )
-            f_host_Yerr_smooth[:, i - kernel_wid] = np.nanmean(
-                self.f_host.Yerr[:, i - int(kernel_wid / 2) : i + int(kernel_wid / 2) + 1], axis=1
-            )
+        f_2d = np.empty_like(self.f_host.Y)
+        f_2d_err = np.empty_like(self.f_host.Yerr)
+        for i in range(len(self.spec)):
+            # Binning the spatial profile for higher S/N and bad pixels removal
+            left = max(0, i - int(kernel_wid / 2))
+            right = min(len(self.spec), i + int(kernel_wid / 2) + 1)
+            f_2d[:, i] = np.nanmedian(self.f_host.Y[:, left:right], axis=1)
+            f_2d_err[:, i] = np.nanmedian(self.f_host.Yerr[:, left:right], axis=1) / np.sqrt(right - left)
 
-        # The difference between the 95th and 5th percentiles of the profile
-        f_host_1d_Y = np.nanmean(
-            f_host_Y_smooth, axis=0
-        )  # np.nanpercentile(f_host_Y_smooth, 95, axis=0) - np.nanpercentile(f_host_Y_smooth, 5, axis=0)
-        # Smooth f_host_1d_Y to estimate the continuum
-        f_host_1d_Y_smooth = np.convolve(f_host_1d_Y, kernel, mode="same")
-        # Subtract the continuum and normalize
-        f_host_1d_Y_norm = (f_host_1d_Y - f_host_1d_Y_smooth) / np.nanmedian(f_host_Yerr_smooth, axis=0)
+        f_1d = np.nansum(f_2d, axis=0)
+        prof = jnp.asarray(f_2d / f_1d)
+        prof_err = jnp.asarray(f_2d_err / f_1d)
 
-        peaks_pos, _ = find_peaks(
-            f_host_1d_Y_norm,
-            height=np.median(f_host_1d_Y_norm) + mad_std(f_host_1d_Y_norm) * sigma_thresh,
-        )
-        peaks_neg, _ = find_peaks(
-            -f_host_1d_Y_norm,
-            height=-np.median(f_host_1d_Y_norm) + mad_std(f_host_1d_Y_norm) * sigma_thresh,
-        )
-        peaks_pos = peaks_pos + kernel_wid  # Shift the indices back
-        peaks_neg = peaks_neg + kernel_wid  # Shift the indices back
-        print(f"Positive peaks found at: {self.spec[peaks_pos]}")
-        print(f"Negative peaks found at: {self.spec[peaks_neg]}")
+        f_1d_cont = np.empty_like(f_1d)
+        prof_med = np.empty_like(prof)
+        for i in range(len(self.spec)):
+            left_wide = max(0, i - kernel_wid * 2)
+            right_wide = min(len(self.spec), i + kernel_wid * 2 + 1)
+            prof_med[:, i] = jnp.nanmedian(prof[:, left_wide:right_wide], axis=1)
+            f_1d_cont[i] = jnp.nanmedian(f_1d[left_wide:right_wide])
 
-        peaks = np.array([], dtype=int)
-        for peak in peaks_pos:
-            peak_neg_close = peaks_neg[np.argmin(np.abs(peaks_neg - peak))]
-            if kernel_wid <= np.abs(peak - peak_neg_close) < kernel_wid * 2:
-                peaks = np.append(peaks, int((peak + peak_neg_close) / 2))
+        f_lines = jnp.abs(f_1d - f_1d_cont)
+        prof_diff = jnp.nanmean(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
+
+        distinct_prof, _ = find_peaks(prof_diff, height=chi2.ppf(1 - p_value, prof.shape[0]))
+        host_lines = jnp.argwhere(f_lines > mad_std(f_lines) * 5).ravel()
+
+        emission_lines = []
+        for line in distinct_prof:
+            host_lines_close = np.where(np.abs(host_lines - line) < kernel_wid)
+            if host_lines_close[0].size > 0:
+                emission_lines.append(int(np.mean(host_lines[host_lines_close])))
 
         if show:
             _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
-            ax[0].plot(self.spec, self.f_host_1d.Y, color="tab:blue")
-            ax[1].plot(self.spec[kernel_wid:-kernel_wid], f_host_1d_Y_norm, color="tab:blue")
-            ax[1].axhline(
-                np.median(f_host_1d_Y_norm) + mad_std(f_host_1d_Y_norm) * sigma_thresh,
-                color="0.5",
-                ls="--",
-            )
-            ax[1].axhline(
-                -np.median(f_host_1d_Y_norm) - mad_std(f_host_1d_Y_norm) * sigma_thresh,
-                color="0.5",
-                ls="--",
-            )
-            for peak in peaks:
-                ax[1].axvline(self.spec[peak], color="tab:red", ls=":")
+            ax[0].plot(self.spec, f_lines, color="tab:blue")
+            ax[0].axhline(mad_std(f_lines) * 5, color="0.5", ls="--")
+            ax[0].set_ylabel(r"$|f - f_\mathrm{cont}|$")
+            ax[1].plot(self.spec, prof_diff, color="tab:blue")
+            ax[1].axhline(chi2.ppf(1 - p_value, prof.shape[0]), color="0.5", ls="--")
+            for line in emission_lines:
+                ax[0].axvline(self.spec[line], color="tab:red", ls=":")
+                ax[1].axvline(self.spec[line], color="tab:red", ls=":")
             ax[1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-            ax[1].set_ylabel(r"$\mathrm{Normalized\ Standard\ Deviation}$")
+            ax[1].set_ylabel(r"$\chi^2$")
+            ax[1].set_yscale("log")
             plt.show()
 
-        return peaks
+        return jnp.asarray(emission_lines, dtype=int)
 
     def _find_batch_edges(self, left: int = None, right: int = None) -> ArrayLike:
         """
@@ -906,7 +898,7 @@ class SpecModel:
         if right is None:
             right = right_edge
 
-        min_batch_size = 2 * (int(self.spec_resln / np.diff(self.spec).min()) + 1)
+        min_batch_size = 2 * (int(self.spec_resln / np.diff(self.spec).min()) + 1) + 1
         max_batch_size = self.batch_2d[1]
 
         def check_spectrum_length(left, right):
@@ -1148,8 +1140,8 @@ class SpecModel:
         if not hasattr(self, "host_flux_prior"):
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 3), constrained_layout=True, sharex=True)
-        norm = plt.Normalize(0, len(self.f_batch_2d.spec))
-        cmap = plt.cm.get_cmap("coolwarm")
+        # norm = plt.Normalize(0, len(self.f_batch_2d.spec))
+        # cmap = plt.cm.get_cmap("gray")
 
         raw = self.f_batch_2d.Y
         prior = self.host_flux_prior(self.f_batch_2d.X).reshape(self.f_batch_2d.shape)
@@ -1157,7 +1149,8 @@ class SpecModel:
         offset = (prior.max() - prior.min()) / 3
 
         for k, (r, p) in enumerate(zip(raw.T, prior.T)):
-            c_raw = cmap(norm(k))
+            # c_raw = cmap(norm(k))
+            c_raw = "k"
             ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, alpha=0.5, ls="--")
             ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
@@ -1189,8 +1182,8 @@ class SpecModel:
         if not hasattr(self, "_gp_2d"):
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 3), constrained_layout=True, sharex=True)
-        norm = plt.Normalize(0, len(self.f_batch_2d.spec))
-        cmap = plt.cm.get_cmap("coolwarm")
+        # norm = plt.Normalize(0, len(self.f_batch_2d.spec))
+        # cmap = plt.cm.get_cmap("coolwarm")
 
         raw = self.f_batch_2d.Y - self.host_flux_prior(self.f_batch_2d.X).reshape(self.f_batch_2d.shape)
         pred = (
@@ -1202,7 +1195,8 @@ class SpecModel:
         offset = (pred.max() - pred.min()) / 3
 
         for k, (r, p) in enumerate(zip(raw.T, pred.T)):
-            c_raw = cmap(norm(k))
+            # c_raw = cmap(norm(k))
+            c_raw = "k"
             ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, ls="--")
             ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
@@ -1239,8 +1233,6 @@ class SpecModel:
             origin="lower",
             cmap="gray",
             aspect="auto",
-            vmin=np.nanpercentile(self.f_sky_sub.y, 1),
-            vmax=np.nanpercentile(self.f_sky_sub.y, 99),
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         f_res_Y = self.f_sky_sub.Y - self._f_pred.reshape(-1, self.shape[1])
@@ -1253,10 +1245,23 @@ class SpecModel:
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
 
-        _, ax = plt.subplots(3, 1, figsize=(20, 7.5), sharex=True, sharey=True, constrained_layout=True)
-        ax[0].imshow(self.f_sky_sub.Y, **source_params)
-        ax[1].imshow(self._f_pred.reshape(-1, self.shape[1]), **source_params)
-        ax[2].imshow(f_res_Y, **residual_params)
+        _, ax = plt.subplots(5, 1, figsize=(20, 12.5), sharex=True, sharey=True, constrained_layout=True)
+        ax[0].imshow(
+            self.f_sky_sub.Y,
+            vmin=np.nanpercentile(self.f_sky_sub.y, 1),
+            vmax=np.nanpercentile(self.f_sky_sub.y, 99),
+            **source_params,
+        )
+        flux_is_positive = np.sign(np.median(self._f_1d_pred))
+        ax[1].imshow(self._f_1d_pred.reshape(-1, self.shape[1]) * flux_is_positive, **source_params)
+        ax[2].imshow(self._f_2d_pred.reshape(-1, self.shape[1]) * flux_is_positive, **source_params)
+        ax[3].imshow(
+            self._f_pred.reshape(-1, self.shape[1]),
+            vmin=np.nanpercentile(self.f_sky_sub.y, 1),
+            vmax=np.nanpercentile(self.f_sky_sub.y, 99),
+            **source_params,
+        )
+        ax[-1].imshow(f_res_Y, **residual_params)
         for ax_ in ax:
             ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
@@ -1264,8 +1269,10 @@ class SpecModel:
             ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
-        ax[1].set_title(r"$\mathrm{Model}$")
-        ax[2].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
-        ax[2].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+        ax[1].set_title(r"$\mathrm{Model\ (1D)}$")
+        ax[2].set_title(r"$\mathrm{Model\ (2D)}$")
+        ax[3].set_title(r"$\mathrm{Model}$")
+        ax[-1].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
+        ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
 
         return ax
