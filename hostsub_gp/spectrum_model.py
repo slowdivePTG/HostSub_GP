@@ -439,9 +439,8 @@ class SpecModel:
                     ]
                 ),
                 mean=[-1e-3, 1e-3],
-                amp_line_cont=[0.9, 1],
                 amp_line=[0, 1e3],
-                scale_line=[self.spec_resln / 2.355 / 2, self.spec_resln * 1e4],
+                # scale_line=[self.spec_resln / 2.355 / 2, self.spec_resln * 1e4],
             ),
             require_all=False,
             params_type="limit",
@@ -799,7 +798,7 @@ class SpecModel:
 
         return batch_idx
 
-    def _find_host_emission(self, p_value: float = 1e-8, kernel_wid: int = None, show: bool = False) -> Array:
+    def _find_host_emission(self, p_value: float = 1e-7, kernel_wid: int = None, show: bool = False) -> Array:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 
@@ -1209,7 +1208,7 @@ class SpecModel:
                 zorder=110,
                 color=c_raw,
             )
-            ax.axhline(-offset * k, color=c_raw, ls="--", lw=1)
+            ax.axhline(-offset * k, color=c_raw, ls="--", lw=1, alpha=0.25)
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
         ylim = ax.get_ylim()
