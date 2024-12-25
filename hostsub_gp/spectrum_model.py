@@ -15,7 +15,7 @@ from functools import partial
 from tinygp import GaussianProcess
 
 from ._plt import plt, MultipleLocator
-from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
+from ._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
 from .gp import GP
 from .host_model import HostProfile
 
@@ -196,6 +196,7 @@ class SpecModel:
         sky_wid: float = 10.0,  # sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         show: bool = False,
+        save: str = None,
     ):
         self.pixel_scale = pixel_scale
         self.center_ra = center_ra
@@ -339,24 +340,22 @@ class SpecModel:
         )
         print("Batched 2D galaxy spectrum:", self.f_host_batch_2d.shape)
 
+        self._plot_raw()
         if show:
-            self._plot_raw()
+            plt.show()
+        if save is not None:
+            plt.savefig(save, bbox_inches="tight")
 
-    def model_host_prior(self, show: bool = True):
+    def model_host_prior(self, **kwargs):
         """
         Build the prior of the host galaxy using Gaussian Process regression.
-
-        Parameters
-        ----------
-        show : bool, optional (default: True)
-            Whether to show the prior of the host galaxy.
         """
         host_prof = HostProfile(spec2d=self)
-        self.host_flux_prior = host_prof.model_host_profile_prior(show=show)
+        self.host_flux_prior = host_prof.model_host_profile_prior(**kwargs)
 
     def model_host(
         self,
-        params_init: tuple[dict, dict] | list[dict],
+        params_init: tuple[dict, dict] | list[dict] = None,
         params_limit: tuple[dict, dict] | list[dict] = None,
         optimization: bool = False,
         sampling: bool = False,
@@ -381,82 +380,21 @@ class SpecModel:
             raise ValueError("Please build the host flux prior first.")
 
         # Initialize the parameters
-        params_init = _init_params(params_init)
+        params_init_1d = self._set_params_init(params_init[0], ndim=1)
+        params_init_2d = self._set_params_init(params_init[1], ndim=2)
+        params_init = [params_init_1d, params_init_2d]
+
+        # Set the limits for the parameters
         if params_limit is None:
             params_limit = [None, None]
         else:
-            params_limit = _init_params(params_limit, require_all=False, params_type="limit")
-
-        # Default limits for the Gaussian Process parameters
-        # TODO: modify the default limits with a configuration file
-        # 1D spectrum of the host galaxy
-        ## scale >= spectral resolution / 2.355
-        ### here we use a composite kernel
-        ### ExpSquared - slow variation (>> spectral resolution)
-        ### Matern - narrow features (~ spectral resolution)
-        params_limit_1d_default = _init_params(
-            dict(
-                log_scale=np.log10(
-                    [
-                        [
-                            self.spec_resln / 2.355,  # Limit for the ExpSquared kernel
-                            self.spec_resln / 2.355,  # Limit for the Matern kernel
-                        ],
-                        [
-                            self.spec_resln * 1e4,  # Limit for the ExpSquared kernel
-                            self.spec_resln * 2,  # Limit for the Matern kernel
-                        ],
-                    ]
-                ),
-            ),
-            require_all=False,
-            params_type="limit",
-        )
-        # 2D spatial profile & 1D spectrum of the host galaxy
-        ## scale >= spatial resolution, spectral resolution / 2.355
-        ### here we use a composite kernel
-        ### ExpSquared - slow variation (>> spectral resolution)
-        ### Matern - narrow features (~ spectral resolution)
-        ## mean (i.e., deviation fromt the prior) is close to zero
-        params_limit_2d_default = _init_params(
-            dict(
-                # log_scale=np.log10(
-                #     [
-                #         [
-                #             [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the ExpSquared kernel
-                #             [self.spat_resln / 2.355, self.spec_resln / 2.355],  # Limit for the Matern kernel
-                #         ],
-                #         [
-                #             [1e5, 1e5],  # Limit for the ExpSquared kernel
-                #             [1e5, self.spec_resln * 2],  # Limit for the Matern kernel
-                #         ],
-                #     ]
-                # ),
-                log_scale=np.log10(
-                    [
-                        [self.spat_resln / 2.355, self.spec_resln / 2.355],
-                        [self.spat_resln * 1e4, self.spec_resln * 1e4],
-                    ]
-                ),
-                mean=[-1e-3, 1e-3],
-                amp_line=[0, 1e3],
-                # scale_line=[self.spec_resln / 2.355 / 2, self.spec_resln * 1e4],
-            ),
-            require_all=False,
-            params_type="limit",
-        )
+            params_limit = _init_params(params_limit, require_all=False)
 
         if optimization:
             # Fitting the 1D spectrum of the host galaxy
             print("Round 1: Fitting the 1D spectrum of the host galaxy")
 
-            if params_limit[0] is None:
-                params_limit[0] = params_limit_1d_default
-            else:
-                for key in params_limit[0]:
-                    if key in params_limit_1d_default:
-                        params_limit_1d_default.pop(key)
-                params_limit[0] = {**params_limit_1d_default, **params_limit[0]}
+            params_limit[0] = self._set_params_limit(params_limit[0], ndim=1)
 
             params_1d = GP(
                 X=self.f_host_1d.X,
@@ -480,19 +418,12 @@ class SpecModel:
                     for key in params_1d
                 },
                 require_all=False,
-                params_type="limit",
             )
 
             # Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly
             print("Round 2: Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly")
 
-            if params_limit[1] is None:
-                params_limit[1] = params_limit_2d_default
-            else:
-                for key in params_limit[1]:
-                    if key in params_limit_2d_default:
-                        params_limit_2d_default.pop(key)
-                params_limit[1] = {**params_limit_2d_default, **params_limit[1]}
+            params_limit[1] = self._set_params_limit(params_limit[1], ndim=2)
 
             self.gp_params = self._model_host_optimization(
                 params_init=tuple(params_init),
@@ -513,7 +444,7 @@ class SpecModel:
         # Predict the host galaxy flux on the entire 2D grids
         self._f_1d_pred, self._f_2d_pred, self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
-    def extract_sci(self) -> Axes:
+    def extract_sci(self) -> Axes:  # TODO: adopt the extraction method of pypeit
         """
         Extract the science spectrum.
         """
@@ -539,6 +470,129 @@ class SpecModel:
         ax.set_ylabel(r"$\mathrm{Counts}$")
 
         return ax
+
+    def _set_params_init(self, params_init: dict = None, ndim: int = 1) -> dict:
+        """
+        Setup the initial parameters for the Gaussian Process model.
+
+        Parameters
+        ----------
+        params_init : dict, optional
+            The user input initial parameters for the Gaussian Process.
+        ndim : int, optional
+            The number of dimensions for the Gaussian Process.
+
+        Returns
+        -------
+        dict
+            The initial parameters for the Gaussian Process model.
+        """
+        # 1D spectrum of the host galaxy
+        if ndim == 1:
+            log_amp_est = np.log10(((self.f_host_1d.y) ** 2).max())
+            mean_est = np.nanmean(self.f_host_1d.y)
+            params_init_default = dict(
+                log_amp=(
+                    log_amp_est,  # ExpSquared: Logarithm of the maximum squared value of the 1D spectrum
+                    log_amp_est - 2,  # Matern: Somewhat smaller
+                ),
+                log_scale=(
+                    2,  # ExpSquared: 100 Angstrom
+                    np.log10(self.spec_resln / 2.355),  # Matern: Spectral resolution / 2.355
+                ),
+                mean=mean_est,  # Mean of the 1D spectrum
+            )
+        elif ndim == 2:
+            params_init_default = dict(
+                log_amp=0.0,
+                log_scale=(
+                    np.log10(self.spec_resln),  # Spatial scale ~ seeing
+                    2,  # Spectral scale ~ 100 Angstrom
+                ),
+                mean=0.0,
+                amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
+                scale_line=self.spec_resln / 2,  # Radius of the host lines: Half of the FWHM of the spectral resolution
+            )
+        else:
+            raise ValueError("Invalid number of dimensions.")
+
+        if params_init is None:
+            params_init = params_init_default
+        else:
+            for k, v in params_init_default.items():
+                if k not in params_init:
+                    params_init[k] = v
+
+        return _init_params(params_init, require_all=True)
+
+    def _set_params_limit(self, params_limit: dict = None, ndim: int = 1) -> dict:
+        """
+        Setup the parameters limits by merging the user input limits with the default limits.
+
+        Parameters
+        ----------
+        params_limit : dict, optional
+            The user input limits for the Gaussian Process parameters.
+        ndim : int, optional
+            The number of dimensions for the Gaussian Process.
+
+        Returns
+        -------
+        dict
+            The merged parameters limits.
+        """
+        large_scale = 1e4
+        small_scale = 1e-3
+
+        # 1D spectrum of the host galaxy
+        ## scale >= spectral resolution / 2.355
+        ### Here we use a composite kernel
+        ### ExpSquared - slow variation (>> spectral resolution)
+        ### Matern - narrow features (~ spectral resolution)
+        if ndim == 1:  # TODO: modify the default limits with a configuration file
+            params_limit_default = dict(
+                log_scale=np.log10(
+                    [
+                        [
+                            self.spec_resln / 2.355,  # Limit for the ExpSquared kernel
+                            self.spec_resln / 2.355,  # Limit for the Matern kernel
+                        ],
+                        [
+                            self.spec_resln * large_scale,  # Limit for the ExpSquared kernel
+                            self.spec_resln * 2,  # Limit for the Matern kernel
+                        ],
+                    ]
+                ),
+            )
+
+        # 2D spatial profile & 1D spectrum of the host galaxy
+        ## scale >= spatial resolution / 2.355, spectral resolution / 2.355
+        ### here we use a single kernel and adjust the kernel within the host lines
+        ## mean (i.e., deviation fromt the prior) is close to zero
+        elif ndim == 2:
+            params_limit_default = dict(
+                log_scale=np.log10(
+                    [
+                        [self.spat_resln / 2.355, self.spec_resln / 2.355],
+                        [self.spat_resln * large_scale, self.spec_resln * large_scale],
+                    ]
+                ),
+                mean=[-small_scale, small_scale],
+                scale_line=[self.spec_resln / 2.355 / 2, self.spec_resln * large_scale],
+            )
+
+        else:
+            raise ValueError("Invalid number of dimensions.")
+
+        if params_limit is None:
+            params_limit = params_limit_default
+        else:
+            for key in params_limit:
+                if key in params_limit_default:
+                    params_limit_default.pop(key)
+            params_limit[0] = {**params_limit_default, **params_limit}
+
+        return _init_params(params_limit, require_all=False)
 
     ###############################################################################
     ############################ Host Galaxy Modeling #############################
@@ -798,7 +852,7 @@ class SpecModel:
 
         return batch_idx
 
-    def _find_host_emission(self, p_value: float = 1e-7, kernel_wid: int = None, show: bool = False) -> Array:
+    def _find_host_emission(self, p_value: float = 1e-8, kernel_wid: int = None, show: bool = False) -> Array:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 

@@ -14,7 +14,7 @@ from jax._src.typing import ArrayLike, Array
 import glob
 from astropy.io import fits
 from pypeit import spec2dobj, specobjs
-import json
+from pypeit import msgs
 
 from .interp import Interp1D_Grid, Interp2D_Grid, Interp2D_RBF
 from .spectrum_model import SpecModel
@@ -29,7 +29,6 @@ class SpecData:
 
     def __init__(
         self,
-        *,
         pixel_scale: float,
         center_ra: float,
         center_dec: float,
@@ -46,6 +45,8 @@ class SpecData:
         flux_ivar: ArrayLike = None,
         waveimg: ArrayLike = None,
         spat_padding: float = 1.0,
+        to_caches: bool = False,
+        cache_path: str = None,
     ):
         self.spat_rect = jnp.asarray(spat_rect)
         self.spec_rect = jnp.asarray(spec_rect)
@@ -88,15 +89,18 @@ class SpecData:
                 spat_rect=self.spat_rect,
                 spec_rect=self.spec_rect,
             )
-            self.to_caches()
+
+            # Save the 2D spectra to cache files
+            self.cache_path = cache_path
+            if to_caches:
+                self.to_fits()
 
     @classmethod
     def from_pypeit(
         cls,
-        sci_id: str,
+        sci_file: str,
         obj_id: str = None,
-        std_id: str = None,
-        sci_dir: str = "./",
+        std_file: str = None,
         ra: float = None,
         dec: float = None,
         spat_resln: float = None,
@@ -107,24 +111,32 @@ class SpecData:
 
         Parameters
         ----------
-        sci_id : str
-            The ID of the science object.
+        sci_file : str
+            The filename of the science object.
         obj_id : str, optional (default: None)
             The object ID in the science frame.
-        std_id : str, optional (default: None)
-            The ID of the standard star.
-        sci_dir : str, optional (default: "./")
-            The directory of the science frame.
+        std_file : str, optional (default: None)
+            The filename of the standard star.
         ra, dec : float, optional (default: None)
             The RA and DEC of the science object.
+            If not provided, the RA and DEC in the header will be used.
         spat_resln : float, optional (default: None)
             The spatial resolution (seeing) of the science frame.
         slit_len : float, optional (default: 20.0, in arcsec)
             The length of the slit in the spatial direction.
         """
 
-        sci_file = glob.glob(pathname=sci_dir + f"spec2d*{sci_id}*fits")[0]
-        pypeit_header = fits.getheader(sci_file)
+        if "spec1d" in sci_file:
+            spec1d_file = sci_file
+            spec2d_file = sci_file.replace("spec1d", "spec2d")
+        elif "spec2d" in sci_file:
+            spec2d_file = sci_file
+            spec1d_file = sci_file.replace("spec2d", "spec1d")
+        else:
+            raise ValueError("Incorrect sci_file format.")
+
+        msgs.info(f"Loading 2D spectrum for {spec2d_file}...")
+        pypeit_header = fits.getheader(spec2d_file)
 
         if pypeit_header["PYP_SPEC"] in ["keck_lris_blue", "keck_lris_red", "keck_lris_red_mark4"]:
             position_angle = pypeit_header["ROTPOSN"] + 90
@@ -140,17 +152,18 @@ class SpecData:
         else:
             raise NotImplementedError("Only LRIS is supported")
 
+        # If the object ID in the science frame is provided (i.e., object successfully found), use the object trace
         if obj_id is not None:
-            # If the object ID in the science frame is provided (i.e., object successfully found), use the object trace
-            trace_file = glob.glob(pathname=sci_dir + f"spec1d*{sci_id}*fits")[0]
+            trace_file = spec1d_file
             trace_objs = specobjs.SpecObjs.from_fitsfile(trace_file, det=det)
             name_idx = trace_objs.name_indices(obj_id)
             if all(~name_idx):
                 raise ValueError(f"Object {obj_id} not found in the trace file.")
             trace_obj = trace_obj[name_idx]
-        elif std_id is not None:
-            # If the object ID is not provided, use the standard star trace
-            trace_file = glob.glob(pathname=sci_dir + f"spec1d*{std_id}*fits")[0]
+
+        # If the object ID is not provided, use the standard star trace
+        elif std_file is not None:
+            trace_file = std_file
             trace_objs = specobjs.SpecObjs.from_fitsfile(trace_file, det=det)
             # Find the SpecObj with the highest signal-to-noise ratio (S2N) in the SpecObjs
             argmax_snr = np.argmax([obj["S2N"] for obj in trace_objs])
@@ -163,7 +176,7 @@ class SpecData:
 
         trace_spat_pix = trace_obj["TRACE_SPAT"]  # spatial pixel of the trace
 
-        sci2d = spec2dobj.Spec2DObj.from_file(sci_file, detname=det)
+        sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
 
         flux = np.array(sci2d.sciimg.T)
         ivar = np.array(sci2d.ivarraw.T)
@@ -209,10 +222,12 @@ class SpecData:
             dist=dist_pix * pixel_scale,
             spat_rect=jnp.arange(*spat_range) * pixel_scale,
             spec_rect=trace_spec,
+            cache_path=spec2d_file.replace(".fits", "_rect.fits"),
+            to_caches=True,
         )
 
     @classmethod
-    def from_caches(cls, cache_path: str = ".cache.json"):
+    def from_fits(cls, fits_path: str = None):
         """
         Load 2D spectra from cache files.
 
@@ -221,18 +236,37 @@ class SpecData:
         cache_path : str, optional (default: ".cache.json")
             The path to the cache file.
         """
-        if hasattr(cls, "_cache_path"):
-            cache_file = cls._cache_path
-        else:
-            cache_file = cache_path
+        # try:
+        #     with open(cache_path, "r", encoding="UTF-8") as f:
+        #         public_data = json.load(f)
+        # except FileNotFoundError:
+        #     raise FileNotFoundError(f"Cache file {cache_path} not found.")
+        # return cls(**public_data)
+        if fits_path is None:
+            raise ValueError("No fits file provided.")
         try:
-            with open(cache_file, "r", encoding="UTF-8") as f:
-                public_data = json.load(f)
+            with fits.open(fits_path) as f:
+                header = f[0].header
+                data = dict(
+                    pixel_scale=header["PIXSCALE"],
+                    center_ra=header["CENRA"],
+                    center_dec=header["CENDEC"],
+                    slit_wid=header["SLITWID"],
+                    position_angle=header["POSANG"],
+                    spat_resln=header["SPATRESLN"],
+                    spec_resln=header["SPECRESLN"],
+                    spat_rect=np.array(f["SPAT"].data, dtype=np.float64),
+                    spec_rect=np.array(f["SPEC"].data, dtype=np.float64),
+                    flux_rect=np.array(f["FLUX"].data, dtype=np.float64),
+                    flux_ivar_rect=np.array(f["IVAR"].data, dtype=np.float64),
+                    cache_path=header["SPECFILE"],
+                    to_caches=False,
+                )
         except FileNotFoundError:
-            raise FileNotFoundError(f"Cache file {cache_file} not found.")
-        return cls(**public_data)
+            raise FileNotFoundError(f"Fits file {fits_path} not found.")
+        return cls(**data)
 
-    def to_caches(self, cache_path: str = ".cache.json"):
+    def to_fits(self):
         """
         Save the 2D spectra to cache files.
 
@@ -248,9 +282,38 @@ class SpecData:
             # Convert the JAX array (if any) to numpy array
             public_data[key] = np.array(public_data[key]).tolist()
 
-        with open(cache_path, "w", encoding="UTF-8") as f:
-            json.dump(public_data, f, indent=4)
-        self._cache_path = cache_path
+        # Create primary HDU
+        primary_hdu = fits.PrimaryHDU()
+
+        # Add headers
+        hdr = primary_hdu.header
+        hdr["PIXSCALE"] = public_data["pixel_scale"]
+        hdr["CENRA"] = public_data["center_ra"]
+        hdr["CENDEC"] = public_data["center_dec"]
+        hdr["SLITWID"] = public_data["slit_wid"]
+        hdr["POSANG"] = public_data["position_angle"]
+        hdr["SPATRESLN"] = public_data["spat_resln"]
+        hdr["SPECRESLN"] = public_data["spec_resln"]
+        hdr["SPECFILE"] = public_data["cache_path"]
+
+        # Create HDUs
+        spat_hdu = fits.ImageHDU(public_data["spat_rect"], name="SPAT")
+        spat_hdu.header["UNIT"] = "arcsec"
+        spat_hdu.header["COMMENT"] = "Spatial coordinates"
+        spec_hdu = fits.ImageHDU(public_data["spec_rect"], name="SPEC")
+        spec_hdu.header["UNIT"] = "Angstrom"
+        spec_hdu.header["COMMENT"] = "Spectral coordinates"
+        flux_hdu = fits.ImageHDU(public_data["flux_rect"], name="FLUX")
+        flux_hdu.header["COMMENT"] = "Flux values"
+        ivar_hdu = fits.ImageHDU(public_data["flux_ivar_rect"], name="IVAR")
+        ivar_hdu.header["COMMENT"] = "Inverse variance values"
+
+        # Create HDU list
+        hdul = fits.HDUList([primary_hdu, spat_hdu, spec_hdu, flux_hdu, ivar_hdu])
+
+        # Save to fits file
+        # fits_path = self.spec2d_file.replace(".fits", "_rect.fits")
+        hdul.writeto(public_data["cache_path"], overwrite=True)
 
     def to_SpecModel(
         self,
@@ -377,7 +440,7 @@ class SpecData:
             slit_wid=self.slit_wid,
             slit_len=slit_len,
             position_angle=self.position_angle,
-        ).model_host_profile_prior(show=True)
+        ).model_host_profile_prior()
 
         flag = (
             jnp.isfinite(points[:, :, 0])

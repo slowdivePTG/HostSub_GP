@@ -18,7 +18,7 @@ from tinygp.kernels.distance import L1Distance, L2Distance
 
 from jax._src.typing import ArrayLike, Array
 
-from ._gp import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
+from ._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
 
 import warnings
 

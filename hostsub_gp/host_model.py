@@ -206,7 +206,7 @@ class HostProfile:
         self.prof_err = jnp.concatenate(prof_err_slit)
         self.X = jnp.stack([jnp.concatenate(spat_slit), jnp.concatenate(wv_slit)], axis=-1)
 
-    def model_host_profile_prior(self, show: bool = False) -> Callable[[jax.Array], jax.Array]:
+    def model_host_profile_prior(self, **kwargs) -> Callable[[jax.Array], jax.Array]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
         """
@@ -253,31 +253,37 @@ class HostProfile:
             )
             host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x))
 
-        if show:
-            _, ax = plt.subplots(
-                len(self.flts), 1, figsize=(6, 2 * len(self.flts)), sharex=True, sharey=True, constrained_layout=True
+        # Whether to plot the host profile
+        show = kwargs.get("show", False)
+        # Whether to save the plot
+        save = kwargs.get("save", None)
+        _, ax = plt.subplots(
+            len(self.flts), 1, figsize=(6, 2 * len(self.flts)), sharex=True, sharey=True, constrained_layout=True
+        )
+        ax = np.atleast_1d(ax)
+        cmap = plt.cm.get_cmap("coolwarm")
+        norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
+        for k in range(len(self.flts)):
+            ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.flts[k]}", color=cmap(norm(k)))
+            ax[k].plot(
+                self.spat_slit[k],
+                host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)),
+                "--",
+                color=cmap(norm(k)),
             )
-            ax = np.atleast_1d(ax)
-            cmap = plt.cm.get_cmap("coolwarm")
-            norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
-            for k in range(len(self.flts)):
-                ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.flts[k]}", color=cmap(norm(k)))
-                ax[k].plot(
-                    self.spat_slit[k],
-                    host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)),
-                    "--",
-                    color=cmap(norm(k)),
-                )
-                ax[k].fill_between(
-                    self.spat_slit[k],
-                    self.prof_slit[k] - self.prof_err_slit[k],
-                    self.prof_slit[k] + self.prof_err_slit[k],
-                    color=cmap(norm(k)),
-                    alpha=0.2,
-                )
-                ax[k].set_ylabel(r"$\mathrm{Profile}$")
-            ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+            ax[k].fill_between(
+                self.spat_slit[k],
+                self.prof_slit[k] - self.prof_err_slit[k],
+                self.prof_slit[k] + self.prof_err_slit[k],
+                color=cmap(norm(k)),
+                alpha=0.2,
+            )
+            ax[k].set_ylabel(r"$\mathrm{Profile}$")
+        ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+        if show:
             plt.show()
+        if save is not None:
+            plt.savefig(save, bbox_inches="tight")
 
         return host_prior
 

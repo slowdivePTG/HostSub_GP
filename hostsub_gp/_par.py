@@ -10,6 +10,7 @@ __all__ = [
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
@@ -57,7 +58,8 @@ def _init_params(params: dict, require_all: bool = True, params_type: str = "val
     _check_params(params, require_all=require_all)
 
     def ensure_scalar_or_array(x):
-        x = jnp.asarray(x)
+        if not isinstance(x, jax.Array):
+            x = np.asarray(x, dtype=np.float64) # In case x is a scalar or an array of str
         if x.size > 1:
             return jnp.asarray(x, dtype=jnp.float64)  # Array[float64]
         elif x.ndim == 0:
