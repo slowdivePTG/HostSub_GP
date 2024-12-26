@@ -77,14 +77,11 @@ class HostSub(ScriptBase):
                 msgs.error("No standard star file provided and no object ID given.")
 
             # Get the parameters for host subtraction
-            par_hostsub = par.pop("hostsub")
-            if par_hostsub is None:
-                slit_len = 20.0
-                ra, dec = None, None
-            else:
-                slit_len = 20.0 if "slit_len" not in par_hostsub else float(par_hostsub["slit_len"])
-                ra = None if "ra" not in par_hostsub else float(par_hostsub["ra"])
-                dec = None if "dec" not in par_hostsub else float(par_hostsub["dec"])
+            par_hostsub = par.get("hostsub", {})
+            spec2d_cfg = {}
+            spec2d_cfg["slit_len"] = float(par_hostsub.get("slit_len", 20.0))
+            spec2d_cfg["ra"] = None if not "ra" in par_hostsub else float(par_hostsub["ra"])
+            spec2d_cfg["dec"] = None if not "dec" in par_hostsub else float(par_hostsub["dec"])
 
             # Run the host subtraction
             if args.overwrite or not os.path.exists(sci_rect_file):
@@ -93,24 +90,24 @@ class HostSub(ScriptBase):
                     sci_file=sci_file_2d,
                     std_file=std_file,
                     obj_id=objid,
-                    ra=ra,
-                    dec=dec,
-                    slit_len=slit_len,
+                    **spec2d_cfg,
                 )
             else:
                 # Load the rectified file
                 spec_data = SpecData.from_fits(sci_rect_file)
 
             # Convert the 2D spectrum to a SpecModel object
-            spec_range = None if "spec_range" not in par_hostsub else tuple(map(float, par_hostsub["spec_range"]))
-            mask_wid = 2.0 if "mask_wid" not in par_hostsub else float(par_hostsub["mask_wid"])
-            sky_wid = 10.0 if "sky_wid" not in par_hostsub else float(par_hostsub["sky_wid"])
+            hostsub_cfg = {}
+            hostsub_cfg["spec_range"] = (
+                None if "spec_range" not in par_hostsub else tuple(map(float, par_hostsub["spec_range"]))
+            )
+            hostsub_cfg["mask_wid"] = float(par_hostsub.get("mask_wid", 2.0))
+            hostsub_cfg["sky_wid"] = float(par_hostsub.get("sky_wid", 10.0))
+            hostsub_cfg["mask_offset"] = float(par_hostsub.get("mask_offset", 0.0))
             spec2d = spec_data.to_SpecModel(
-                spec_range=spec_range,
-                mask_wid=mask_wid,
-                sky_wid=sky_wid,
                 show=args.debug,
-                save=f"QA/{os.path.basename(base_file)}_raw.pdf",
+                save=f"QA/{os.path.basename(base_file)}.pdf",
+                **hostsub_cfg,
             )
 
             # Model the host prior
@@ -120,8 +117,8 @@ class HostSub(ScriptBase):
             )
 
             # Get the initial parameters
-            params_init_1d = par_hostsub.pop("params_init_1d", None)
-            params_init_2d = par_hostsub.pop("params_init_2d", None)
+            params_init_1d = par_hostsub.get("params_init_1d", None)
+            params_init_2d = par_hostsub.get("params_init_2d", None)
             params_init = [params_init_1d, params_init_2d]
 
             # Get limits for the parameters
@@ -131,8 +128,8 @@ class HostSub(ScriptBase):
                 lower = {k.replace("_lower", ""): v for k, v in params_limit_dict.items() if "lower" in k}
                 return {k: (lower[k], upper[k]) for k in lower}
 
-            params_limit_1d = _set_params_limit(par_hostsub.pop("params_limit_1d", None))
-            params_limit_2d = _set_params_limit(par_hostsub.pop("params_limit_2d", None))
+            params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", None))
+            params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", None))
 
             params_limit = [params_limit_1d, params_limit_2d]
 

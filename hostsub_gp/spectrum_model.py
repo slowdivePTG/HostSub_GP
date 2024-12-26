@@ -303,7 +303,7 @@ class SpecModel:
         )
 
         # Spectral batch
-        self._spec_batch_2d_idx = self._get_spec_batches()
+        self._spec_batch_2d_idx = self._get_spec_batches(show=show, save=save.replace(".pdf", "_host_emission.pdf"))
 
         # New coordinates: mean of the batch
         shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
@@ -828,7 +828,7 @@ class SpecModel:
     ############################# Adaptive Batch Size #############################
     ###############################################################################
 
-    def _get_spec_batches(self) -> list[list[int]]:
+    def _get_spec_batches(self, **kwargs) -> list[list[int]]:
         """
         Get the batch indices for the spectral direction.
 
@@ -837,7 +837,7 @@ class SpecModel:
         list[list[int]]
             The indices of the spectral batches.
         """
-        host_emission = self._find_host_emission()
+        host_emission = self._find_host_emission(**kwargs)
         self.emission_lines = self.spec[host_emission]
         print(f"Emission lines found at: {self.emission_lines}")
 
@@ -852,7 +852,7 @@ class SpecModel:
 
         return batch_idx
 
-    def _find_host_emission(self, p_value: float = 1e-8, kernel_wid: int = None, show: bool = False) -> Array:
+    def _find_host_emission(self, p_value: float = 1e-8, kernel_wid: int = None, **kwargs) -> Array:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 
@@ -862,8 +862,6 @@ class SpecModel:
             The p-value for emission line detection.
         kernel_wid : int, optional (default: None)
             The width of the kernel for smoothing the profile.
-        show : bool, optional (default: False)
-            Whether to plot the results.
 
         Returns
         -------
@@ -887,10 +885,13 @@ class SpecModel:
             f_2d[:, i] = np.nanmedian(self.f_host.Y[:, left:right], axis=1)
             f_2d_err[:, i] = np.nanmedian(self.f_host.Yerr[:, left:right], axis=1) / np.sqrt(right - left)
 
+        # 1D spectrum
         f_1d = np.nansum(f_2d, axis=0)
+        # Spatial profile and the error
         prof = jnp.asarray(f_2d / f_1d)
         prof_err = jnp.asarray(f_2d_err / f_1d)
 
+        # Continuum estimation
         f_1d_cont = np.empty_like(f_1d)
         prof_med = np.empty_like(prof)
         for i in range(len(self.spec)):
@@ -899,9 +900,14 @@ class SpecModel:
             prof_med[:, i] = jnp.nanmedian(prof[:, left_wide:right_wide], axis=1)
             f_1d_cont[i] = jnp.nanmedian(f_1d[left_wide:right_wide])
 
+        # Difference between the observed and the continuum
         f_lines = jnp.abs(f_1d - f_1d_cont)
+        # Sum of the squared difference between the profile at each wavelength and the average profile (median)
         prof_diff = jnp.nanmean(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
 
+        # Find the emission lines
+        ## Flux significantly higher than the continuum (5-sigma)
+        ## Spatial profile significantly different from the median profile (chi^2 test)
         distinct_prof, _ = find_peaks(prof_diff, height=chi2.ppf(1 - p_value, prof.shape[0]))
         host_lines = jnp.argwhere(f_lines > mad_std(f_lines) * 5).ravel()
 
@@ -910,20 +916,28 @@ class SpecModel:
             host_lines_close = np.where(np.abs(host_lines - line) < kernel_wid)
             if host_lines_close[0].size > 0:
                 emission_lines.append(int(np.mean(host_lines[host_lines_close])))
+        
+        # Remove duplicates
+        emission_lines = np.unique(emission_lines)
 
+        _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
+        ax[0].plot(self.spec, f_lines, color="tab:blue")
+        ax[0].axhline(mad_std(f_lines) * 5, color="0.5", ls="--")
+        ax[0].set_ylabel(r"$|f - f_\mathrm{cont}|$")
+        ax[1].plot(self.spec, prof_diff, color="tab:blue")
+        ax[1].axhline(chi2.ppf(1 - p_value, prof.shape[0]), color="0.5", ls="--")
+        for line in emission_lines:
+            ax[0].axvline(self.spec[line], color="tab:red", ls=":")
+            ax[1].axvline(self.spec[line], color="tab:red", ls=":")
+        ax[1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+        ax[1].set_ylabel(r"$\chi^2$")
+        ax[1].set_yscale("log")
+
+        save = kwargs.get("save", None)
+        show = kwargs.get("show", False)
+        if save is not None:
+            plt.savefig(save, bbox_inches="tight")
         if show:
-            _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
-            ax[0].plot(self.spec, f_lines, color="tab:blue")
-            ax[0].axhline(mad_std(f_lines) * 5, color="0.5", ls="--")
-            ax[0].set_ylabel(r"$|f - f_\mathrm{cont}|$")
-            ax[1].plot(self.spec, prof_diff, color="tab:blue")
-            ax[1].axhline(chi2.ppf(1 - p_value, prof.shape[0]), color="0.5", ls="--")
-            for line in emission_lines:
-                ax[0].axvline(self.spec[line], color="tab:red", ls=":")
-                ax[1].axvline(self.spec[line], color="tab:red", ls=":")
-            ax[1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-            ax[1].set_ylabel(r"$\chi^2$")
-            ax[1].set_yscale("log")
             plt.show()
 
         return jnp.asarray(emission_lines, dtype=int)
