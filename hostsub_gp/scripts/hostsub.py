@@ -128,8 +128,34 @@ class HostSub(ScriptBase):
                 lower = {k.replace("_lower", ""): v for k, v in params_limit_dict.items() if "lower" in k}
                 return {k: (lower[k], upper[k]) for k in lower}
 
-            params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", None))
-            params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", None))
+            params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", {}))
+            params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", {}))
+
+            params_limit_1d["log_scale"] = params_limit_1d.get(
+                "log_scale",
+                np.array(
+                    [
+                        # log range of the slow varying component
+                        [1, 3],
+                        # log range of the fast varying component
+                        # typical scale = spectral resolution
+                        np.log10([spec2d.spec_resln / 2.355, spec2d.spec_resln * 10]),
+                    ]
+                ).T,
+            )
+            params_limit_2d["log_scale"] = params_limit_2d.get(
+                "log_scale",
+                np.array(
+                    [
+                        # log range of the spatial component
+                        # typical scale = spatial resolution
+                        np.log10([spec2d.spat_resln / 2.355, spec2d.spat_resln]),
+                        # log range of the spectral component
+                        # typical scale = spectral resolution
+                        np.log10([spec2d.spec_resln / 2.355, 1e4]),
+                    ]
+                ).T,
+            )
 
             params_limit = [params_limit_1d, params_limit_2d]
 
