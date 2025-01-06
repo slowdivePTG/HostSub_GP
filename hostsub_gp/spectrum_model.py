@@ -128,7 +128,7 @@ class SpecModel:
     shape : tuple[int, int]
         The shape of the 2D spectrum.
     pixel_scale : float
-        The instrumental pixel scale of the 2D spectrum (arcsec per pixel).
+        The instrumental pixel scale of the 2D spectrum on the spatial axes (arcsec per pixel).
     center_ra : float
         The right ascension of science object.
     center_dec : float

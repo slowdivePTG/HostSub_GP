@@ -78,6 +78,7 @@ class HostSub(ScriptBase):
 
             # Get the parameters for host subtraction
             par_hostsub = par.get("hostsub", {})
+            raw_dir = par_hostsub.get("raw_dir", None)
             spec2d_cfg = {}
             spec2d_cfg["slit_len"] = float(par_hostsub.get("slit_len", 20.0))
             spec2d_cfg["ra"] = None if not "ra" in par_hostsub else float(par_hostsub["ra"])
@@ -88,6 +89,7 @@ class HostSub(ScriptBase):
                 # Load the pypeit 2dspec file and save the rectified file
                 spec_data = SpecData.from_pypeit(
                     sci_file=sci_file_2d,
+                    raw_dir=raw_dir,
                     std_file=std_file,
                     obj_id=objid,
                     **spec2d_cfg,

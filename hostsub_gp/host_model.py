@@ -72,7 +72,7 @@ class HostProfile:
 
         # Load SDSS images
         # sdss_filters = "".join([flt for cam, flt in zip(self.cameras, self.flts) if cam == "sdss"])
-        sdss_filters = "u"
+        sdss_filters = ""
         if len(sdss_filters) > 0:
             SDSS = SDSSImage(ra=self.center_ra, dec=self.center_dec, filters=sdss_filters, path="./sdss_cutout/")
             SDSS.download()

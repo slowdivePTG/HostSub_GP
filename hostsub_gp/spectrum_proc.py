@@ -13,6 +13,8 @@ from jax._src.typing import ArrayLike, Array
 
 import glob
 from astropy.io import fits
+from astropy.coordinates import SkyCoord
+from astropy import units as u
 from pypeit import spec2dobj, specobjs
 from pypeit import msgs
 
@@ -99,6 +101,7 @@ class SpecData:
     def from_pypeit(
         cls,
         sci_file: str,
+        raw_dir: str = None,
         obj_id: str = None,
         std_file: str = None,
         ra: float = None,
@@ -117,6 +120,8 @@ class SpecData:
             The object ID in the science frame.
         std_file : str, optional (default: None)
             The filename of the standard star.
+        raw_dir : str, optional (default: None)
+            The directory of the raw files (not needed for LRIS data).
         ra, dec : float, optional (default: None)
             The RA and DEC of the science object.
             If not provided, the RA and DEC in the header will be used.
@@ -138,19 +143,48 @@ class SpecData:
         msgs.info(f"Loading 2D spectrum for {spec2d_file}...")
         pypeit_header = fits.getheader(spec2d_file)
 
+        # Access the header of the raw image
+        history = pypeit_header["HISTORY"]
+        for i in range(len(history)):
+            if "Combining frames" in history[i]:
+                raw_file = history[i + 1].strip('"')
+                break
+        if raw_dir is None:
+            raise ValueError("The raw file directory is needed for LRIS data.")
+        raw_file = "/".join([raw_dir, raw_file])
+
         if pypeit_header["PYP_SPEC"] in ["keck_lris_blue", "keck_lris_red", "keck_lris_red_mark4"]:
             position_angle = pypeit_header["ROTPOSN"] + 90
             if ra is None or dec is None:
+                # RA and Dec in the header are already in the format of degrees
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
-            binning = int(
-                pypeit_header["BINNING"].split(",")[-1]
-            )  # TODO: handle different binning in spatial and spectral directions
+            binning = int(pypeit_header["BINNING"].split(",")[0]) # in the spatial direction
             pixel_scale = 0.135 * binning
             det = "DET02"
-            slit_wid = float(pypeit_header["SLITNAME"].split("_")[-1])
+            slit_wid = float(raw_header["SLITNAME"].split("_")[-1])
             spec_resln = 7.5  # TODO: get the spectral resolution from the header
+
+        elif pypeit_header["PYP_SPEC"] == "mmt_binospec":
+            if raw_dir is None:
+                raise ValueError("The raw file directory is needed for Binospec data.")
+            raw_header = fits.getheader(raw_file, ext=1)
+            
+            # PA: parallactic angle
+            # ROT: instrument rotator angle (relative to the parallactic angle)
+            position_angle = raw_header["PA"] - raw_header["ROT"]
+            pixel_scale = 0.24
+            det = "DET02"
+            if ra is None or dec is None:
+                # RA and DEC in the header are in the format of 'HH:MM:SS.SS' and 'DD:MM:SS.SS'
+                ra_str, dec_str = raw_header["CATRA"].strip("'"), raw_header["CATDEC"].strip("'")
+                coord = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg))
+                ra, dec = coord.ra.deg, coord.dec.deg
+
+            slit_wid = float(raw_header["MASK"].split("Longslit")[-1])
+            spec_resln = 4.5  # TODO: get the spectral resolution from the header
+
         else:
-            raise NotImplementedError("Only LRIS is supported")
+            raise NotImplementedError("Only LRIS and Binospec are supported")
 
         # If the object ID in the science frame is provided (i.e., object successfully found), use the object trace
         if obj_id is not None:
