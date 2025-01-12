@@ -83,6 +83,7 @@ class HostSub(ScriptBase):
             spec2d_cfg["slit_len"] = float(par_hostsub.get("slit_len", 20.0))
             spec2d_cfg["ra"] = None if not "ra" in par_hostsub else float(par_hostsub["ra"])
             spec2d_cfg["dec"] = None if not "dec" in par_hostsub else float(par_hostsub["dec"])
+            spec2d_cfg["sky_offset"] = None if not "sky_offset" in par_hostsub else float(par_hostsub["sky_offset"])
 
             # Run the host subtraction
             if args.overwrite or not os.path.exists(sci_rect_file):
@@ -99,17 +100,34 @@ class HostSub(ScriptBase):
                 spec_data = SpecData.from_fits(sci_rect_file)
 
             # Convert the 2D spectrum to a SpecModel object
-            hostsub_cfg = {}
-            hostsub_cfg["spec_range"] = (
+            # Parameters for defining the SpecModel object
+            host_sub_cfg = {}
+            host_sub_cfg["spec_range"] = (
                 None if "spec_range" not in par_hostsub else tuple(map(float, par_hostsub["spec_range"]))
             )
-            hostsub_cfg["mask_wid"] = float(par_hostsub.get("mask_wid", 2.0))
-            hostsub_cfg["sky_wid"] = float(par_hostsub.get("sky_wid", 10.0))
-            hostsub_cfg["mask_offset"] = float(par_hostsub.get("mask_offset", 0.0))
+            host_sub_cfg["mask_wid"] = float(par_hostsub.get("mask_wid", 2.0))
+            host_sub_cfg["sky_wid"] = float(par_hostsub.get("sky_wid", 10.0))
+            host_sub_cfg["mask_offset"] = float(par_hostsub.get("mask_offset", 0.0))
+            host_sub_cfg["batch_2d"] = (
+                (2, 128) if "batch_2d" not in par_hostsub else tuple(map(int, par_hostsub["batch_2d"]))
+            )
+
+            # Parameters for identifying host emission lines
+            par_host_emission = par_hostsub.get("host_emission", {})
+            host_emission_cfg = {}
+            host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in ["True", "true"]
+            host_emission_cfg["p_value"] = float(par_host_emission.get("p_value", 1e-8))
+            host_emission_cfg["kernel_wid"] = (
+                None if "kernel_wid" not in par_host_emission else float(par_host_emission["kernel_wid"])
+            )
+            host_emission_cfg["z"] = None if "z" not in par_host_emission else float(par_host_emission["z"])
+            host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else float(par_host_emission["z_err"])
+
             spec2d = spec_data.to_SpecModel(
                 show=args.debug,
                 save=f"QA/{os.path.basename(base_file)}.pdf",
-                **hostsub_cfg,
+                host_emission_cfg=host_emission_cfg,
+                **host_sub_cfg,
             )
 
             # Model the host prior

@@ -193,8 +193,9 @@ class SpecModel:
         spec_resln: float = 7.5,  # LRIS, 1'' slit
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
         mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
-        sky_wid: float = 10.0,  # sky region
+        sky_wid: float = 10.0,  # in arcsec, sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
+        host_emission_cfg: dict = None,  # parameters for identifying host emission lines
         show: bool = False,
         save: str = None,
     ):
@@ -224,8 +225,11 @@ class SpecModel:
         # The width of the sky region
         # Adjust the sky width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the sky boundary is at the edge of the pixel
-        self.sky_wid = (jnp.round(sky_wid * spat_resln / 2 / pixel_scale) * 2 + 1) * pixel_scale
+        self.sky_wid = (jnp.round(sky_wid / 2 / pixel_scale) * 2 + 1) * pixel_scale
         print(f"Sky width: {self.sky_wid:.2f} arcsec = {self.sky_wid / pixel_scale:.0f} pixels")
+
+        if self.sky_wid >= self.slit_len:
+            raise ValueError("sky_wid should be smaller than slit_wid")
 
         # The global sky region (|spat| > sky_wid / 2)
         sky_left = spat < -self.sky_wid / 2
@@ -303,7 +307,9 @@ class SpecModel:
         )
 
         # Spectral batch
-        self._spec_batch_2d_idx = self._get_spec_batches(show=show, save=save.replace(".pdf", "_host_emission.pdf"))
+        self._spec_batch_2d_idx = self._get_spec_batches(
+            **host_emission_cfg, show=show, save=save.replace(".pdf", "_host_emission.pdf")
+        )
 
         # New coordinates: mean of the batch
         shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
@@ -683,18 +689,22 @@ class SpecModel:
             params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False, params_type="limit")
         except:
             print(params_limit)
+
+        f_1d_mask = np.isfinite(self.f_host_1d.y)
         gp_1d = GP(
-            X=self.f_host_1d.X,
-            y=self.f_host_1d.y,
-            yerr=self.f_host_1d.yerr,
+            X=self.f_host_1d.X[f_1d_mask],
+            y=self.f_host_1d.y[f_1d_mask],
+            yerr=self.f_host_1d.yerr[f_1d_mask],
             params=params_1d,
             params_limit=params_limit_1d,
             kernel_type="composite",
         ).gp
+
+        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
         gp_2d = GP(
-            X=self.f_host_batch_2d.X,
-            y=self.f_host_batch_2d.y,
-            yerr=self.f_host_batch_2d.y,
+            X=self.f_host_batch_2d.X[f_2d_mask],
+            y=self.f_host_batch_2d.y[f_2d_mask],
+            yerr=self.f_host_batch_2d.yerr[f_2d_mask],
             params=params_2d,
             params_limit=params_limit_2d,
             kernel_type="EmissionLine",
@@ -757,7 +767,7 @@ class SpecModel:
             y_host_1d = gp_1d.predict(y=f_1d_y, X_test=f_X[:, 1][:, None])
             y_host_2d = gp_2d.predict(y=f_2d_y - f_2d_mean, X_test=f_X) + f_mean
             y_host = y_host_1d * y_host_2d
-            log_prob_obs = jnp.sum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
+            log_prob_obs = jnp.nansum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
 
             # jax.debug.print("1D log-probability: {}", log_prob_1d)
             # jax.debug.print("2D log-probability: {}", log_prob_2d)
@@ -766,22 +776,24 @@ class SpecModel:
             return -(log_prob_1d + log_prob_2d + log_prob_obs)
 
         # Only include finite values in the observation
-        mask_obs = np.isfinite(self.f_host.y)
+        obs_mask = np.isfinite(self.f_host.y)
+        f_1d_mask = np.isfinite(self.f_host_1d.y)
+        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
 
         return _neg_log_probability(
             params_1d=params_1d,
             params_2d=params_2d,
-            f_X=self.f_host.X[mask_obs],
-            f_y=self.f_host.y[mask_obs],
-            f_yerr=self.f_host.yerr[mask_obs],
-            f_1d_X=self.f_host_1d.X,
-            f_1d_y=self.f_host_1d.y,
-            f_1d_yerr=self.f_host_1d.yerr,
-            f_2d_X=self.f_host_batch_2d.X,
-            f_2d_y=self.f_host_batch_2d.y,
-            f_2d_yerr=self.f_host_batch_2d.yerr,
-            f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X),
-            f_mean=self.host_flux_prior(self.f_host.X[mask_obs]),
+            f_X=self.f_host.X[obs_mask],
+            f_y=self.f_host.y[obs_mask],
+            f_yerr=self.f_host.yerr[obs_mask],
+            f_1d_X=self.f_host_1d.X[f_1d_mask],
+            f_1d_y=self.f_host_1d.y[f_1d_mask],
+            f_1d_yerr=self.f_host_1d.yerr[f_1d_mask],
+            f_2d_X=self.f_host_batch_2d.X[f_2d_mask],
+            f_2d_y=self.f_host_batch_2d.y[f_2d_mask],
+            f_2d_yerr=self.f_host_batch_2d.yerr[f_2d_mask],
+            f_2d_mean=self.host_flux_prior(self.f_host_batch_2d.X[f_2d_mask]),
+            f_mean=self.host_flux_prior(self.f_host.X[obs_mask]),
             emission_lines=self.emission_lines,
         )
 
@@ -803,10 +815,12 @@ class SpecModel:
         Array
             The predicted host galaxy flux.
         """
-        y_1d = gp_1d.predict(y=self.f_host_1d.y, X_test=X[:, 1][:, None])
-        y_2d = gp_2d.predict(y=self.f_host_batch_2d.y - self.host_flux_prior(gp_2d.X), X_test=X) + self.host_flux_prior(
-            X
-        )
+        f_1d_mask = np.isfinite(self.f_host_1d.y)
+        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
+        y_1d = gp_1d.predict(y=self.f_host_1d.y[f_1d_mask], X_test=X[:, 1][:, None])
+        y_2d = gp_2d.predict(
+            y=self.f_host_batch_2d.y[f_2d_mask] - self.host_flux_prior(gp_2d.X), X_test=X
+        ) + self.host_flux_prior(X)
 
         return y_1d, y_2d, y_1d * y_2d
 
@@ -837,40 +851,64 @@ class SpecModel:
         list[list[int]]
             The indices of the spectral batches.
         """
-        host_emission = self._find_host_emission(**kwargs)
-        self.emission_lines = self.spec[host_emission]
+        emission_lines_idx, emission_lines = self._find_host_emission(**kwargs)
+        self.emission_lines = emission_lines
         print(f"Emission lines found at: {self.emission_lines}")
 
-        host_emission = np.concatenate([[0], host_emission, [self.spec.size - 1]])
+        emission_lines_idx = np.concatenate([[0], emission_lines_idx, [self.spec.size - 1]])
         batch_edges = []
-        for i in range(len(host_emission) - 1):
-            batch_edges.extend(self._find_batch_edges(left=host_emission[i], right=host_emission[i + 1]))
+        for i in range(len(emission_lines_idx) - 1):
+            edges = self._find_batch_edges(left=emission_lines_idx[i], right=emission_lines_idx[i + 1])
+            batch_edges.extend(edges)
 
         batch_idx = []
         for i in range(len(batch_edges) - 1):
-            batch_idx.append(np.arange(batch_edges[i], batch_edges[i + 1]))
+            idx = np.arange(batch_edges[i], batch_edges[i + 1])
+            if idx.size > 0:
+                batch_idx.append(idx)
 
         return batch_idx
 
-    def _find_host_emission(self, p_value: float = 1e-8, kernel_wid: int = None, **kwargs) -> Array:
+    def _find_host_emission(
+        self,
+        find_host_emission: bool = True,
+        p_value: float = 1e-8,
+        kernel_wid: int = None,
+        z: float = None,
+        z_err: float = None,
+        **kwargs,
+    ) -> tuple[Array, Array]:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
 
         Parameters
         ----------
+        find_host_emission : bool, optional (default: True)
+            Whether to find the host galaxy emission.
         p_value : float, optional (default: 1e-5)
             The p-value for emission line detection.
         kernel_wid : int, optional (default: None)
             The width of the kernel for smoothing the profile.
+        z : float, optional (default: 0.0)
+            The redshift of the host galaxy.
+        z_err : float, optional (default: 1e-3)
+            The error of the redshift.
 
         Returns
         -------
-        Array
-            The indices of the host galaxy emission.
+        Tuple[Array, Array]
+            The indices & wavelengths of the host galaxy emission.
         """
         from scipy.signal import find_peaks
         from scipy.stats import chi2
         from astropy.stats import mad_std
+        from astropy.table import Table
+
+        from importlib import resources
+        from pathlib import Path
+
+        if not find_host_emission:
+            return jnp.array([], dtype=int)
 
         # Define the kernel for smoothing the standard deviation of the galaxy spatial profile
         if kernel_wid is None:
@@ -903,22 +941,50 @@ class SpecModel:
         # Difference between the observed and the continuum
         f_lines = jnp.abs(f_1d - f_1d_cont)
         # Sum of the squared difference between the profile at each wavelength and the average profile (median)
-        prof_diff = jnp.nanmean(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
+        prof_diff = jnp.nanmedian(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
 
         # Find the emission lines
         ## Flux significantly higher than the continuum (5-sigma)
         ## Spatial profile significantly different from the median profile (chi^2 test)
-        distinct_prof, _ = find_peaks(prof_diff, height=chi2.ppf(1 - p_value, prof.shape[0]))
+        distinct_prof, _ = find_peaks(prof_diff, height=chi2.ppf(1 - p_value, prof.shape[0]), distance=kernel_wid)
         host_lines = jnp.argwhere(f_lines > mad_std(f_lines) * 5).ravel()
 
-        emission_lines = []
+        emission_lines_idx = []
         for line in distinct_prof:
             host_lines_close = np.where(np.abs(host_lines - line) < kernel_wid)
             if host_lines_close[0].size > 0:
-                emission_lines.append(int(np.mean(host_lines[host_lines_close])))
-        
+                emission_lines_idx.append(int(np.mean(host_lines[host_lines_close])))
+
         # Remove duplicates
-        emission_lines = np.unique(emission_lines)
+        emission_lines_idx = np.unique(emission_lines_idx)
+
+        # Read the host emission line library
+        with resources.path("hostsub_gp.data", "Emission_line_list.csv") as path:
+            emission_lines_lib = Table.read(path, format="csv", comment="#")
+        wv_lib = emission_lines_lib["Wavelength"].data
+        weight_lib = emission_lines_lib["Weight"].data
+        if z is not None:
+            z_err = z_err if z_err is not None else z * 1e-1
+            zs = np.linspace(z - z_err, z + z_err, 100)
+        else:
+            zs = np.linspace(0, 0.1, 500)  # uncertainty <~ 1 Angstrom
+        # Find the redshift to match the emission lines
+        ccfs = np.empty_like(zs)
+        for k, _z in enumerate(zs):
+            spec_lib_at_z = np.zeros_like(self.spec)
+            for _wv, _weight in zip(wv_lib, weight_lib):
+                spec_lib_at_z += _weight * np.exp(
+                    -(((self.spec - _wv * (1 + _z)) / (self.spec_resln / 2.355 * 2)) ** 2)
+                )
+            ccfs[k] = (f_lines * spec_lib_at_z).sum()
+        emission_lines_in_lib = wv_lib * (1 + zs[np.argmax(ccfs)])
+        # Match the found emission lines with the library
+        emission_lines = []
+        emission_lines_idx_updated = []
+        for line in self.spec[emission_lines_idx]:
+            if np.min(np.abs(emission_lines_in_lib - line)) < self.spec_resln:
+                emission_lines.append(emission_lines_in_lib[np.argmin(np.abs(emission_lines_in_lib - line))])
+                emission_lines_idx_updated.append(np.argmin(np.abs(self.spec - emission_lines[-1])))
 
         _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
         ax[0].plot(self.spec, f_lines, color="tab:blue")
@@ -927,8 +993,8 @@ class SpecModel:
         ax[1].plot(self.spec, prof_diff, color="tab:blue")
         ax[1].axhline(chi2.ppf(1 - p_value, prof.shape[0]), color="0.5", ls="--")
         for line in emission_lines:
-            ax[0].axvline(self.spec[line], color="tab:red", ls=":")
-            ax[1].axvline(self.spec[line], color="tab:red", ls=":")
+            ax[0].axvline(line, color="tab:red", ls=":")
+            ax[1].axvline(line, color="tab:red", ls=":")
         ax[1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         ax[1].set_ylabel(r"$\chi^2$")
         ax[1].set_yscale("log")
@@ -940,7 +1006,7 @@ class SpecModel:
         if show:
             plt.show()
 
-        return jnp.asarray(emission_lines, dtype=int)
+        return jnp.asarray(emission_lines_idx_updated, dtype=int), jnp.asarray(emission_lines, dtype=float)
 
     def _find_batch_edges(self, left: int = None, right: int = None) -> ArrayLike:
         """
@@ -970,7 +1036,7 @@ class SpecModel:
 
         def check_spectrum_length(left, right):
             if right - left < min_batch_size * 2:
-                raise ValueError("The spectrum is too short for the batch size")
+                raise ValueError(f"The spectrum is too short for the batch size: Left = {left}, Right = {right}")
 
         # No narrow lines in the spectrum
         # Use the largest possible batch size
@@ -1050,7 +1116,9 @@ class SpecModel:
             left = max(left - min_batch_size / 2, left_edge)
             right = min(right + min_batch_size / 2, right_edge)
 
-            check_spectrum_length(left, right)
+            # check_spectrum_length(left, right)
+            if right - left <= min_batch_size * 3:
+                return np.array([(left + right) / 2], dtype=int)
 
             # Batches on the left have the sizes: (2^0, 2^0, 2^1, ..., 2^K_max) * min_batch_size
             # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^1, 2^0, 2^0) * min_batch_size
@@ -1098,16 +1166,16 @@ class SpecModel:
             self.f_obs.Y,
             origin="lower",
             cmap="gray",
-            vmin=np.nanpercentile(self.f_obs.y, 1),
-            vmax=np.nanpercentile(self.f_obs.y, 99),
+            vmin=np.nanpercentile(self.f_obs.y, 5),
+            vmax=np.nanpercentile(self.f_obs.y, 95),
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         ax[1].imshow(
             self.f_sky_sub.Y,
             origin="lower",
             cmap="gray",
-            vmin=np.nanpercentile(self.f_sky_sub.y, 1),
-            vmax=np.nanpercentile(self.f_sky_sub.y, 99),
+            vmin=np.nanpercentile(self.f_sky_sub.y, 5),
+            vmax=np.nanpercentile(self.f_sky_sub.y, 95),
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         # Plot the 2D batched spectrum
@@ -1118,7 +1186,7 @@ class SpecModel:
             kind="linear",
             fill_value="extrapolate",
         )
-        norm = plt.Normalize(self.f_batch_2d.y.min(), self.f_batch_2d.y.max())
+        norm = plt.Normalize(np.nanmin(self.f_batch_2d.y), np.nanmax(self.f_batch_2d.y))
         cmap = plt.cm.get_cmap("gray") if np.mean(self.f_host_1d.y) > 0 else plt.cm.get_cmap("gray_r")
 
         shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
@@ -1253,18 +1321,21 @@ class SpecModel:
         # cmap = plt.cm.get_cmap("coolwarm")
 
         raw = self.f_batch_2d.Y - self.host_flux_prior(self.f_batch_2d.X).reshape(self.f_batch_2d.shape)
+        raw_err = self.f_batch_2d.Yerr
+        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
         pred = (
             self._gp_2d.predict(
-                y=self.f_host_batch_2d.y - self.host_flux_prior(self._gp_2d.X), X_test=self.f_batch_2d.X
+                y=self.f_host_batch_2d.y[f_2d_mask] - self.host_flux_prior(self._gp_2d.X), X_test=self.f_batch_2d.X
             )
         ).reshape(self.f_batch_2d.shape)
 
         offset = (pred.max() - pred.min()) / 3
 
-        for k, (r, p) in enumerate(zip(raw.T, pred.T)):
+        for k, (r, err, p) in enumerate(zip(raw.T, raw_err.T, pred.T)):
             # c_raw = cmap(norm(k))
             c_raw = "k"
             ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, ls="--")
+            ax.fill_between(self.f_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5)
             ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
                 self.mask_offset,

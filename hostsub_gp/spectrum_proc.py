@@ -47,6 +47,7 @@ class SpecData:
         flux_ivar: ArrayLike = None,
         waveimg: ArrayLike = None,
         spat_padding: float = 1.0,
+        sky_offset: float = None,
         to_caches: bool = False,
         cache_path: str = None,
     ):
@@ -69,15 +70,16 @@ class SpecData:
             if (flux is None) or (flux_ivar is None) or (waveimg is None):
                 raise ValueError("No flux, ivar, or wavelength solution provided.")
 
-            offset = self.get_offset(
-                points=jnp.stack([dist, waveimg], axis=-1),
-                flux=flux,
-                show=True,
-                mask_wid=2.5,
-                slit_len=(spat_rect.max() - spat_rect.min()) * 1.25,
-            )
+            if sky_offset is None:
+                sky_offset = self.get_offset(
+                    points=jnp.stack([dist, waveimg], axis=-1),
+                    flux=flux,
+                    show=True,
+                    mask_wid=2.5,
+                    slit_len=(spat_rect.max() - spat_rect.min()) * 1.25,
+                )
 
-            self._points = jnp.stack([dist - offset, waveimg], axis=-1)
+            self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
 
             # valid points - not NaN/inf
             valid_flag = jnp.isfinite(self._points).all(axis=-1)
@@ -108,6 +110,7 @@ class SpecData:
         dec: float = None,
         spat_resln: float = None,
         slit_len: float = 20.0,
+        **kwargs,
     ):
         """
         Load 2D spectra from PypeIt output files.
@@ -149,9 +152,6 @@ class SpecData:
             if "Combining frames" in history[i]:
                 raw_file = history[i + 1].strip('"')
                 break
-        if raw_dir is None:
-            raise ValueError("The raw file directory is needed for LRIS data.")
-        raw_file = "/".join([raw_dir, raw_file])
 
         if pypeit_header["PYP_SPEC"] in ["keck_lris_blue", "keck_lris_red", "keck_lris_red_mark4"]:
             position_angle = pypeit_header["ROTPOSN"] + 90
@@ -160,13 +160,17 @@ class SpecData:
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
             binning = int(pypeit_header["BINNING"].split(",")[0]) # in the spatial direction
             pixel_scale = 0.135 * binning
-            det = "DET02"
-            slit_wid = float(raw_header["SLITNAME"].split("_")[-1])
+            if "blue" in pypeit_header["PYP_SPEC"]:
+                det = "DET02"
+            else:
+                det = "DET01"
+            slit_wid = float(pypeit_header["SLITNAME"].split("_")[-1])
             spec_resln = 7.5  # TODO: get the spectral resolution from the header
 
         elif pypeit_header["PYP_SPEC"] == "mmt_binospec":
             if raw_dir is None:
                 raise ValueError("The raw file directory is needed for Binospec data.")
+            raw_file = "/".join([raw_dir, raw_file])
             raw_header = fits.getheader(raw_file, ext=1)
             
             # PA: parallactic angle
@@ -193,7 +197,7 @@ class SpecData:
             name_idx = trace_objs.name_indices(obj_id)
             if all(~name_idx):
                 raise ValueError(f"Object {obj_id} not found in the trace file.")
-            trace_obj = trace_obj[name_idx]
+            trace_obj = trace_objs[np.where(name_idx)[0][0]]
 
         # If the object ID is not provided, use the standard star trace
         elif std_file is not None:
@@ -202,11 +206,11 @@ class SpecData:
             # Find the SpecObj with the highest signal-to-noise ratio (S2N) in the SpecObjs
             argmax_snr = np.argmax([obj["S2N"] for obj in trace_objs])
             trace_obj = trace_objs[argmax_snr]
-
-            if spat_resln is None:
-                spat_resln = trace_obj["FWHM"] * pixel_scale
         else:
             raise ValueError("No spec1d file provided for identifying the trace.")
+
+        if spat_resln is None:
+            spat_resln = trace_obj["FWHM"] * pixel_scale
 
         trace_spat_pix = trace_obj["TRACE_SPAT"]  # spatial pixel of the trace
 
@@ -258,6 +262,7 @@ class SpecData:
             spec_rect=trace_spec,
             cache_path=spec2d_file.replace(".fits", "_rect.fits"),
             to_caches=True,
+            **kwargs,
         )
 
     @classmethod

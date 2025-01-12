@@ -4,6 +4,8 @@ setup(
     name="HostSub_GP",
     version="0.2",
     packages=find_packages(),  # Automatically find all packages and subpackages
+    package_data={"hostsub_gp": ["data/*"]},
+    include_package_data=True,
     install_requires=[],  # Add dependencies here
     entry_points={
         "console_scripts": [
