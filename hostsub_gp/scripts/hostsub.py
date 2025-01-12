@@ -102,6 +102,7 @@ class HostSub(ScriptBase):
             # Convert the 2D spectrum to a SpecModel object
             # Parameters for defining the SpecModel object
             host_sub_cfg = {}
+            host_sub_cfg["slit_len"] = None if "slit_len" not in par_hostsub else float(par_hostsub["slit_len"])
             host_sub_cfg["spec_range"] = (
                 None if "spec_range" not in par_hostsub else tuple(map(float, par_hostsub["spec_range"]))
             )

@@ -158,7 +158,7 @@ class SpecData:
             if ra is None or dec is None:
                 # RA and Dec in the header are already in the format of degrees
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
-            binning = int(pypeit_header["BINNING"].split(",")[0]) # in the spatial direction
+            binning = int(pypeit_header["BINNING"].split(",")[1]) # in the spatial direction
             pixel_scale = 0.135 * binning
             if "blue" in pypeit_header["PYP_SPEC"]:
                 det = "DET02"
@@ -210,7 +210,11 @@ class SpecData:
             raise ValueError("No spec1d file provided for identifying the trace.")
 
         if spat_resln is None:
-            spat_resln = trace_obj["FWHM"] * pixel_scale
+            if std_file is None:
+                raise ValueError("The spatial resolution needs to be either provided in the config file or estimated from the standard.")
+            std_objs = specobjs.SpecObjs.from_fitsfile(std_file, det=det)
+            argmax_snr = np.argmax([obj["S2N"] for obj in std_objs])
+            spat_resln = std_objs[argmax_snr]["FWHM"] * pixel_scale
 
         trace_spat_pix = trace_obj["TRACE_SPAT"]  # spatial pixel of the trace
 
@@ -356,6 +360,7 @@ class SpecData:
 
     def to_SpecModel(
         self,
+        slit_len: float = None,
         spec_range: tuple[float, float] | list[float] = None,
         **kwargs,
     ) -> SpecModel:
@@ -367,15 +372,20 @@ class SpecData:
         spec_range : tuple or list, optional (default: None)
             The range of the spectral pixels to include.
         """
+        if slit_len is None:
+            spat_mask = jnp.ones_like(self.spat_rect, dtype=bool)
+        else:
+            spat_mask = (self.spat_rect >= -slit_len / 2) & (self.spat_rect <= slit_len / 2)
+        
         if spec_range is None:
             spec_mask = jnp.ones_like(self.spec_rect, dtype=bool)
         else:
             spec_mask = (self.spec_rect >= spec_range[0]) & (self.spec_rect <= spec_range[1])
 
         return SpecModel(
-            dat=self.flux_rect[:, spec_mask],
-            dat_err=self.flux_ivar_rect[:, spec_mask] ** -0.5,
-            spat=self.spat_rect,
+            dat=self.flux_rect[spat_mask, :][:, spec_mask],
+            dat_err=self.flux_ivar_rect[spat_mask, :][:, spec_mask] ** -0.5,
+            spat=self.spat_rect[spat_mask],
             spec=self.spec_rect[spec_mask],
             pixel_scale=self.pixel_scale,
             center_ra=self.center_ra,
@@ -484,7 +494,8 @@ class SpecData:
         flag = (
             jnp.isfinite(points[:, :, 0])
             & jnp.isfinite(flux)
-            & (flux > jnp.nanpercentile(flux, 50))  # mask the low flux region
+            & (flux > jnp.nanpercentile(flux, 25))  # mask the low flux region
+            & (flux < jnp.nanpercentile(flux, 75))  # mask the high flux region
         )
 
         sci_obj_mask = jnp.abs(spat) >= mask_wid
@@ -549,6 +560,6 @@ class SpecData:
             ax[1].xaxis.set_major_locator(plt.MultipleLocator(5))
             ax[1].xaxis.set_minor_locator(plt.MultipleLocator(1))
             ax[1].legend()
-        plt.show()
+            plt.show()
 
         return offset
