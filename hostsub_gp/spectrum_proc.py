@@ -158,7 +158,7 @@ class SpecData:
             if ra is None or dec is None:
                 # RA and Dec in the header are already in the format of degrees
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
-            binning = int(pypeit_header["BINNING"].split(",")[1]) # in the spatial direction
+            binning = int(pypeit_header["BINNING"].split(",")[1])  # in the spatial direction
             pixel_scale = 0.135 * binning
             if "blue" in pypeit_header["PYP_SPEC"]:
                 det = "DET02"
@@ -172,7 +172,7 @@ class SpecData:
                 raise ValueError("The raw file directory is needed for Binospec data.")
             raw_file = "/".join([raw_dir, raw_file])
             raw_header = fits.getheader(raw_file, ext=1)
-            
+
             # PA: parallactic angle
             # ROT: instrument rotator angle (relative to the parallactic angle)
             position_angle = raw_header["PA"] - raw_header["ROT"]
@@ -211,7 +211,9 @@ class SpecData:
 
         if spat_resln is None:
             if std_file is None:
-                raise ValueError("The spatial resolution needs to be either provided in the config file or estimated from the standard.")
+                raise ValueError(
+                    "The spatial resolution needs to be either provided in the config file or estimated from the standard."
+                )
             std_objs = specobjs.SpecObjs.from_fitsfile(std_file, det=det)
             argmax_snr = np.argmax([obj["S2N"] for obj in std_objs])
             spat_resln = std_objs[argmax_snr]["FWHM"] * pixel_scale
@@ -376,7 +378,7 @@ class SpecData:
             spat_mask = jnp.ones_like(self.spat_rect, dtype=bool)
         else:
             spat_mask = (self.spat_rect >= -slit_len / 2) & (self.spat_rect <= slit_len / 2)
-        
+
         if spec_range is None:
             spec_mask = jnp.ones_like(self.spec_rect, dtype=bool)
         else:
@@ -447,12 +449,18 @@ class SpecData:
 
             # Interpolate the flux with RBF
             rbf = Interp2D_RBF(
-                kernel="gaussian", epsilon=1.0, n_neighbors=8, scales=(self.spat_resln / 2.355, self.spec_resln / 2.355)
+                kernel="gaussian",
+                n_neighbors=(2 * 2 + 1) ** 2 - 1,
+                min_neighbors=(2 * 2 + 1) * (2 + 1) - 1,
+                scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
             )
             rbf.fit(points=points_, values=flux_)
             flux_rect[:, idx_list] = rbf.predict(query_points=query_points_).reshape(flux_rect[:, idx_list].shape)
             rbf_ivar = Interp2D_RBF(
-                kernel="gaussian", epsilon=1.0, n_neighbors=8, scales=(self.spat_resln / 2.355, self.spec_resln / 2.355)
+                kernel="gaussian",
+                n_neighbors=(2 * 2 + 1) ** 2 - 1,
+                min_neighbors=(2 * 2 + 1) * (2 + 1) - 1,
+                scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
             )
             rbf_ivar.fit(points=points_, values=ivar_)
             flux_ivar_rect[:, idx_list] = rbf_ivar.predict(query_points=query_points_).reshape(

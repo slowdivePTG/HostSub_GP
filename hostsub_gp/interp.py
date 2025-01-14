@@ -10,6 +10,8 @@ from jax._src.typing import ArrayLike, Array
 
 jax.config.update("jax_enable_x64", True)
 
+import numpy as np
+
 
 class Interp1D_Grid:
     """
@@ -51,7 +53,7 @@ class Interp2D_RBF:
     def __init__(
         self,
         kernel: str = "gaussian",
-        epsilon: float = 1.0,
+        epsilon: float = 1.0, # epsilon = 1.0 - exact solution
         n_neighbors: int = 10,
         min_neighbors: int = 3,
         scales: tuple | ArrayLike = (1, 1),
@@ -85,13 +87,13 @@ class Interp2D_RBF:
         """Define the RBF kernel function"""
 
         def gaussian(r):
-            return jnp.exp(-((self.epsilon * r) ** 2))
+            return jnp.where(jnp.isfinite(r), jnp.exp(-((self.epsilon * r) ** 2)), 0)
 
         def multiquadric(r):
-            return jnp.sqrt(1 + (self.epsilon * r) ** 2)
+            return jnp.where(jnp.isfinite(r), jnp.sqrt(1 + (self.epsilon * r) ** 2), 0)
 
         def inverse_multiquadric(r):
-            return 1 / jnp.sqrt(1 + (self.epsilon * r) ** 2)
+            return jnp.where(jnp.isfinite(r), 1 / jnp.sqrt(1 + (self.epsilon * r) ** 2), 0)
 
         kernels = {"gaussian": gaussian, "multiquadric": multiquadric, "inverse_multiquadric": inverse_multiquadric}
         return kernels[kernel_name]
@@ -102,21 +104,22 @@ class Interp2D_RBF:
         diff = x1[:, None] - x2
         return jnp.sqrt(jnp.sum(diff**2, axis=-1))
 
-    def _find_valid_neighbors(self, query_point: Array) -> tuple[Array, Array, Array]:
+    def _find_neighbors(self, query_point: Array) -> tuple[Array, Array, Array]:
         """Find valid k-nearest neighbors for a query point, excluding NaN values"""
         # Compute distances to all points
         distances = jnp.sum((self.points - query_point) ** 2, axis=1)
 
         # Create mask for valid points and values
-        valid_points_mask = ~jnp.any(jnp.isnan(self.points), axis=1)
-        valid_values_mask = ~jnp.isnan(self.values)
-        valid_mask = valid_points_mask & valid_values_mask
+        # valid_points_mask = ~jnp.any(np.isnan(self.points), axis=1)
+        # valid_values_mask = ~jnp.isnan(self.values)
+        # valid_mask = valid_points_mask & valid_values_mask
 
         # Set distances for invalid points to infinity
-        distances = jnp.where(valid_mask, distances, jnp.inf)
+        # distances = jnp.where(valid_mask, distances, jnp.inf)
 
         # Get indices of nearest valid neighbors
-        indices = jnp.argsort(distances)[: self.n_neighbors]
+        dist_order = jnp.argsort(distances)
+        indices = dist_order[: self.n_neighbors]
 
         return (indices, self.points[indices], self.values[indices])
 
@@ -135,24 +138,34 @@ class Interp2D_RBF:
         self.values = jnp.asarray(values)
 
         # Check if we have enough valid data points
-        valid_points_mask = ~jnp.any(jnp.isnan(points), axis=1)
-        valid_values_mask = ~jnp.isnan(values)
-        valid_mask = valid_points_mask & valid_values_mask
-        valid_count = jnp.sum(valid_mask)
+        # valid_points_mask = ~jnp.any(jnp.isnan(points), axis=1)
+        # valid_values_mask = ~jnp.isnan(values)
+        # valid_mask = valid_points_mask & valid_values_mask
+        # valid_count = jnp.sum(valid_mask)
 
-        if valid_count < self.min_neighbors:
-            raise ValueError(
-                f"Not enough valid data points. Found {valid_count}, " f"need at least {self.min_neighbors}"
-            )
+        # if valid_count < self.min_neighbors:
+        #     raise ValueError(
+        #         f"Not enough valid data points. Found {valid_count}, " f"need at least {self.min_neighbors}"
+        #     )
 
     @partial(jax.jit, static_argnums=(0,))
     def _interpolate_single(self, query_point: Array) -> Array:
         """Interpolate value at a single query point with NaN handling"""
         # Find valid nearest neighbors
-        valid_indices, neighbor_points, neighbor_values = self._find_valid_neighbors(query_point)
+        indices, neighbor_points, neighbor_values = self._find_neighbors(query_point)
+
+        valid_points_mask = ~jnp.any(jnp.isnan(neighbor_points), axis=1)
+        valid_values_mask = ~jnp.isnan(neighbor_values)
+        valid_mask = valid_points_mask & valid_values_mask
+
+        # Push invalid neighbors to infinity
+        # neighbor_points = jnp.where(valid_mask[:, None], neighbor_points, jnp.zeros_like(neighbor_points))
+        neighbor_points = jnp.where(valid_mask[:, None], neighbor_points, jnp.ones_like(neighbor_points) * jnp.inf)
+        # Fill NaN values with median of valid neighbors
+        neighbor_values = jnp.where(valid_mask, neighbor_values, jnp.nanmedian(neighbor_values))
 
         # Check if we have enough valid neighbors
-        n_valid = valid_indices.shape[0]
+        # n_valid = indices.shape[0]
 
         def interpolate():
             # Compute local RBF interpolation
@@ -160,7 +173,7 @@ class Interp2D_RBF:
             kernel_matrix = self.kernel(distances)
 
             # Add regularization term
-            kernel_matrix = kernel_matrix + jnp.eye(n_valid) * 1e-10
+            kernel_matrix = kernel_matrix + jnp.eye(self.n_neighbors) * 1e-10
 
             # Solve local system with robust solver
             try:
@@ -169,10 +182,10 @@ class Interp2D_RBF:
                 query_kernel = self.kernel(query_distances[0])
                 return jnp.dot(query_kernel, weights)
             except:
-                return jnp.nan
+                raise ValueError("Singular matrix in RBF interpolation")
 
         # Return NaN if not enough valid neighbors
-        return jax.lax.cond(n_valid >= self.min_neighbors, lambda: interpolate(), lambda: jnp.nan)
+        return jax.lax.cond(valid_mask.sum() >= self.min_neighbors, lambda: interpolate(), lambda: jnp.nan)
 
     def predict(self, query_points: ArrayLike) -> Array:
         """

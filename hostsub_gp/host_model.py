@@ -280,10 +280,11 @@ class HostProfile:
             )
             ax[k].set_ylabel(r"$\mathrm{Profile}$")
         ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
-        if show:
-            plt.show()
         if save is not None:
             plt.savefig(save, bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close()
 
         return host_prior
 

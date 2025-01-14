@@ -68,16 +68,12 @@ class SpecWrapper:
         else:
             raise ValueError("Y shape error")
 
-    def marginalize(
-        self, mask: bool = None, margin_type: str = "mean", weights: str = None, sigma_clip: float = 3
-    ) -> "SpecWrapper":
+    def marginalize(self, margin_type: str = "mean", weights: str = None, sigma_clip: float = 3) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
 
         Parameters
         ----------
-        mask : bool, optional
-            Mask certain pixels in the marginalization.
         margin_type : str, optional
             Type of the marginalization: mean or sum. Default is mean.
         weights : str, optional
@@ -93,19 +89,19 @@ class SpecWrapper:
         SpecWrapper
             The marginalized 1D spectrum.
         """
-        if mask is None:
-            mask = jnp.ones(self.shape[0], dtype=bool)
-        elif mask.ndim != 1:
-            raise ValueError("Invalid shape of the mask.")
-        if mask.shape[0] != self.shape[0]:
-            raise ValueError("Mask shape mismatch.")
+        # if mask is None:
+        #     mask = jnp.ones(self.shape[0], dtype=bool)
+        # elif mask.ndim != 1:
+        #     raise ValueError("Invalid shape of the mask.")
+        # if mask.shape[0] != self.shape[0]:
+        #     raise ValueError("Mask shape mismatch.")
 
         if weights is None:
-            w = jnp.ones_like(self.Y[mask, :])
+            w = jnp.ones_like(self.Y)
         elif weights == "ivar":
-            w = self.Yerr[mask, :] ** -2
+            w = self.Yerr**-2
         elif weights == "snr":
-            w = (self.Y[mask, :] / self.Yerr[mask, :]) ** 2
+            w = (self.Y / self.Yerr) ** 2
         else:
             raise ValueError("Invalid weights.")
         # mean_value = jnp.nanmean(self.Y[mask, :] * w, axis=0) / jnp.nanmean(w, axis=0)
@@ -120,23 +116,29 @@ class SpecWrapper:
         # Create the mask for sigma clipping
         # Broadcasting to compare each column with its own mean and std
         deviations = np.abs(self.Y - Y_means[None, :])
-        sigma_masks = deviations < (sigma_clip * Y_stds[None, :])
-        combined_mask = mask[:, None] & sigma_masks
+        sigma_masks = deviations <= (sigma_clip * Y_stds[None, :])
+        valid_masks = np.isfinite(self.Y)
+        combined_mask = sigma_masks & valid_masks #& mask[:, None]
 
         # Calculate weighted means
-        weighted_values = np.where(combined_mask, self.Y * w, np.nan)
-        weight_sums = np.where(combined_mask, w, np.nan)
+        weights = np.where(combined_mask, w, 0)
+        weighted_values = np.where(combined_mask, self.Y * w, 0)
 
-        mean_value = np.nansum(weighted_values, axis=0) / np.nansum(weight_sums, axis=0)
+        # weighted_values = np.where(combined_mask, self.Y * w, np.nan)
+        # weight_sums = np.where(combined_mask, w, np.nan)
+
+        mean_value = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
 
         # Calculate errors
-        weighted_errors = np.where(combined_mask, (self.Yerr * w) ** 2, np.nan)
-        mean_value_err = np.sqrt(np.nansum(weighted_errors, axis=0) / np.nansum(weight_sums, axis=0) ** 2)
+        weighted_errors = np.where(combined_mask, (self.Yerr * w) ** 2, 0)
+        mean_value_err = np.sqrt(np.sum(weighted_errors, axis=0) / np.sum(weights, axis=0) ** 2)
 
         if margin_type == "mean":
             return SpecWrapper(points=self.spec, values=mean_value, values_err=mean_value_err)
         elif margin_type == "sum":
-            return SpecWrapper(points=self.spec, values=mean_value * mask.sum(), values_err=mean_value_err * mask.sum())
+            return SpecWrapper(
+                points=self.spec, values=mean_value * self.shape[0], values_err=mean_value_err * self.shape[0]
+            )
 
 
 class SpecModel:
@@ -333,10 +335,10 @@ class SpecModel:
             for y in range(shape_batch_2d[1]):
                 _Y_2d_1d = Y_2d_1d[self._spat_batch_2d_idx[x], :][:, self._spec_batch_2d_idx[y]]
                 _Y_err_2d_1d = Y_err_2d_1d[self._spat_batch_2d_idx[x], :][:, self._spec_batch_2d_idx[y]]
-                sigma_mask = np.abs(_Y_2d_1d - np.nanmean(_Y_2d_1d)) < 3 * np.nanstd(_Y_2d_1d)  # 3-sigma clipping
-                values_batch_2d[x, y] = np.nanmean(_Y_2d_1d[sigma_mask])
+                # sigma_mask = np.abs(_Y_2d_1d - np.nanmean(_Y_2d_1d)) < 3 * np.nanstd(_Y_2d_1d)  # 3-sigma clipping
+                values_batch_2d[x, y] = np.nanmedian(_Y_2d_1d)
                 values_err_batch_2d[x, y] = np.sqrt(
-                    np.nanmean(_Y_err_2d_1d[sigma_mask] ** 2)
+                    np.nanmedian(_Y_err_2d_1d ** 2)
                     * (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
                 ) / (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
 
@@ -353,10 +355,11 @@ class SpecModel:
         msgs.info(f"Batched 2D galaxy spectrum: {self.f_host_batch_2d.shape}")
 
         self._plot_raw()
-        if show:
-            plt.show()
         if save is not None:
             plt.savefig(save, bbox_inches="tight")
+        if show:
+            plt.show()
+        plt.close()
 
     def model_host_prior(self, **kwargs):
         """
@@ -1057,6 +1060,7 @@ class SpecModel:
             plt.savefig(save, bbox_inches="tight")
         if show:
             plt.show()
+        plt.close()
 
         return jnp.asarray(emission_lines_idx_updated, dtype=int), jnp.asarray(emission_lines, dtype=float)
 
