@@ -54,7 +54,7 @@ class PS1Image(ArchivalImage):
     Class to load images from the PS1 Image Cutout Service
     """
 
-    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout/", size: int = 300):
+    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout/", size: int = 600):
         super().__init__(ra, dec, filters, path)
         self.size = size
         self.wv_eff_dict = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)

@@ -89,13 +89,6 @@ class SpecWrapper:
         SpecWrapper
             The marginalized 1D spectrum.
         """
-        # if mask is None:
-        #     mask = jnp.ones(self.shape[0], dtype=bool)
-        # elif mask.ndim != 1:
-        #     raise ValueError("Invalid shape of the mask.")
-        # if mask.shape[0] != self.shape[0]:
-        #     raise ValueError("Mask shape mismatch.")
-
         if weights is None:
             w = jnp.ones_like(self.Y)
         elif weights == "ivar":
@@ -104,10 +97,6 @@ class SpecWrapper:
             w = (self.Y / self.Yerr) ** 2
         else:
             raise ValueError("Invalid weights.")
-        # mean_value = jnp.nanmean(self.Y[mask, :] * w, axis=0) / jnp.nanmean(w, axis=0)
-        # mean_value_err = (
-        #     (jnp.nanmean((self.Yerr[mask, :] * w) ** 2, axis=0) * mask.sum()) / (jnp.nanmean(w) * mask.sum()) ** 2
-        # ) ** 0.5
 
         # Calculate the overall means and standard deviations
         Y_means = np.nanmean(self.Y, axis=0)
@@ -118,14 +107,11 @@ class SpecWrapper:
         deviations = np.abs(self.Y - Y_means[None, :])
         sigma_masks = deviations <= (sigma_clip * Y_stds[None, :])
         valid_masks = np.isfinite(self.Y)
-        combined_mask = sigma_masks & valid_masks #& mask[:, None]
+        combined_mask = sigma_masks & valid_masks
 
         # Calculate weighted means
         weights = np.where(combined_mask, w, 0)
         weighted_values = np.where(combined_mask, self.Y * w, 0)
-
-        # weighted_values = np.where(combined_mask, self.Y * w, np.nan)
-        # weight_sums = np.where(combined_mask, w, np.nan)
 
         mean_value = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
 
@@ -169,10 +155,12 @@ class SpecModel:
         The spatial resolution (FWHM/seeing) of the 2D spectrum (arcsec).
     spec_resln : float
         The spectral resolution of the 2D spectrum (angstrom).
+    host_wid : float
+        The width of the host galaxy region used for the fitting (in arcsec).
     mask_wid : float
         The width of the mask to mask the source trace (in spat_resln/seeing).
-    sky_wid : float
-        The width of the sky region (in spat_resln/seeing).
+    sky_region: tuple
+        The (inner edges of) global sky region defined as the distance from the source (in arcsec).
     batch_2d : tuple
         The batch size for modeling the slowly varying host profiles.
     f_obs : SpecWrapper
@@ -217,9 +205,10 @@ class SpecModel:
         position_angle: float = None,  # degree
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
+        host_wid: float = 10.0,  # in arcsec, host region used for the fitting
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
         mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
-        sky_wid: float = 10.0,  # in arcsec, sky region
+        sky_region: tuple = (-5.0, 5.0),  # in arcsec, sky region
         batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
         host_emission_cfg: dict = None,  # parameters for identifying host emission lines
         show: bool = False,
@@ -248,21 +237,32 @@ class SpecModel:
         )
         msgs.info(f"Loading the 2D spectrum with the shape: {self.f_obs.shape}")
 
-        # The width of the sky region
-        # Adjust the sky width to the nearest integer multiple of the pixel scale
-        # Add 0.5 so the sky boundary is at the edge of the pixel
-        self.sky_wid = (jnp.round(sky_wid / 2 / pixel_scale) * 2 + 1) * pixel_scale
-        msgs.info(f"Sky width: {self.sky_wid:.2f} arcsec = {self.sky_wid / pixel_scale:.0f} pixels")
+        # The sky region
+        # Adjust the sky edges to the nearest integer multiple of the pixel scale
+        # Add 0.5 so the mask boundary is at the edge of the pixel
+        if sky_region[0] is None:
+            sky_region_left = -jnp.inf
+            msgs.info(f"Excluding the left sky region")
+        else:
+            sky_region_left = jnp.ceil(sky_region[0] / pixel_scale - 0.5) * pixel_scale
+            msgs.info(f"Sky region (left): {sky_region_left:.2f} arcsec = {sky_region_left / pixel_scale:.0f} pixels")
+        if sky_region[1] is None:
+            sky_region_right = jnp.inf
+            msgs.info(f"Excluding the right sky region")
+        else:
+            sky_region_right = jnp.ceil(sky_region[1] / pixel_scale + 0.5) * pixel_scale
+            msgs.info(
+                f"Sky region (right): {sky_region_right:.2f} arcsec = {sky_region_right / pixel_scale:.0f} pixels"
+            )
+        self.sky_region = (sky_region_left, sky_region_right)
 
-        if self.sky_wid >= self.slit_len:
-            raise ValueError("sky_wid should be smaller than slit_wid")
-
-        # The global sky region (|spat| > sky_wid / 2)
-        sky_left = spat < -self.sky_wid / 2
-        sky_right = spat > self.sky_wid / 2
+        sky_left = spat < self.sky_region[0]
+        sky_right = spat > self.sky_region[1]
         self.sky = sky_left | sky_right
         if np.nansum(self.sky) / self.sky.ravel().size < 0.1:
             msgs.warn(r"Sky region is < 10% of the overall pixels.")
+        if np.nansum(self.sky) == 0:
+            raise ValueError("No sky region is defined.")
 
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
         msgs.info(f"Estimating the global sky background")
@@ -279,6 +279,8 @@ class SpecModel:
         )
 
         # Mask the trace from the source (|spat| < mask_wid / 2)
+        if min(np.abs(self.sky_region)) <= mask_wid:
+            raise ValueError("sky_region boundary is inside the aperture mask")
         # Adjust the mask width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the mask boundary is at the edge of the pixel
         self.mask_wid = (jnp.round(mask_wid * spat_resln / 2 / pixel_scale) * 2 + 1) * pixel_scale
@@ -289,12 +291,13 @@ class SpecModel:
         msgs.info(
             f"Masking the source trace with the width: {self.mask_wid:.2f} arcsec = {self.mask_wid / pixel_scale:.0f} pixels"
         )
-        if sky_wid <= mask_wid:
-            raise ValueError("sky_wid should be larger than mask_wid")
 
         # Define the host galaxy pixels (outside the mask)
-        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (self.spat > -self.sky_wid / 2)
-        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (self.spat < self.sky_wid / 2)
+        # Adjust the mask width to the nearest integer multiple of the pixel scale
+        # Add 0.5 so the mask boundary is at the edge of the pixel
+        self.host_wid = (jnp.round(host_wid / 2 / pixel_scale) * 2 + 1) * pixel_scale
+        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (self.spat > -self.host_wid / 2)
+        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (self.spat < self.host_wid / 2)
         self.host = host_left | host_right
         self.f_host = SpecWrapper(
             points=(self.spat[self.host], spec),
@@ -317,7 +320,7 @@ class SpecModel:
 
         # Spectral batch
         self._spec_batch_2d_idx = self._get_spec_batches(
-            **host_emission_cfg, show=show, save=save.replace(".pdf", "_host_emission.pdf")
+            **host_emission_cfg, show=show, save=None if save is None else save.replace(".pdf", "_host_emission.pdf")
         )
 
         # New coordinates: mean of the batch
@@ -338,8 +341,7 @@ class SpecModel:
                 # sigma_mask = np.abs(_Y_2d_1d - np.nanmean(_Y_2d_1d)) < 3 * np.nanstd(_Y_2d_1d)  # 3-sigma clipping
                 values_batch_2d[x, y] = np.nanmedian(_Y_2d_1d)
                 values_err_batch_2d[x, y] = np.sqrt(
-                    np.nanmedian(_Y_err_2d_1d ** 2)
-                    * (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
+                    np.nanmedian(_Y_err_2d_1d**2) * (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
                 ) / (len(self._spat_batch_2d_idx[x]) * len(self._spec_batch_2d_idx[y]))
 
         self.f_host_batch_2d = SpecWrapper(
@@ -779,6 +781,7 @@ class SpecModel:
             y_host = y_host_1d * y_host_2d
             log_prob_obs = jnp.nansum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
 
+            # jax.debug.print("{}", params_2d)
             # jax.debug.print("1D log-probability: {}", log_prob_1d)
             # jax.debug.print("2D log-probability: {}", log_prob_2d)
             # jax.debug.print("Observed log-probability: {}", log_prob_obs)
@@ -863,35 +866,33 @@ class SpecModel:
         Array
             Indicating which batches are within the host galaxy (i.e., outside the mask)
         """
-        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (self.spat > -self.sky_wid / 2)
-        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (self.spat < self.sky_wid / 2)
+        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (self.spat > -self.host_wid / 2)
+        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (self.spat < self.host_wid / 2)
 
         batch_2d = self.batch_2d
         mask = self.mask
 
         # On the left side of the mask
         if host_left.sum() > 0:
-            spat_batch_2d_idx_left = np.array_split(np.arange(self.shape[0])[host_left], host_left.sum() // batch_2d[0])
+            spat_batch_2d_left = np.array_split(np.arange(self.shape[0])[host_left], host_left.sum() // batch_2d[0])
         else:
-            spat_batch_2d_idx_left = []
+            spat_batch_2d_left = []
         # On the right side of the mask
         if host_right.sum() > 0:
-            spat_batch_2d_idx_right = np.array_split(
-                np.arange(self.shape[0])[host_right], host_right.sum() // batch_2d[0]
-            )
+            spat_batch_2d_right = np.array_split(np.arange(self.shape[0])[host_right], host_right.sum() // batch_2d[0])
         else:
-            spat_batch_2d_idx_right = []
-        if len(spat_batch_2d_idx_left + spat_batch_2d_idx_right) == 0:
+            spat_batch_2d_right = []
+        if len(spat_batch_2d_left + spat_batch_2d_right) == 0:
             raise ValueError("No host galaxy pixels found.")
         # Within the mask
         if mask.sum() > 0:
-            spat_batch_2d_idx_sci = np.array_split(np.arange(self.shape[0])[mask], (mask).sum())
+            spat_batch_2d_sci = np.array_split(np.arange(self.shape[0])[mask], (mask).sum())
         else:
             raise ValueError("No pixels within the mask.")
         # Combine the batch indices
-        spat_batch_2d_idx = spat_batch_2d_idx_left + spat_batch_2d_idx_sci + spat_batch_2d_idx_right
-        spat_batch_2d_idx_in_host = (jnp.arange(len(spat_batch_2d_idx)) < len(spat_batch_2d_idx_left)) | (
-            jnp.arange(len(spat_batch_2d_idx)) >= len(spat_batch_2d_idx_left + spat_batch_2d_idx_sci)
+        spat_batch_2d_idx = spat_batch_2d_left + spat_batch_2d_sci + spat_batch_2d_right
+        spat_batch_2d_idx_in_host = (jnp.arange(len(spat_batch_2d_idx)) < len(spat_batch_2d_left)) | (
+            jnp.arange(len(spat_batch_2d_idx)) > len(spat_batch_2d_left + spat_batch_2d_sci)
         )
         return spat_batch_2d_idx, spat_batch_2d_idx_in_host
 
@@ -925,7 +926,7 @@ class SpecModel:
     def _find_host_emission(
         self,
         find_host_emission: bool = True,
-        p_value: float = 1e-8,
+        p_value: float = 1e-2,
         kernel_wid: int = None,
         z: float = None,
         z_err: float = None,
@@ -1034,12 +1035,16 @@ class SpecModel:
         # Match the found emission lines with the library
         emission_lines = []
         emission_lines_idx_updated = []
-        for line in self.spec[emission_lines_idx]:
-            if np.min(np.abs(emission_lines_in_lib - line)) < self.spec_resln:
-                emission_lines.append(emission_lines_in_lib[np.argmin(np.abs(emission_lines_in_lib - line))])
-                emission_lines_idx_updated.append(np.argmin(np.abs(self.spec - emission_lines[-1])))
-        emission_lines = np.unique(emission_lines)
-        emission_lines_idx_updated = np.unique(emission_lines_idx_updated)
+        if len(emission_lines_idx) == 0:
+            emission_lines = np.array([])
+            emission_lines_idx_updated = np.array([])
+        else:
+            for line in self.spec[emission_lines_idx]:
+                if np.min(np.abs(emission_lines_in_lib - line)) < self.spec_resln:
+                    emission_lines.append(emission_lines_in_lib[np.argmin(np.abs(emission_lines_in_lib - line))])
+                    emission_lines_idx_updated.append(np.argmin(np.abs(self.spec - emission_lines[-1])))
+            emission_lines = np.unique(emission_lines)
+            emission_lines_idx_updated = np.unique(emission_lines_idx_updated)
 
         _, ax = plt.subplots(2, 1, figsize=(20, 5), sharex=True, constrained_layout=True)
         ax[0].plot(self.spec, f_lines, color="tab:blue")
@@ -1215,6 +1220,7 @@ class SpecModel:
 
     def _plot_raw(self) -> Axes:
         from scipy.interpolate import interp1d
+        from astropy.stats import mad_std
 
         _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True)
         # Plot the original 2D spectrum
@@ -1292,8 +1298,10 @@ class SpecModel:
         for ax_ in ax[:-2]:
             ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(-self.host_wid / 2, color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.host_wid / 2, color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_region[0], color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.sky_region[1], color="darkgreen", linestyle="-.", lw=3)
 
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
         major_tick_size = 500 if self.spec[-1] - self.spec[0] < 4000 else 5000
@@ -1323,6 +1331,12 @@ class SpecModel:
             self.mask_wid / 2 + self.mask_offset,
             color="w",
             zorder=100,
+        )
+
+        # Adjust the ylim of the 1D spectrum
+        ax[3].set_ylim(
+            np.nanmedian(self.f_host_1d.y) - 5 * mad_std(self.f_host_1d.y),
+            np.nanmedian(self.f_host_1d.y) + 5 * mad_std(self.f_host_1d.y),
         )
 
         return ax
@@ -1459,8 +1473,8 @@ class SpecModel:
         for ax_ in ax:
             ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
             ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
-            # ax_.axhline(-self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
-            # ax_.axhline(self.sky_wid / 2, color="darkgreen", linestyle="-.", lw=3)
+            # ax_.axhline(-self.host_wid / 2, color="crimson", linestyle="-.", lw=3)
+            # ax_.axhline(self.host_wid / 2, color="crimson", linestyle="-.", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
         ax[1].set_title(r"$\mathrm{Model\ (1D)}$")
@@ -1468,6 +1482,6 @@ class SpecModel:
         ax[3].set_title(r"$\mathrm{Model}$")
         ax[-1].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-        ax[-1].set_ylim(-self.sky_wid / 2, self.sky_wid / 2)
+        ax[-1].set_ylim(-self.host_wid / 2, self.host_wid / 2)
 
         return ax

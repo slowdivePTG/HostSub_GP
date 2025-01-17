@@ -165,31 +165,31 @@ class HostProfile:
             # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
             err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1)
             # Smooth the error: convolution with a boxcar filter
-            err = np.convolve(err, np.ones(5) / 5, mode="same")
+            err = (np.convolve(err**2, np.ones(3) / 3, mode="same"))**0.5
             counts_err_slit.append(err)
 
             wv_slit.append(np.ones_like(counts_slit[-1]) * self.wv_eff[k])
             if spec2d is not None:
-                host_left = (-spec2d.slit_len / 2, -spec2d.mask_wid / 2 + spec2d.mask_offset)
-                host_right = (spec2d.mask_wid / 2 + spec2d.mask_offset, spec2d.slit_len / 2)
-                sky_left = (-spec2d.slit_len / 2, -spec2d.sky_wid / 2)
-                sky_right = (spec2d.sky_wid / 2, spec2d.slit_len / 2)
+                host_left = (-spec2d.host_wid / 2, -spec2d.mask_wid / 2 + spec2d.mask_offset)
+                host_right = (spec2d.mask_wid / 2 + spec2d.mask_offset, spec2d.host_wid / 2)
+                sky_left = (-spec2d.slit_len / 2, max(spec2d.sky_region[0], -spec2d.slit_len / 2))
+                sky_right = (min(spec2d.slit_len / 2, spec2d.sky_region[1]), spec2d.slit_len / 2)
                 xi = counts_slit[-1]
                 xi_err = counts_err_slit[-1]
                 xi_sky_mean = (
-                    bound_mean(spat_slit[-1], xi, x_bound=sky_left) + bound_mean(spat_slit[-1], xi, x_bound=sky_right)
-                ) / 2
+                    bound_sum(spat_slit[-1], xi, x_bound=sky_left) + bound_sum(spat_slit[-1], xi, x_bound=sky_right)
+                ) / ((sky_left[1] - sky_left[0]) + (sky_right[1] - sky_right[0]))
                 xi_host_mean = (
-                    bound_mean(spat_slit[-1], xi, x_bound=host_left) + bound_mean(spat_slit[-1], xi, x_bound=host_right)
-                ) / 2
+                    bound_sum(spat_slit[-1], xi, x_bound=host_left) + bound_sum(spat_slit[-1], xi, x_bound=host_right)
+                ) / ((host_left[1] - host_left[0]) + (host_right[1] - host_right[0]))
                 prof_slit.append(
                     (xi - xi_sky_mean)
                     / (xi_host_mean - xi_sky_mean)
-                    / (spec2d.slit_len - spec2d.mask_wid)
+                    / (spec2d.host_wid - spec2d.mask_wid)
                     * spec2d.pixel_scale
                 )
                 prof_err_slit.append(
-                    xi_err / (xi_host_mean - xi_sky_mean) / (spec2d.slit_len - spec2d.mask_wid) * spec2d.pixel_scale
+                    xi_err / (xi_host_mean - xi_sky_mean) / (spec2d.host_wid - spec2d.mask_wid) * spec2d.pixel_scale
                 )
 
             else:  # No mask
@@ -198,10 +198,22 @@ class HostProfile:
                 prof_slit.append(xi)
                 prof_err_slit.append(xi_err)
 
-        self.prof_slit = prof_slit
-        self.prof_err_slit = prof_err_slit
-        self.spat_slit = spat_slit
-        self.wv_slit = wv_slit
+        # trim the slit
+        if spec2d is not None:
+            self.host_wid = spec2d.host_wid  # Host width in pixels
+        else:
+            self.host_wid = self.slit_len  # Host width in pixels - if not specified, using the slit length
+
+        host_idx = [np.argwhere(np.abs(spat_slit[k]) <= np.ceil(self.host_wid / 2)).ravel() for k in range(len(flts))]
+
+        self.prof_slit = [prof_slit[k][host_idx[k]] for k in range(len(self.flts))]
+        self.prof_err_slit = [prof_err_slit[k][host_idx[k]] for k in range(len(self.flts))]
+        self.spat_slit = [spat_slit[k][host_idx[k]] for k in range(len(self.flts))]
+        self.wv_slit = [wv_slit[k][host_idx[k]] for k in range(len(self.flts))]
+        # self.prof_slit = prof_slit
+        # self.prof_err_slit = prof_err_slit
+        # self.spat_slit = spat_slit
+        # self.wv_slit = wv_slit
         self.prof = jnp.concatenate(prof_slit)
         self.prof_err = jnp.concatenate(prof_err_slit)
         self.X = jnp.stack([jnp.concatenate(spat_slit), jnp.concatenate(wv_slit)], axis=-1)
@@ -212,21 +224,20 @@ class HostProfile:
         """
         # No prior photometric data
         if len(self.flts) == 0:
-            host_prior = lambda _: jnp.float64(1 / self.slit_len)  # constant
+            host_prior = lambda _: jnp.float64(1 / self.host_wid)  # constantv
         # Single band
         elif len(self.flts) == 1:
             params = dict(
-                log_amp=jnp.float64(-3),
-                log_scale=jnp.float64(0.5),
-                # log_jitter=jnp.float64(-6),
-                mean=jnp.float64(1 / self.slit_len),
+                log_amp=np.float64(-3),
+                log_scale=np.float64(-0.5),
+                mean=np.float64(1 / self.slit_len),
             )
-            params_limit = dict(log_scale=np.log10([1e-1, 10]))
+            params_limit = dict(log_scale=np.log10([0.8 / 2.355, 1.5 / 2.355]))
             gp_host_prior = GP(
                 X=self.X[:, 0][:, None],  # Spatial coordinate only
                 y=self.prof,
                 yerr=self.prof_err,
-                params=params,
+                # params=params,
                 params_init=params,
                 params_limit=params_limit,
                 optimization=True,
@@ -235,18 +246,18 @@ class HostProfile:
         # Multiple bands
         else:
             params = dict(
-                log_amp=jnp.float64(-2),
-                log_scale=jnp.asarray([0.1, 5], dtype=jnp.float64),
-                mean=jnp.float64(1 / self.slit_len),
+                log_amp=np.float64(-2),
+                log_scale=np.log10([1/2.355, 1e4]),
+                mean=np.float64(1 / self.host_wid),
             )
             params_limit = dict(
-                log_scale=np.log10([[1e-1, 1e3], [1e1, 1e7]]),
+                log_scale=np.log10([[0.8 / 2.355, 1e2], [1.5 / 2.355, 1e5]]),
             )
             gp_host_prior = GP(
                 X=self.X,
                 y=self.prof,
                 yerr=self.prof_err,
-                params=params,
+                # params=params,
                 params_init=params,
                 params_limit=params_limit,
                 optimization=True,
@@ -279,6 +290,9 @@ class HostProfile:
                 alpha=0.2,
             )
             ax[k].set_ylabel(r"$\mathrm{Profile}$")
+            ax[k].text(
+                0.05, 0.8, f"{self.flts[k]}: {self.wv_eff[k]:.0f} Ang", color=cmap(norm(k)), transform=ax[k].transAxes
+            )
         ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         if save is not None:
             plt.savefig(save, bbox_inches="tight")
@@ -289,18 +303,18 @@ class HostProfile:
         return host_prior
 
 
-def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
+def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
     """
     Compute the mean values in a bounded region.
     """
     bin_size = jnp.append(x[1] - x[0], jnp.diff(x))
     if x_bound is None:
         x_bound = (x[0] - bin_size[0] / 2, x[-1] + bin_size[-1] / 2)
+    if x_bound[1] <= x_bound[0]:
+        return jnp.float64(0)
     # sum up all pixels that are fully contained in the region
     idx_center = (x > x_bound[0] + bin_size[0] / 2) & (x < x_bound[1] - bin_size[-1] / 2)
     sum_center = jnp.sum(y[idx_center] * bin_size[idx_center])
-    # print("Pixels fully contained in the region:")
-    # print(x[idx_center])
 
     # leftmost pixel that is partially contained in the region (if any)
     idx_left = jnp.where(x >= x_bound[0] - bin_size[0] / 2)[0]
@@ -310,10 +324,6 @@ def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.f
         sum_left = y_left * frac_left
     else:
         raise ValueError("Invalid left bound")
-    # print("Pixel on the left edge:")
-    # print(x[idx_left[0]])
-    # print("Coverage:")
-    # print(frac_left)
 
     # rightmost pixel that is partially contained in the region (if any)
     idx_right = jnp.where(x <= x_bound[1] + bin_size[-1] / 2)[-1]
@@ -323,8 +333,11 @@ def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.f
         sum_right = y_right * frac_right
     else:
         raise ValueError("Invalid right bound")
-    # print("Pixel on the right edge:")
-    # print(x[idx_right[-1]])
-    # print("Coverage:")
-    # print(frac_right)
-    return (sum_center + sum_left + sum_right) / (x_bound[1] - x_bound[0])
+    return sum_center + sum_left + sum_right
+
+
+def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
+    """
+    Compute the sum in a bounded region.
+    """
+    return bound_sum(x, y, x_bound) / (x_bound[1] - x_bound[0])

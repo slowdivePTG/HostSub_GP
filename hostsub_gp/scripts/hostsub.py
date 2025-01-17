@@ -15,6 +15,11 @@ from hostsub_gp._plt import plt
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput
 
+def Float(value: int | float | str) -> float:
+    if (value == "None") or (value == "none") or value is None:
+        return None
+    else:
+        return float(value)
 
 class HostSub(ScriptBase):
     @classmethod
@@ -80,10 +85,10 @@ class HostSub(ScriptBase):
             par_hostsub = par.get("hostsub", {})
             raw_dir = par_hostsub.get("raw_dir", None)
             spec2d_cfg = {}
-            spec2d_cfg["slit_len"] = float(par_hostsub.get("slit_len", 20.0))
-            spec2d_cfg["ra"] = None if not "ra" in par_hostsub else float(par_hostsub["ra"])
-            spec2d_cfg["dec"] = None if not "dec" in par_hostsub else float(par_hostsub["dec"])
-            spec2d_cfg["sky_offset"] = None if not "sky_offset" in par_hostsub else float(par_hostsub["sky_offset"])
+            spec2d_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
+            spec2d_cfg["ra"] = Float(par_hostsub.get("ra", None))
+            spec2d_cfg["dec"] = Float(par_hostsub.get("dec", None))
+            spec2d_cfg["sky_offset"] = Float(par_hostsub.get("sky_offset", None))
 
             # Run the host subtraction
             if args.overwrite or not os.path.exists(sci_rect_file):
@@ -102,13 +107,14 @@ class HostSub(ScriptBase):
             # Convert the 2D spectrum to a SpecModel object
             # Parameters for defining the SpecModel object
             host_sub_cfg = {}
-            host_sub_cfg["slit_len"] = None if "slit_len" not in par_hostsub else float(par_hostsub["slit_len"])
+            host_sub_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
             host_sub_cfg["spec_range"] = (
-                None if "spec_range" not in par_hostsub else tuple(map(float, par_hostsub["spec_range"]))
+                None if "spec_range" not in par_hostsub else tuple(map(Float, par_hostsub["spec_range"]))
             )
-            host_sub_cfg["mask_wid"] = float(par_hostsub.get("mask_wid", 2.0))
-            host_sub_cfg["sky_wid"] = float(par_hostsub.get("sky_wid", 10.0))
-            host_sub_cfg["mask_offset"] = float(par_hostsub.get("mask_offset", 0.0))
+            host_sub_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
+            host_sub_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
+            host_sub_cfg["sky_region"] = tuple(map(Float, par_hostsub.get("sky_region", (-5.0, 5.0))))
+            host_sub_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
             host_sub_cfg["batch_2d"] = (
                 (2, 128) if "batch_2d" not in par_hostsub else tuple(map(int, par_hostsub["batch_2d"]))
             )
@@ -117,14 +123,14 @@ class HostSub(ScriptBase):
             par_host_emission = par_hostsub.get("host_emission", {})
             host_emission_cfg = {}
             host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in ["True", "true"]
-            host_emission_cfg["p_value"] = float(par_host_emission.get("p_value", 1e-8))
+            host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 1e-8))
             host_emission_cfg["kernel_wid"] = (
-                None if "kernel_wid" not in par_host_emission else float(par_host_emission["kernel_wid"])
+                None if "kernel_wid" not in par_host_emission else Float(par_host_emission["kernel_wid"])
             )
-            host_emission_cfg["z"] = None if "z" not in par_host_emission else float(par_host_emission["z"])
-            host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else float(par_host_emission["z_err"])
+            host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
+            host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
-            spec2d = spec_data.to_SpecModel(
+            spec_model = spec_data.to_SpecModel(
                 show=args.debug,
                 save=f"QA/{os.path.basename(base_file)}.pdf",
                 host_emission_cfg=host_emission_cfg,
@@ -132,7 +138,7 @@ class HostSub(ScriptBase):
             )
 
             # Model the host prior
-            spec2d.model_host_prior(
+            spec_model.model_host_prior(
                 show=args.debug,
                 save=f"QA/{os.path.basename(base_file)}_host_prior.pdf",
             )
@@ -160,7 +166,7 @@ class HostSub(ScriptBase):
                         [1, 3],
                         # log range of the fast varying component
                         # typical scale = spectral resolution
-                        np.log10([spec2d.spec_resln / 2.355, spec2d.spec_resln * 10]),
+                        np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 10]),
                     ]
                 ).T,
             )
@@ -170,10 +176,10 @@ class HostSub(ScriptBase):
                     [
                         # log range of the spatial component
                         # typical scale = spatial resolution
-                        np.log10([spec2d.spat_resln / 2.355, spec2d.spat_resln]),
+                        np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln]),
                         # log range of the spectral component
                         # typical scale = spectral resolution
-                        np.log10([spec2d.spec_resln / 2.355, 1e4]),
+                        np.log10([spec_model.spec_resln / 2.355, 1e4]),
                     ]
                 ).T,
             )
@@ -181,7 +187,7 @@ class HostSub(ScriptBase):
             params_limit = [params_limit_1d, params_limit_2d]
 
             # Model the host
-            spec2d.model_host(
+            spec_model.model_host(
                 params_init=params_init,
                 params_limit=params_limit,
                 optimization=True,
@@ -190,19 +196,27 @@ class HostSub(ScriptBase):
 
             # QA plots
             # Raw, model, and residual
-            spec2d._plot_pred()
+            spec_model._plot_pred()
             plt.savefig(f"QA/{os.path.basename(base_file)}_pred.pdf")
             if args.debug:
                 plt.show()
+            plt.close()
 
             # Prior and posterior of the host profiles
-            spec2d._plot_host_profile_pred()
+            spec_model._plot_host_profile_prior()
+            plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_prior.pdf")
+            if args.debug:
+                plt.show()
+            plt.close()
+            spec_model._plot_host_profile_pred()
             plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_pred.pdf")
             if args.debug:
                 plt.show()
+            plt.close()
 
             # Extract the science spectrum
-            spec2d.extract_sci()
+            spec_model.extract_sci()
             plt.savefig(f"QA/{os.path.basename(base_file)}_sci.pdf")
             if args.debug:
                 plt.show()
+            plt.close()
