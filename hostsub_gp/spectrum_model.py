@@ -367,7 +367,7 @@ class SpecModel:
         """
         Build the prior of the host galaxy using Gaussian Process regression.
         """
-        host_prof = HostProfile(spec2d=self)
+        host_prof = HostProfile.from_archival(spec_model=self, filters="ugr")
         self.host_flux_prior = host_prof.model_host_profile_prior(**kwargs)
 
     def model_host(
