@@ -123,7 +123,7 @@ class HostSub(ScriptBase):
             par_host_emission = par_hostsub.get("host_emission", {})
             host_emission_cfg = {}
             host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in ["True", "true"]
-            host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 1e-8))
+            host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 0.05))
             host_emission_cfg["kernel_wid"] = (
                 None if "kernel_wid" not in par_host_emission else Float(par_host_emission["kernel_wid"])
             )

@@ -34,7 +34,7 @@ class HostProfile:
         counts_err_slit: list[ArrayLike],
         spec_model: any = None,
         slit_len: float = None,
-        pixel_scale: float = 1.0,
+        pixel_scale: float = None,
     ):
         """
         Estimate the host galaxy spatial profile from the 2D spectrum.
@@ -63,10 +63,22 @@ class HostProfile:
 
         prof_slit, prof_err_slit = [], []
 
+        if spec_model is not None:
+            slit_len = spec_model.slit_len
+            pixel_scale = spec_model.pixel_scale
+        elif slit_len is None or pixel_scale is None:
+            raise ValueError("Slit length and pixel scale are required")
+
         for k in range(len(self.flts)):
             if spec_model is not None:
-                host_left = (-spec_model.host_wid / 2, -spec_model.mask_wid / 2 + spec_model.mask_offset)
-                host_right = (spec_model.mask_wid / 2 + spec_model.mask_offset, spec_model.host_wid / 2)
+                host_left = (
+                    -spec_model.host_wid / 2 + spec_model.mask_offset,
+                    -spec_model.mask_wid / 2 + spec_model.mask_offset,
+                )
+                host_right = (
+                    spec_model.mask_wid / 2 + spec_model.mask_offset,
+                    spec_model.host_wid / 2 + spec_model.mask_offset,
+                )
                 sky_left = (-spec_model.slit_len / 2, max(spec_model.sky_region[0], -spec_model.slit_len / 2))
                 sky_right = (min(spec_model.slit_len / 2, spec_model.sky_region[1]), spec_model.slit_len / 2)
                 xi = counts_slit[k]
@@ -81,10 +93,10 @@ class HostProfile:
                     (xi - xi_sky_mean)
                     / (xi_host_mean - xi_sky_mean)
                     / (spec_model.host_wid - spec_model.mask_wid)
-                    * spec_model.pixel_scale
+                    * pixel_scale
                 )
                 prof_err_slit.append(
-                    xi_err / (xi_host_mean - xi_sky_mean) / (spec_model.host_wid - spec_model.mask_wid) * spec_model.pixel_scale
+                    xi_err / (xi_host_mean - xi_sky_mean) / (spec_model.host_wid - spec_model.mask_wid) * pixel_scale
                 )
 
             else:  # No mask
@@ -281,13 +293,15 @@ class HostProfile:
             pixel_scale=pixel_scale,
         )
 
-    def model_host_profile_prior(self, **kwargs) -> Callable[[Array], Array]:
+    def model_host_profile_prior(
+        self, **kwargs
+    ) -> Callable[[Array], Array] | Callable[[Array], tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
         """
         # No prior photometric data
         if len(self.flts) == 0:
-            host_prior = lambda _: jnp.float64(1 / self.host_wid)  # constantv
+            host_prior = lambda _: (jnp.float64(1 / self.host_wid), jnp.float64(0))  # constant, variance = 0
         # Single band
         elif len(self.flts) == 1:
             params = dict(
@@ -305,7 +319,9 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None]))
+            host_prior = jax.jit(
+                lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None], return_var=True)
+            )
         # Multiple bands
         else:
             params = dict(
@@ -325,12 +341,22 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x))
+            host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x, return_var=True))
 
+        self._plot_host_profile(host_prior, **kwargs)
+
+        return host_prior
+
+
+    def _plot_host_profile(self, host_prior, **kwargs) -> Callable[[Array], Array]:
+        """
+        Plot the host galaxy spatial profile.
+        """
         # Whether to plot the host profile
         show = kwargs.get("show", False)
         # Whether to save the plot
         save = kwargs.get("save", None)
+
         _, ax = plt.subplots(
             len(self.flts), 1, figsize=(6, 2 * len(self.flts)), sharex=True, sharey=True, constrained_layout=True
         )
@@ -341,7 +367,7 @@ class HostProfile:
             ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.flts[k]}", color=cmap(norm(k)))
             ax[k].plot(
                 self.spat_slit[k],
-                host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1)),
+                host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1))[0],
                 "--",
                 color=cmap(norm(k)),
             )
@@ -362,9 +388,6 @@ class HostProfile:
         if show:
             plt.show()
         plt.close()
-
-        return host_prior
-
 
 def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
     """
