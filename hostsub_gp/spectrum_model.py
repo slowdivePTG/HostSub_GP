@@ -152,7 +152,9 @@ class SpecWrapper:
         SpecWrapper
             The subtracted spectrum.
         """
-        if ((len(other.shape) == 1) & (other.shape[-1] != self.shape[-1])) | ((len(other.shape) == 2) & (other.shape != self.shape)):
+        if ((len(other.shape) == 1) & (other.shape[-1] != self.shape[-1])) | (
+            (len(other.shape) == 2) & (other.shape != self.shape)
+        ):
             raise ValueError("Shape mismatch.")
         return SpecWrapper(
             points=(self.spat, self.spec),
@@ -579,9 +581,7 @@ class SpecModel:
         # Predict the host galaxy flux within the mask (including uncertainties)
         msgs.info("Extracting the science spectrum.")
         self.f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
-        _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(
-            self._gp_1d, self._gp_2d, self.f_mask.X, return_var=True
-        )
+        _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(self._gp_1d, self._gp_2d, self.f_mask.X, return_var=True)
         self.f_mask_pred = SpecWrapper(
             points=(self.f_mask.spat, self.f_mask.spec),
             values=f_mask_pred.reshape(self.f_mask.shape),
@@ -994,20 +994,27 @@ class SpecModel:
         Array
             Indicating which batches are within the host galaxy (i.e., outside the mask)
         """
-        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (self.spat > -self.host_wid / 2)
-        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (self.spat < self.host_wid / 2)
+        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (
+            self.spat > -self.host_wid / 2 + self.mask_offset
+        )
+        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (
+            self.spat < self.host_wid / 2 + self.mask_offset
+        )
 
         batch_2d = self.batch_2d
         mask = self.spat_filter["mask"]
 
         # On the left side of the mask
         if host_left.sum() > 0:
+            # Finer binning near the aperture edge (by default)
             spat_batch_2d_left = np.array_split(np.arange(self.shape[0])[host_left], host_left.sum() // batch_2d[0])
         else:
             spat_batch_2d_left = []
         # On the right side of the mask
         if host_right.sum() > 0:
-            spat_batch_2d_right = np.array_split(np.arange(self.shape[0])[host_right], host_right.sum() // batch_2d[0])
+            # Finer binning near the aperture edge
+            spat_batch_2d_right = np.array_split(np.arange(self.shape[0])[host_right][::-1], host_right.sum() // batch_2d[0])[::-1]
+            spat_batch_2d_right = [np.sort(idx) for idx in spat_batch_2d_right]
         else:
             spat_batch_2d_right = []
         if len(spat_batch_2d_left + spat_batch_2d_right) == 0:
@@ -1170,9 +1177,11 @@ class SpecModel:
             for line in zip(self.spec[emission_lines_idx]):
                 if np.min(np.abs(emission_lines_in_lib - line)) < self.spec_resln:
                     emission_lines.append(emission_lines_in_lib[np.argmin(np.abs(emission_lines_in_lib - line))])
-                    emission_lines_idx_updated.append(np.interp(emission_lines[-1], self.spec, np.arange(len(self.spec))))
+                    emission_lines_idx_updated.append(
+                        np.interp(emission_lines[-1], self.spec, np.arange(len(self.spec)))
+                    )
                     # emission_lines_idx_updated.append(np.argmin(np.abs(self.spec - emission_lines[-1])))
-                    
+
             emission_lines = np.unique(emission_lines)
             emission_lines_idx_updated = np.unique(emission_lines_idx_updated)
 
