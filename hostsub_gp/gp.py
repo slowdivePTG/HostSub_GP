@@ -118,7 +118,7 @@ class _build_gp:
         self.log_scale = params.get("log_scale")
         self.mean = params.get("mean")
         # For EmissionLine kernel only
-        self.amp_line = params.get("amp_line")
+        self.log_amp_line = params.get("log_amp_line")
         self.scale_line = params.get("scale_line")
 
         self.X = jnp.asarray(X)
@@ -153,7 +153,7 @@ class _build_gp:
 
         # EmissionLine kernel - to handle discontinuities at narrow emission lines
         elif kernel_type == "EmissionLine":
-            if self.amp_line is None or self.scale_line is None:
+            if self.log_amp_line is None or self.scale_line is None:
                 raise ValueError(
                     "EmissionLine kernel requires 'amp_line', and 'scale_line' parameters"
                 )
@@ -164,7 +164,7 @@ class _build_gp:
                 )
             base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
             emission_line_kernel = EmissionLineKernel(
-                amp_line=self.amp_line,
+                amp_line=10**self.log_amp_line,
                 scale_line=self.scale_line,
                 emission_lines=emission_lines,
             )
@@ -200,8 +200,10 @@ class EmissionLineKernel(kernels.Kernel):
             # x2_close = _gaussian(x2_spec, line, self.scale_line)
             # x1_close = _sigmoid(x1_spec, line, self.scale_line)
             # x2_close = _sigmoid(x2_spec, line, self.scale_line)
-            x1_close = _tophat(x1_spec, line, self.scale_line)
-            x2_close = _tophat(x2_spec, line, self.scale_line)
+            # x1_close = _tophat(x1_spec, line, self.scale_line)
+            # x2_close = _tophat(x2_spec, line, self.scale_line)
+            x1_close = _hyperbolic_tangent(x1_spec, line, self.scale_line)
+            x2_close = _hyperbolic_tangent(x2_spec, line, self.scale_line)
 
             # Effect when both x1 and x2 are close to the line
             both_close = x1_close * x2_close
@@ -222,12 +224,14 @@ class EmissionLineKernel(kernels.Kernel):
         # x1_line_sep = jnp.min(jnp.abs(x1_spec - self.emission_lines))
         # x2_line_sep = jnp.min(jnp.abs(x2_spec - self.emission_lines))
 
-        # x1_close = _gaussian(x1_line_sep, 0.0, self.scale_line)
-        # x2_close = _gaussian(x2_line_sep, 0.0, self.scale_line)
-        # x1_close = _sigmoid(x1_line_sep, 0.0, self.scale_line)
-        # x2_close = _sigmoid(x2_line_sep, 0.0, self.scale_line)
-        # x1_close = _tophat(x1_line_sep, 0.0, self.scale_line)
-        # x2_close = _tophat(x2_line_sep, 0.0, self.scale_line)
+        # # x1_close = _gaussian(x1_line_sep, 0.0, self.scale_line)
+        # # x2_close = _gaussian(x2_line_sep, 0.0, self.scale_line)
+        # # x1_close = _sigmoid(x1_line_sep, 0.0, self.scale_line)
+        # # x2_close = _sigmoid(x2_line_sep, 0.0, self.scale_line)
+        # # x1_close = _tophat(x1_line_sep, 0.0, self.scale_line)
+        # # x2_close = _tophat(x2_line_sep, 0.0, self.scale_line)
+        # x1_close = _hyperbolic_tangent(x1_line_sep, 0.0, self.scale_line)
+        # x2_close = _hyperbolic_tangent(x2_line_sep, 0.0, self.scale_line)
 
         # # Effect when both x1 and x2 are close to the line
         # both_close = x1_close * x2_close
@@ -238,14 +242,14 @@ class EmissionLineKernel(kernels.Kernel):
         # # Emission line effect
         # # - decrease the covariance when exactly one point is close to the line
         # # - increase the covariance when both points are close to the line
-        # emission_line_effect = 1 - one_close + both_close * self.amp_line
+        # emission_line_effect = 1 - one_close + self.amp_line * both_close
 
         # return emission_line_effect
 
 
 @jax.jit
-def _sigmoid(x: Array, mu: Array, width: Array, coef: float = 0.1) -> Array:
-    return 1 / (1 + jnp.exp((jnp.abs(x - mu) / width - 1.0) / coef))
+def _sigmoid(x: Array, mu: Array, width: Array) -> Array:
+    return 1 / (1 + jnp.exp((jnp.abs(x - mu) / width - 1.0) / 0.1))
 
 
 @jax.jit
@@ -256,3 +260,8 @@ def _tophat(x: Array, mu: Array, width: Array) -> Array:
 @jax.jit
 def _gaussian(x: Array, mu: Array, width: Array) -> Array:
     return jnp.exp(-0.5 * (x - mu) ** 2 / width**2)
+
+@jax.jit
+def _hyperbolic_tangent(x: Array, mu: Array, width: Array) -> Array:
+    x_min, x_max = mu - width / 2, mu + width / 2
+    return 0.5 * (jnp.tanh(5 * (x - x_min) / width) - jnp.tanh(5 * (x - x_max) / width))

@@ -68,7 +68,7 @@ def _init_params(params: dict, require_all: bool = True, params_type: str = "val
             return jnp.asarray(x[0], dtype=jnp.float64)  # Scalar[float64]
 
     params_output = {}
-    for key in ["log_amp", "log_scale", "mean", "amp_line_cont", "amp_line", "scale_line"]:
+    for key in ["log_amp", "log_scale", "mean", "log_amp_line", "scale_line"]:
         if key in params:
             params_output[key] = ensure_scalar_or_array(params.get(key))
 
@@ -94,10 +94,8 @@ def _print_params(params: dict):
         _print_param(params, "log_amp", "Amp")
         _print_param(params, "log_scale", "Scale")
         _print_param(params, "mean", "Mean")
-        if "amp_line_cont" in params:
-            _print_param(params, "amp_line_cont", "Amp_line_cont")
-        if "amp_line" in params:
-            _print_param(params, "amp_line", "Amp_line")
+        if "log_amp_line" in params:
+            _print_param(params, "log_amp_line", "Amp_line")
             _print_param(params, "scale_line", "Scale_line")
         print("\n")
     except TypeError as e:

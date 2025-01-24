@@ -639,7 +639,7 @@ class SpecModel:
                     3,  # Spectral scale ~ 1000 Angstrom
                 ),
                 mean=0.0,
-                amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
+                log_amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
                 scale_line=self.spec_resln / 2,  # Radius of the host lines: Half of the FWHM of the spectral resolution
             )
         else:
@@ -811,7 +811,6 @@ class SpecModel:
         try:
             params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False, params_type="limit")
         except:
-            print(params_limit)
             raise ValueError("Invalid parameter limits")
 
         f_1d_mask = np.isfinite(self.f_host_1d.y)
@@ -1055,7 +1054,7 @@ class SpecModel:
     def _find_host_emission(
         self,
         find_host_emission: bool = True,
-        p_value: float = 1e-2,
+        p_value: float = 0.05,
         kernel_wid: int = None,
         z: float = None,
         z_err: float = None,
@@ -1068,13 +1067,13 @@ class SpecModel:
         ----------
         find_host_emission : bool, optional (default: True)
             Whether to find the host galaxy emission.
-        p_value : float, optional (default: 1e-5)
+        p_value : float, optional (default: 0.05)
             The p-value for emission line detection.
-        kernel_wid : int, optional (default: None)
+        kernel_wid : int, optional
             The width of the kernel for smoothing the profile.
         z : float, optional (default: 0.0)
             The redshift of the host galaxy.
-        z_err : float, optional (default: 1e-3)
+        z_err : float, optional
             The error of the redshift.
 
         Returns
@@ -1095,7 +1094,7 @@ class SpecModel:
 
         # Define the kernel for smoothing the standard deviation of the galaxy spatial profile
         if kernel_wid is None:
-            kernel_wid = int(self.spec_resln / jnp.diff(self.spec).min()) + 1
+            kernel_wid = int(self.spec_resln / jnp.diff(self.spec).min())
 
         f_2d = np.empty_like(self.f_host.Y)
         f_2d_err = np.empty_like(self.f_host.Yerr)
@@ -1124,7 +1123,7 @@ class SpecModel:
         # Difference between the observed and the continuum
         f_lines = jnp.abs(f_1d - f_1d_cont)
         # Sum of the squared difference between the profile at each wavelength and the average profile (median)
-        prof_diff = jnp.nanmedian(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
+        prof_diff = jnp.nanmean(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
 
         # Find the emission lines
         ## Flux significantly higher than the continuum (5-sigma)
@@ -1136,7 +1135,7 @@ class SpecModel:
         for line in distinct_prof:
             host_lines_close = np.where(np.abs(host_lines - line) < kernel_wid)
             if host_lines_close[0].size > 0:
-                emission_lines_idx.append(int(np.mean(host_lines[host_lines_close])))
+                emission_lines_idx.append(int(np.round(np.mean(host_lines[host_lines_close]))))
 
         # Remove duplicates
         emission_lines_idx = np.unique(emission_lines_idx)
@@ -1168,10 +1167,12 @@ class SpecModel:
             emission_lines = np.array([])
             emission_lines_idx_updated = np.array([])
         else:
-            for line in self.spec[emission_lines_idx]:
+            for line in zip(self.spec[emission_lines_idx]):
                 if np.min(np.abs(emission_lines_in_lib - line)) < self.spec_resln:
                     emission_lines.append(emission_lines_in_lib[np.argmin(np.abs(emission_lines_in_lib - line))])
-                    emission_lines_idx_updated.append(np.argmin(np.abs(self.spec - emission_lines[-1])))
+                    emission_lines_idx_updated.append(np.interp(emission_lines[-1], self.spec, np.arange(len(self.spec))))
+                    # emission_lines_idx_updated.append(np.argmin(np.abs(self.spec - emission_lines[-1])))
+                    
             emission_lines = np.unique(emission_lines)
             emission_lines_idx_updated = np.unique(emission_lines_idx_updated)
 
@@ -1197,7 +1198,7 @@ class SpecModel:
             plt.show()
         plt.close()
 
-        return jnp.asarray(emission_lines_idx_updated, dtype=int), jnp.asarray(emission_lines, dtype=float)
+        return jnp.asarray(emission_lines_idx_updated), jnp.asarray(emission_lines, dtype=float)
 
     def _find_batch_edges(self, left: int = None, right: int = None) -> ArrayLike:
         """
@@ -1222,7 +1223,7 @@ class SpecModel:
         if right is None:
             right = right_edge
 
-        min_batch_size = 2 * (int(self.spec_resln / np.diff(self.spec).min()) + 1) + 1
+        min_batch_size = 2 * (int(self.spec_resln / np.diff(self.spec).min()))
         max_batch_size = self.batch_2d[1]
 
         def check_spectrum_length(left, right):
@@ -1307,9 +1308,10 @@ class SpecModel:
             left = max(left - min_batch_size / 2, left_edge)
             right = min(right + min_batch_size / 2, right_edge)
 
-            # check_spectrum_length(left, right)
-            if right - left <= min_batch_size * 3:
+            if right - left <= min_batch_size * 2:
                 return np.array([(left + right) / 2], dtype=int)
+            elif right - left <= min_batch_size * 3:
+                return np.array([np.ceil(left + min_batch_size), np.ceil(right - min_batch_size)], dtype=int)
 
             # Batches on the left have the sizes: (2^0, 2^0, 2^1, ..., 2^K_max) * min_batch_size
             # Batches on the right have the sizes: (2^K_max, 2^(K_max-1), ..., 2^1, 2^0, 2^0) * min_batch_size
@@ -1342,7 +1344,7 @@ class SpecModel:
 
             batch_edges = np.concatenate([batch_edges_left, batch_edges_middle, batch_edges_right])
 
-        return np.asarray(batch_edges, dtype=int)
+        return np.asarray(np.ceil(batch_edges), dtype=int)
 
     ###############################################################################
     ################################# QA Plotting #################################
@@ -1388,6 +1390,7 @@ class SpecModel:
             spec_min = spec_to_pseudo_spec(self.spec[self._spec_batch_2d_idx[y][0]] - 0.5 * delta_spec_typical)
             spec_max = spec_to_pseudo_spec(self.spec[self._spec_batch_2d_idx[y][-1]] + 0.5 * delta_spec_typical)
             ax[2].axvline(spec_max, color="0.8", linestyle=":", lw=2, zorder=100)
+            ax[1].axvline(spec_max, color="0.8", linestyle=":", lw=2, zorder=100)
             for x in range(shape_batch_2d[0]):
                 spat_min = self.spat[self._spat_batch_2d_idx[x][0]] - 0.5 * delta_spat_typical
                 spat_max = self.spat[self._spat_batch_2d_idx[x][-1]] + 0.5 * delta_spat_typical
@@ -1480,7 +1483,7 @@ class SpecModel:
         raw_err = self.f_batch_2d.Yerr
         prior = self.f_batch_prior.Y
 
-        offset = (prior.max() - prior.min()) / 3
+        offset = (np.percentile(prior, 95) - np.percentile(prior, 5)) / 2
 
         for k, (r, r_err, p) in enumerate(zip(raw.T, raw_err.T, prior.T)):
             # c_raw = cmap(norm(k))
@@ -1527,7 +1530,7 @@ class SpecModel:
             self.dist_batch_2d.shape
         )
 
-        offset = max((pred.max() - pred.min()) / 2, np.nanmedian(raw_err) * 2)
+        offset = max((np.percentile(pred, 95) - np.percentile(pred, 5)), np.nanmedian(raw_err) * 2)
 
         for k, (r, err, p) in enumerate(zip(raw.T, raw_err.T, pred.T)):
             # c_raw = cmap(norm(k))
@@ -1536,7 +1539,7 @@ class SpecModel:
             ax.fill_between(
                 self.dist_host_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5
             )
-            ax.plot(self.dist_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
+            ax.scatter(self.dist_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
                 self.mask_offset,
                 -offset * k + np.nanmedian(raw[:, 0]),
