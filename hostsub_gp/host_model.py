@@ -188,9 +188,9 @@ class HostProfile:
             data_list_sdss, header_list_sdss = SDSS.load()
             data_list.extend(data_list_sdss)
             header_list.extend(header_list_sdss)
-            wv_eff_sdss = np.array([SDSS.wv_eff_dict[flt] for flt in sdss_filters])
-            wv_eff.extend(wv_eff_sdss)
             flts.extend(SDSS.filters)
+            wv_eff_sdss = np.array([SDSS.wv_eff_dict[flt] for flt in SDSS.filters])
+            wv_eff.extend(wv_eff_sdss)
 
         # Load PS1 images
         ps1_filters = "grizy"
@@ -205,9 +205,9 @@ class HostProfile:
             data_list_ps1, header_list_ps1 = PS1.load()
             data_list.extend(data_list_ps1)
             header_list.extend(header_list_ps1)
-            wv_eff_ps1 = np.array([PS1.wv_eff_dict[flt] for flt in ps1_filters])
-            wv_eff.extend(wv_eff_ps1)
             flts.extend(PS1.filters)
+            wv_eff_ps1 = np.array([PS1.wv_eff_dict[flt] for flt in PS1.filters])
+            wv_eff.extend(wv_eff_ps1)
 
         # TODO: Load acquisition images (optional)
 

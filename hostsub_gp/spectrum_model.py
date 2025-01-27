@@ -80,7 +80,25 @@ class SpecWrapper:
         else:
             raise ValueError("Y shape error")
 
-    def marginalize(self, margin_type: str = "mean", weights: str = None, sigma_clip: float = 3) -> "SpecWrapper":
+    def fill_nan(self) -> "SpecWrapper":
+        """
+        Fill the NaN values in the spectrum by interpolation.
+        """
+        from scipy.interpolate import griddata
+
+        Y_masked = np.ma.masked_invalid(self.Y)
+        Y_err_masked = np.ma.masked_invalid(self.Yerr)
+        valid = ~Y_masked.mask
+
+        x, y = np.indices(self.shape)
+
+        # Interpolate
+        Y_filled = griddata((x[valid], y[valid]), Y_masked[valid], (x, y), method="linear")
+        Y_err_filled = griddata((x[valid], y[valid]), Y_err_masked[valid], (x, y), method="linear")
+
+        return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
+
+    def marginalize(self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 3) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
 
@@ -89,7 +107,7 @@ class SpecWrapper:
         margin_type : str, optional
             Type of the marginalization: mean or sum. Default is mean.
         weights : str, optional
-            Weights for the marginalization: None, ivar, or snr. Default is None.
+            Weights for the marginalization: None, ivar, snr, or an array of the weights. Default is None.
             None: no weights
             ivar: inverse variance
             snr: signal-to-noise ratio squared
@@ -103,6 +121,10 @@ class SpecWrapper:
         """
         if weights is None:
             w = jnp.ones_like(self.Y)
+        elif isinstance(weights, (ArrayLike, Array)):
+            if weights.shape != self.Y.shape:
+                raise ValueError("Invalid shape of the input weights.")
+            w = jnp.array(weights)
         elif weights == "ivar":
             w = self.Yerr**-2
         elif weights == "snr":
@@ -435,11 +457,11 @@ class SpecModel:
             plt.show()
         plt.close()
 
-    def model_host_prior(self, **kwargs):
+    def model_host_prior(self, filters="ugrizy", **kwargs):
         """
         Build the prior of the host galaxy using Gaussian Process regression.
         """
-        host_prof = HostProfile.from_archival(spec_model=self, filters="ugri")
+        host_prof = HostProfile.from_archival(spec_model=self, filters=filters)
         host_flux_prior = host_prof.model_host_profile_prior(return_var=True, **kwargs)
 
         # Scale the host flux prior to the observed data
@@ -580,6 +602,10 @@ class SpecModel:
         """
         # Predict the host galaxy flux within the mask (including uncertainties)
         msgs.info("Extracting the science spectrum.")
+
+        def gauss(x, mu, sigma):
+            return jnp.exp(-0.5 * (x - mu) ** 2 / sigma**2) * (2 * jnp.pi * sigma**2) ** -0.5
+
         self.f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
         _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(self._gp_1d, self._gp_2d, self.f_mask.X, return_var=True)
         self.f_mask_pred = SpecWrapper(
@@ -1013,7 +1039,9 @@ class SpecModel:
         # On the right side of the mask
         if host_right.sum() > 0:
             # Finer binning near the aperture edge
-            spat_batch_2d_right = np.array_split(np.arange(self.shape[0])[host_right][::-1], host_right.sum() // batch_2d[0])[::-1]
+            spat_batch_2d_right = np.array_split(
+                np.arange(self.shape[0])[host_right][::-1], host_right.sum() // batch_2d[0]
+            )[::-1]
             spat_batch_2d_right = [np.sort(idx) for idx in spat_batch_2d_right]
         else:
             spat_batch_2d_right = []
@@ -1477,8 +1505,8 @@ class SpecModel:
 
         # Adjust the ylim of the 1D spectrum
         ax[3].set_ylim(
-            np.nanmedian(self.f_host_1d.y) - 5 * mad_std(self.f_host_1d.y),
-            np.nanmedian(self.f_host_1d.y) + 5 * mad_std(self.f_host_1d.y),
+            np.nanmedian(self.f_host_1d.y) - 5 * np.nanstd(self.f_host_1d.y),
+            np.nanmedian(self.f_host_1d.y) + 5 * np.nanstd(self.f_host_1d.y),
         )
 
         return ax

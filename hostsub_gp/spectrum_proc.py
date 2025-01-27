@@ -18,7 +18,7 @@ from astropy import units as u
 from pypeit import spec2dobj, specobjs
 from pypeit import msgs
 
-from .interp import Interp1D_Grid, Interp2D_Grid, Interp2D_RBF
+from .interp import Interp1D_Grid, Interp2D_Grid
 from .spectrum_model import SpecModel
 from .host_model import HostProfile
 from ._plt import plt
@@ -110,6 +110,8 @@ class SpecData:
         dec: float = None,
         spat_resln: float = None,
         slit_len: float = 20.0,
+        spat_rect: ArrayLike = None,
+        spec_rect: ArrayLike = None,
         **kwargs,
     ):
         """
@@ -132,6 +134,10 @@ class SpecData:
             The spatial resolution (seeing) of the science frame.
         slit_len : float, optional (default: 20.0, in arcsec)
             The length of the slit in the spatial direction.
+        spat_rect : ArrayLike, optional (default: None - determined from the trace)
+            The rectified spatial coordinates.
+        spec_rect : ArrayLike, optional (default: None - determined from the trace)
+            The rectified spectral coordinates.
         """
 
         if "spec1d" in sci_file:
@@ -252,6 +258,11 @@ class SpecData:
         slit_radius_pix = int(np.ceil(slit_len / pixel_scale / 2))
         spat_range = (-slit_radius_pix, slit_radius_pix + 1)
 
+        if spat_rect is None:
+            spat_rect = np.arange(*spat_range) * pixel_scale
+        if spec_rect is None:
+            spec_rect = trace_spec
+
         return cls(
             pixel_scale=pixel_scale,
             center_ra=ra,
@@ -264,8 +275,8 @@ class SpecData:
             flux_ivar=ivar,
             waveimg=waveimg,
             dist=dist_pix * pixel_scale,
-            spat_rect=jnp.arange(*spat_range) * pixel_scale,
-            spec_rect=trace_spec,
+            spat_rect=spat_rect,
+            spec_rect=spec_rect,
             cache_path=spec2d_file.replace(".fits", "_rect.fits"),
             to_caches=True,
             **kwargs,
@@ -281,14 +292,11 @@ class SpecData:
         cache_path : str, optional (default: ".cache.json")
             The path to the cache file.
         """
-        # try:
-        #     with open(cache_path, "r", encoding="UTF-8") as f:
-        #         public_data = json.load(f)
-        # except FileNotFoundError:
-        #     raise FileNotFoundError(f"Cache file {cache_path} not found.")
-        # return cls(**public_data)
         if fits_path is None:
             raise ValueError("No fits file provided.")
+
+        msgs.info(f"Loading 2D spectrum from {fits_path}...")
+
         try:
             with fits.open(fits_path) as f:
                 header = f[0].header
@@ -310,6 +318,81 @@ class SpecData:
         except FileNotFoundError:
             raise FileNotFoundError(f"Fits file {fits_path} not found.")
         return cls(**data)
+
+    @classmethod
+    def coadd2d(cls, spec_data_list: list["SpecData"], output="coadd2d_rect.fits", **kwargs):
+        """
+        Coadd multiple SpecData objects.
+
+        Parameters
+        ----------
+        spec_data_list : list[SpecData]
+            A list of SpecData objects to be coadded.
+        """
+        if len(spec_data_list) == 0:
+            raise ValueError("No SpecData object provided.")
+
+        if len(spec_data_list) == 1:
+            return spec_data_list[0]
+
+        # Check if the pixel scales are the same
+        if not all(spec_data.pixel_scale == spec_data_list[0].pixel_scale for spec_data in spec_data_list):
+            raise ValueError("All SpecData objects must have the same pixel scale.")
+
+        # Check if the spatial and spectral coordinates are the same
+        if not all(
+            (spec_data.spat_rect == spec_data_list[0].spat_rect).all()
+            and (spec_data.spec_rect == spec_data_list[0].spec_rect).all()
+            for spec_data in spec_data_list
+        ):
+            for spec_data in spec_data_list:
+                print(spec_data.spat_rect, spec_data.spec_rect)
+            raise ValueError("All SpecData objects must have the same spatial and spectral coordinates.")
+
+        # Check if the flux and ivar arrays have the same shape
+        if not all(
+            (spec_data.flux_rect.shape == spec_data_list[0].flux_rect.shape)
+            and (spec_data.flux_ivar_rect.shape == spec_data_list[0].flux_ivar_rect.shape)
+            for spec_data in spec_data_list
+        ):
+            raise ValueError("All SpecData objects must have the same flux and ivar arrays.")
+
+        msgs.info(f"Coadding 2D spectra from {len(spec_data_list)} objects...")
+
+        # Coadd the flux and ivar arrays
+        flux_rect_stack = jnp.stack([spec_data.flux_rect for spec_data in spec_data_list], axis=0)
+        flux_ivar_rect_stack = jnp.stack([spec_data.flux_ivar_rect for spec_data in spec_data_list], axis=0)
+        flux_err_rect_stack = flux_ivar_rect_stack**-0.5
+
+        # Calculate weighted means
+        valid_mask = jnp.isfinite(flux_rect_stack) & jnp.isfinite(flux_err_rect_stack)
+        w = flux_ivar_rect_stack
+        weights = np.where(valid_mask, w, 0)
+        weighted_values = np.where(valid_mask, flux_rect_stack * w, 0)
+
+        flux_rect = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
+
+        # Calculate errors
+        weighted_errors = np.where(valid_mask, (flux_err_rect_stack * w) ** 2, 0)
+        flux_err_rect = np.sqrt(np.sum(weighted_errors, axis=0) / np.sum(weights, axis=0) ** 2)
+        flux_ivar_rect = np.where(np.isfinite(flux_err_rect), flux_err_rect**-2, 0)
+
+        return cls(
+            pixel_scale=spec_data_list[0].pixel_scale,
+            center_ra=spec_data_list[0].center_ra,
+            center_dec=spec_data_list[0].center_dec,
+            slit_wid=spec_data_list[0].slit_wid,
+            position_angle=spec_data_list[0].position_angle,
+            spat_resln=spec_data_list[0].spat_resln,
+            spec_resln=spec_data_list[0].spec_resln,
+            spat_rect=spec_data_list[0].spat_rect,
+            spec_rect=spec_data_list[0].spec_rect,
+            flux_rect=flux_rect,
+            flux_ivar_rect=flux_ivar_rect,
+            cache_path=output,
+            to_caches=True,
+            **kwargs,
+        )
 
     def to_fits(self):
         """
@@ -407,6 +490,7 @@ class SpecData:
         spec_rect: ArrayLike,
         batch_size: int = 8,
         padding_size: int = 1,
+        interp_method: str = "rbf",
     ) -> tuple[ArrayLike, ArrayLike]:
         """
         Rectify the 2D spectrum onto a grid.
@@ -426,6 +510,16 @@ class SpecData:
         padding_size : int, optional (default: 1, in pixels)
             The padding size for interpolation.
         """
+
+        from .interp import Interp2D_RBF, Interp2D_Nearest
+
+        if interp_method not in ["rbf", "nearest"]:
+            raise ValueError("Invalid interpolation method.")
+        elif interp_method == "rbf":
+            msgs.info("Interpolating the flux with RBF...")
+        elif interp_method == "nearest":
+            msgs.info("Interpolating the flux with nearest neighbor...")
+            batch_size = len(spec_rect)
 
         flux, ivar, flag = f_values
 
@@ -447,23 +541,28 @@ class SpecData:
             ivar_ = ivar[:, spec_min:spec_max][flag_]
             query_points_ = jnp.stack([spat_pix_rect[:, idx_list].ravel(), spec_pix_rect[:, idx_list].ravel()], axis=-1)
 
-            # Interpolate the flux with RBF
-            rbf = Interp2D_RBF(
-                kernel="gaussian",
-                n_neighbors=(2 * 2 + 1) ** 2 - 1,
-                min_neighbors=(2 * 2 + 1) * (2 + 1) - 1,
-                scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
-            )
-            rbf.fit(points=points_, values=flux_)
-            flux_rect[:, idx_list] = rbf.predict(query_points=query_points_).reshape(flux_rect[:, idx_list].shape)
-            rbf_ivar = Interp2D_RBF(
-                kernel="gaussian",
-                n_neighbors=(2 * 2 + 1) ** 2 - 1,
-                min_neighbors=(2 * 2 + 1) * (2 + 1) - 1,
-                scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
-            )
-            rbf_ivar.fit(points=points_, values=ivar_)
-            flux_ivar_rect[:, idx_list] = rbf_ivar.predict(query_points=query_points_).reshape(
+            if interp_method == "rbf":
+                interp2d = Interp2D_RBF(
+                    kernel="gaussian",
+                    n_neighbors=(2 * 2 + 1) ** 2 - 1,
+                    min_neighbors=(2 * 2 + 1) ** 2 - 3,  # (2 * 2 + 1) * (2 + 1) - 1,
+                    scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
+                )
+                interp2d_ivar = Interp2D_RBF(
+                    kernel="gaussian",
+                    n_neighbors=(2 * 2 + 1) ** 2 - 1,
+                    min_neighbors=(2 * 2 + 1) ** 2 - 3,  # (2 * 2 + 1) * (2 + 1) - 1,
+                    scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
+                )
+
+            elif interp_method == "nearest":
+                interp2d = Interp2D_Nearest(scales=(self.spat_resln, self.spec_resln))
+                interp2d_ivar = Interp2D_Nearest(scales=(self.spat_resln, self.spec_resln))
+
+            interp2d.fit(points=points_, values=flux_)
+            flux_rect[:, idx_list] = interp2d.predict(query_points=query_points_).reshape(flux_rect[:, idx_list].shape)
+            interp2d_ivar.fit(points=points_, values=ivar_)
+            flux_ivar_rect[:, idx_list] = interp2d_ivar.predict(query_points=query_points_).reshape(
                 flux_ivar_rect[:, idx_list].shape
             )
 

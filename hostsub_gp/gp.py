@@ -264,4 +264,4 @@ def _gaussian(x: Array, mu: Array, width: Array) -> Array:
 @jax.jit
 def _hyperbolic_tangent(x: Array, mu: Array, width: Array) -> Array:
     x_min, x_max = mu - width / 2, mu + width / 2
-    return 0.5 * (jnp.tanh(5 * (x - x_min) / width) - jnp.tanh(5 * (x - x_max) / width))
+    return 0.5 * (jnp.tanh(2 * (x - x_min) / width) - jnp.tanh(2 * (x - x_max) / width))

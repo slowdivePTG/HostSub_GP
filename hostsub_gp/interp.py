@@ -12,6 +12,9 @@ jax.config.update("jax_enable_x64", True)
 
 import numpy as np
 
+###################################################################################################
+################################# Interpolation on a regular grid #################################
+###################################################################################################
 
 class Interp1D_Grid:
     """
@@ -45,7 +48,53 @@ class Interp2D_Grid:
             return jax.scipy.interpolate.RegularGridInterpolator(self.points, self.values, method=self.method)(x)
 
 
-class Interp2D_RBF:
+###################################################################################################
+################################# Interpolation on a irregular grid ###############################
+###################################################################################################
+
+class Interp2D_base:
+    """
+    Base class for 2D interpolation.
+    """
+
+    def __init__(self, scales: tuple[float, float] = (1, 1)):
+        self.scales = jnp.asarray(scales)
+        self.points = None
+        self.values = None
+
+    def fit(self, points: ArrayLike, values: ArrayLike) -> None:
+        """
+        Store the training data.
+
+        Parameters
+        ----------
+        points : ArrayLike
+            Array of shape (n_points, 2) containing the 2D coordinates
+        values : ArrayLike
+            Array of shape (n_points,) containing the values at each point
+        """
+        self.points = jnp.asarray(points, dtype=jnp.float64) / self.scales
+        self.values = jnp.asarray(values, dtype=jnp.float64)
+
+    def predict(self, query_points: ArrayLike) -> Array:
+        """
+        Make predictions at new points.
+        To be implemented in subclasses.
+
+        Parameters
+        ----------
+        query_points : ArrayLike
+            Array of shape (n_queries, 2) containing points to interpolate
+
+        Returns
+        -------
+        Array
+            Array of interpolated values at query_points
+        """
+        raise NotImplementedError
+
+
+class Interp2D_RBF(Interp2D_base):
     """
     2D interpolation using radial basis functions.
     """
@@ -78,10 +127,7 @@ class Interp2D_RBF:
         self.kernel = self._get_kernel(kernel)
         self.n_neighbors = n_neighbors
         self.min_neighbors = min_neighbors
-        self.scales = jnp.asarray(scales)
-
-        self.points = None
-        self.values = None
+        super().__init__(scales)
 
     def _get_kernel(self, kernel_name: str) -> Callable:
         """Define the RBF kernel function"""
@@ -109,44 +155,11 @@ class Interp2D_RBF:
         # Compute distances to all points
         distances = jnp.sum((self.points - query_point) ** 2, axis=1)
 
-        # Create mask for valid points and values
-        # valid_points_mask = ~jnp.any(np.isnan(self.points), axis=1)
-        # valid_values_mask = ~jnp.isnan(self.values)
-        # valid_mask = valid_points_mask & valid_values_mask
-
-        # Set distances for invalid points to infinity
-        # distances = jnp.where(valid_mask, distances, jnp.inf)
-
         # Get indices of nearest valid neighbors
         dist_order = jnp.argsort(distances)
         indices = dist_order[: self.n_neighbors]
 
         return (indices, self.points[indices], self.values[indices])
-
-    def fit(self, points: ArrayLike, values: ArrayLike) -> None:
-        """
-        Store the training data and handle initial NaN values
-
-        Parameters
-        ----------
-        points : ArrayLike
-            Array of shape (n_points, 2) containing the 2D coordinates
-        values : ArrayLike
-            Array of shape (n_points,) containing the values at each point
-        """
-        self.points = jnp.asarray(points) / self.scales
-        self.values = jnp.asarray(values)
-
-        # Check if we have enough valid data points
-        # valid_points_mask = ~jnp.any(jnp.isnan(points), axis=1)
-        # valid_values_mask = ~jnp.isnan(values)
-        # valid_mask = valid_points_mask & valid_values_mask
-        # valid_count = jnp.sum(valid_mask)
-
-        # if valid_count < self.min_neighbors:
-        #     raise ValueError(
-        #         f"Not enough valid data points. Found {valid_count}, " f"need at least {self.min_neighbors}"
-        #     )
 
     @partial(jax.jit, static_argnums=(0,))
     def _interpolate_single(self, query_point: Array) -> Array:
@@ -211,3 +224,34 @@ class Interp2D_RBF:
 
         # Ensure NaN for invalid query points
         return jnp.where(valid_queries, predictions, jnp.nan)
+
+
+class Interp2D_Nearest(Interp2D_base):
+    """
+    2D interpolation using nearest neighbors.
+    A wrapper around scipy.interpolate.NearestNDInterpolator.
+    """
+
+    def __init__(self, scales: tuple[float, float] = (1, 1)):
+        super().__init__(scales)
+
+    def predict(self, query_points: ArrayLike) -> Array:
+        """
+        Make predictions at new points.
+
+        Parameters
+        ----------
+        query_points : ArrayLike
+            Array of shape (n_queries, 2) containing points to interpolate
+
+        Returns
+        -------
+        Array
+            Array of interpolated values at query_points
+        """
+        from scipy.interpolate import NearestNDInterpolator
+
+        interpolator = NearestNDInterpolator(self.points, self.values)
+        query_points = jnp.asarray(query_points) / self.scales
+        
+        return interpolator(query_points)

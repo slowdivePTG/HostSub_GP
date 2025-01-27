@@ -47,6 +47,12 @@ class HostSub(ScriptBase):
             default="hostsub.par",
             help="Name of output file to save the parameters used by the GP.",
         )
+        parser.add_argument(
+            "--skip_model",
+            default=False,
+            action="store_true",
+            help="Skip the modeling of the host galaxy (only load and rectify the spectrum).",
+        )
         return parser
 
     @staticmethod
@@ -67,6 +73,8 @@ class HostSub(ScriptBase):
 
         # Loop over science files
         sci_idx = np.argwhere(hostsubFile.data["frametype"] == "science").ravel()
+        spec_data_list = []
+        spec_rect = None # For all the science files, use the same points for interpolation
         for i in sci_idx:
             sci_file_1d = hostsubFile.filenames[i]
             sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
@@ -98,125 +106,135 @@ class HostSub(ScriptBase):
                     raw_dir=raw_dir,
                     std_file=std_file,
                     obj_id=objid,
+                    spec_rect=spec_rect,
                     **spec2d_cfg,
                 )
+                spec_rect = spec_data.spec_rect
             else:
                 # Load the rectified file
                 spec_data = SpecData.from_fits(sci_rect_file)
+            spec_data_list.append(spec_data)
 
-            # Convert the 2D spectrum to a SpecModel object
-            # Parameters for defining the SpecModel object
-            host_sub_cfg = {}
-            host_sub_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
-            host_sub_cfg["spec_range"] = (
-                None if "spec_range" not in par_hostsub else tuple(map(Float, par_hostsub["spec_range"]))
-            )
-            host_sub_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
-            host_sub_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
-            host_sub_cfg["sky_region"] = tuple(map(Float, par_hostsub.get("sky_region", (-5.0, 5.0))))
-            host_sub_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
-            host_sub_cfg["batch_2d"] = (
-                (2, 128) if "batch_2d" not in par_hostsub else tuple(map(int, par_hostsub["batch_2d"]))
-            )
+        spec_data_coadd2d = SpecData.coadd2d(spec_data_list)
 
-            # Parameters for identifying host emission lines
-            par_host_emission = par_hostsub.get("host_emission", {})
-            host_emission_cfg = {}
-            host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in ["True", "true"]
-            host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 0.05))
-            host_emission_cfg["kernel_wid"] = (
-                None if "kernel_wid" not in par_host_emission else Float(par_host_emission["kernel_wid"])
-            )
-            host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
-            host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
+        # Convert the 2D spectrum to a SpecModel object
+        # Parameters for defining the SpecModel object
+        host_sub_cfg = {}
+        host_sub_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
+        host_sub_cfg["spec_range"] = (
+            None if "spec_range" not in par_hostsub else tuple(map(Float, par_hostsub["spec_range"]))
+        )
+        host_sub_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
+        host_sub_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
+        host_sub_cfg["sky_region"] = tuple(map(Float, par_hostsub.get("sky_region", (-5.0, 5.0))))
+        host_sub_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
+        host_sub_cfg["batch_2d"] = (
+            (2, 128) if "batch_2d" not in par_hostsub else tuple(map(int, par_hostsub["batch_2d"]))
+        )
 
-            spec_model = spec_data.to_SpecModel(
-                show=args.debug,
-                save=f"QA/{os.path.basename(base_file)}.pdf",
-                host_emission_cfg=host_emission_cfg,
-                **host_sub_cfg,
-            )
+        # Parameters for identifying host emission lines
+        par_host_emission = par_hostsub.get("host_emission", {})
+        host_emission_cfg = {}
+        host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in ["True", "true"]
+        host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 0.05))
+        host_emission_cfg["kernel_wid"] = (
+            None if "kernel_wid" not in par_host_emission else Float(par_host_emission["kernel_wid"])
+        )
+        host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
+        host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
-            # Model the host prior
-            spec_model.model_host_prior(
-                show=args.debug,
-                save=f"QA/{os.path.basename(base_file)}_host_prior.pdf",
-            )
+        spec_model = spec_data_coadd2d.to_SpecModel(
+            show=args.debug,
+            save=f"QA/{os.path.basename(base_file)}.pdf",
+            host_emission_cfg=host_emission_cfg,
+            **host_sub_cfg,
+        )
 
-            # Get the initial parameters
-            params_init_1d = par_hostsub.get("params_init_1d", None)
-            params_init_2d = par_hostsub.get("params_init_2d", None)
-            params_init = [params_init_1d, params_init_2d]
+        # Model the host prior
+        spec_model.model_host_prior(
+            show=args.debug,
+            filters=par_hostsub.get("filters", "ugrizy"),
+            save=f"QA/{os.path.basename(base_file)}_host_prior.pdf",
+        )
 
-            # Get limits for the parameters
-            def _set_params_limit(params_limit_dict):
-                """Integrate upper and lower limits of each parameter."""
-                upper = {k.replace("_upper", ""): v for k, v in params_limit_dict.items() if "upper" in k}
-                lower = {k.replace("_lower", ""): v for k, v in params_limit_dict.items() if "lower" in k}
-                return {k: (lower[k], upper[k]) for k in lower}
+        # Skip the subsequent modeling if requested
+        if args.skip_model:
+            return
 
-            params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", {}))
-            params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", {}))
+        # Get the initial parameters
+        params_init_1d = par_hostsub.get("params_init_1d", None)
+        params_init_2d = par_hostsub.get("params_init_2d", None)
+        params_init = [params_init_1d, params_init_2d]
 
-            params_limit_1d["log_scale"] = params_limit_1d.get(
-                "log_scale",
-                np.array(
-                    [
-                        # log range of the slow varying component
-                        [1, 3],
-                        # log range of the fast varying component
-                        # typical scale = spectral resolution
-                        np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 10]),
-                    ]
-                ).T,
-            )
-            params_limit_2d["log_scale"] = params_limit_2d.get(
-                "log_scale",
-                np.array(
-                    [
-                        # log range of the spatial component
-                        # typical scale = spatial resolution
-                        np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln]),
-                        # log range of the spectral component
-                        # typical scale = spectral resolution
-                        np.log10([spec_model.spec_resln / 2.355, 1e4]),
-                    ]
-                ).T,
-            )
+        # Get limits for the parameters
+        def _set_params_limit(params_limit_dict):
+            """Integrate upper and lower limits of each parameter."""
+            upper = {k.replace("_upper", ""): v for k, v in params_limit_dict.items() if "upper" in k}
+            lower = {k.replace("_lower", ""): v for k, v in params_limit_dict.items() if "lower" in k}
+            return {k: (lower[k], upper[k]) for k in lower}
 
-            params_limit = [params_limit_1d, params_limit_2d]
+        params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", {}))
+        params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", {}))
 
-            # Model the host
-            spec_model.model_host(
-                params_init=params_init,
-                params_limit=params_limit,
-                optimization=True,
-                optimization_kwargs={"maxiter": 1000, "tol": 1e-2},
-            )
+        params_limit_1d["log_scale"] = params_limit_1d.get(
+            "log_scale",
+            np.array(
+                [
+                    # log range of the slow varying component
+                    [1, 3],
+                    # log range of the fast varying component
+                    # typical scale = spectral resolution
+                    np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 10]),
+                ]
+            ).T,
+        )
+        params_limit_2d["log_scale"] = params_limit_2d.get(
+            "log_scale",
+            np.array(
+                [
+                    # log range of the spatial component
+                    # typical scale = spatial resolution
+                    np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln]),
+                    # log range of the spectral component
+                    # typical scale = spectral resolution
+                    np.log10([spec_model.spec_resln / 2.355, 1e4]),
+                ]
+            ).T,
+        )
 
-            # QA plots
-            # Raw, model, and residual
-            spec_model._plot_pred()
-            plt.savefig(f"QA/{os.path.basename(base_file)}_pred.pdf")
-            if args.debug:
-                plt.show()
-            plt.close()
+        params_limit = [params_limit_1d, params_limit_2d]
 
-            # Prior and posterior of the host profiles
-            spec_model._plot_host_profile_prior()
-            plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_prior.pdf")
-            if args.debug:
-                plt.show()
-            plt.close()
-            spec_model._plot_host_profile_pred()
-            plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_pred.pdf")
-            if args.debug:
-                plt.show()
-            plt.close()
+        # Model the host
+        spec_model.model_host(
+            params_init=params_init,
+            params_limit=params_limit,
+            optimization=True,
+            optimization_kwargs={"maxiter": 1000, "tol": 1e-2},
+        )
 
-            # Extract the science spectrum
-            spec_model.extract_sci()
-            plt.savefig(f"QA/{os.path.basename(base_file)}_sci.pdf")
-            if args.debug:
-                plt.show()
-            plt.close()
+        # QA plots
+        # Raw, model, and residual
+        spec_model._plot_pred()
+        plt.savefig(f"QA/{os.path.basename(base_file)}_pred.pdf")
+        if args.debug:
+            plt.show()
+        plt.close()
+
+        # Prior and posterior of the host profiles
+        spec_model._plot_host_profile_prior()
+        plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_prior.pdf")
+        if args.debug:
+            plt.show()
+        plt.close()
+        spec_model._plot_host_profile_pred()
+        plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_pred.pdf")
+        if args.debug:
+            plt.show()
+        plt.close()
+
+        # Extract the science spectrum
+        spec_model.extract_sci()
+        plt.savefig(f"QA/{os.path.basename(base_file)}_sci.pdf")
+        if args.debug:
+            plt.show()
+        plt.close()
