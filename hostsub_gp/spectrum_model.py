@@ -98,7 +98,9 @@ class SpecWrapper:
 
         return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
 
-    def marginalize(self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 3) -> "SpecWrapper":
+    def marginalize(
+        self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 3
+    ) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
 
@@ -122,8 +124,13 @@ class SpecWrapper:
         if weights is None:
             w = jnp.ones_like(self.Y)
         elif isinstance(weights, (ArrayLike, Array)):
+            if weights.ndim < self.Y.ndim:
+                # Broadcasting the weights to the same shape as the spectrum
+                weights = jnp.tile(weights[:, None], reps=self.Y.shape[1])
             if weights.shape != self.Y.shape:
-                raise ValueError("Invalid shape of the input weights.")
+                raise ValueError(
+                    f"Input weights shape {weights.shape} does not match the spectrum shape {self.Y.shape}"
+                )
             w = jnp.array(weights)
         elif weights == "ivar":
             w = self.Yerr**-2
@@ -596,15 +603,12 @@ class SpecModel:
         # Predict the host galaxy flux on the entire 2D spectrum
         self._f_1d_pred, self._f_2d_pred, self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
 
-    def extract_sci(self) -> Axes:  # TODO: adopt the extraction method of pypeit
+    def extract_sci(self, method="boxcar") -> Axes:  # TODO: adopt the extraction method of pypeit
         """
         Extract the science spectrum after host galaxy subtraction (within the mask).
         """
         # Predict the host galaxy flux within the mask (including uncertainties)
         msgs.info("Extracting the science spectrum.")
-
-        def gauss(x, mu, sigma):
-            return jnp.exp(-0.5 * (x - mu) ** 2 / sigma**2) * (2 * jnp.pi * sigma**2) ** -0.5
 
         self.f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
         _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(self._gp_1d, self._gp_2d, self.f_mask.X, return_var=True)
@@ -614,7 +618,16 @@ class SpecModel:
             values_err=f_mask_pred_err.reshape(self.f_mask.shape),
         )
         self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
-        self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type="mean", weights="ivar")
+
+        def gauss(x, mu, sigma):
+            return jnp.exp(-0.5 * (x - mu) ** 2 / sigma**2) * (2 * jnp.pi * sigma**2) ** -0.5
+
+        if method == "boxcar":
+            extract_weights = None
+        else:
+            extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
+            
+        self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type="mean", weights=extract_weights)
 
         if not hasattr(self, "_f_pred"):
             raise AttributeError("Please model the host galaxy first.")
@@ -1626,17 +1639,27 @@ class SpecModel:
         _, ax = plt.subplots(5, 1, figsize=(20, 12.5), sharex=True, sharey=True, constrained_layout=True)
         ax[0].imshow(
             self.f_sky_sub.Y,
-            vmin=np.nanpercentile(self.f_sky_sub.y, 5),
-            vmax=np.nanpercentile(self.f_sky_sub.y, 95),
+            vmin=np.nanpercentile(self.f_sky_sub.y, 1),
+            vmax=np.nanpercentile(self.f_sky_sub.y, 99),
             **source_params,
         )
         flux_is_positive = np.sign(np.median(self._f_1d_pred))
-        ax[1].imshow(self._f_1d_pred.reshape(-1, self.shape[1]) * flux_is_positive, **source_params)
-        ax[2].imshow(self._f_2d_pred.reshape(-1, self.shape[1]) * flux_is_positive, **source_params)
+        ax[1].imshow(
+            self._f_1d_pred.reshape(-1, self.shape[1]) * flux_is_positive,
+            vmin=np.percentile(self._f_1d_pred * flux_is_positive, 1),
+            vmax=np.percentile(self._f_1d_pred * flux_is_positive, 99),
+            **source_params,
+        )
+        ax[2].imshow(
+            self._f_2d_pred.reshape(-1, self.shape[1]) * flux_is_positive,
+            vmin=np.percentile(self._f_2d_pred * flux_is_positive, 1),
+            vmax=np.percentile(self._f_2d_pred * flux_is_positive, 99),
+            **source_params,
+        )
         ax[3].imshow(
             self._f_pred.reshape(-1, self.shape[1]),
-            vmin=np.nanpercentile(self.f_sky_sub.y, 5),
-            vmax=np.nanpercentile(self.f_sky_sub.y, 95),
+            vmin=np.nanpercentile(self.f_sky_sub.y, 1),
+            vmax=np.nanpercentile(self.f_sky_sub.y, 99),
             **source_params,
         )
         ax[-1].imshow(f_res_Y, **residual_params)
@@ -1652,6 +1675,6 @@ class SpecModel:
         ax[3].set_title(r"$\mathrm{Model}$")
         ax[-1].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-        ax[-1].set_ylim(-self.host_wid / 2, self.host_wid / 2)
+        ax[-1].set_ylim(-self.host_wid / 2 + self.mask_offset, self.host_wid / 2 + self.mask_offset)
 
         return ax

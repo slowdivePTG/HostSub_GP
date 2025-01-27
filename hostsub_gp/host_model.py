@@ -66,8 +66,11 @@ class HostProfile:
         if spec_model is not None:
             slit_len = spec_model.slit_len
             pixel_scale = spec_model.pixel_scale
+            mask_offset = spec_model.mask_offset
         elif slit_len is None or pixel_scale is None:
             raise ValueError("Slit length and pixel scale are required")
+        else:
+            mask_offset = 0
 
         for k in range(len(self.flts)):
             if spec_model is not None:
@@ -112,7 +115,8 @@ class HostProfile:
             self.host_wid = slit_len  # Host width in pixels - if not specified, using the slit length
 
         host_idx = [
-            np.argwhere(np.abs(spat_slit[k]) <= np.ceil(self.host_wid / 2)).ravel() for k in range(len(self.flts))
+            np.argwhere(np.abs(spat_slit[k] - mask_offset) <= np.ceil(self.host_wid / 2)).ravel()
+            for k in range(len(self.flts))
         ]
 
         self.prof_slit = [prof_slit[k][host_idx[k]] for k in range(len(self.flts))]
@@ -293,9 +297,7 @@ class HostProfile:
             pixel_scale=pixel_scale,
         )
 
-    def model_host_profile_prior(
-        self, **kwargs
-    ) -> Callable[[Array], Array] | Callable[[Array], tuple[Array, Array]]:
+    def model_host_profile_prior(self, **kwargs) -> Callable[[Array], Array] | Callable[[Array], tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
         """
@@ -347,7 +349,6 @@ class HostProfile:
 
         return host_prior
 
-
     def _plot_host_profile(self, host_prior, **kwargs) -> Callable[[Array], Array]:
         """
         Plot the host galaxy spatial profile.
@@ -388,6 +389,7 @@ class HostProfile:
         if show:
             plt.show()
         plt.close()
+
 
 def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
     """
