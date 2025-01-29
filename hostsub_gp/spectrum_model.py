@@ -488,7 +488,6 @@ class SpecModel:
         params_init: tuple[dict, dict] | list[dict] = None,
         params_limit: tuple[dict, dict] | list[dict] = None,
         optimization: bool = False,
-        sampling: bool = False,
         optimization_kwargs: dict = {},
         sampling_kwargs: dict = {},
     ):
@@ -501,8 +500,6 @@ class SpecModel:
             Initial parameters for optimization.
         optimization : bool, optional (default: False)
             Whether to optimize the model with the jaxopt.ScipyMinimize solver.
-        sampling : bool, optional (default: False)
-            Whether to sample the model with numpyro.
         """
 
         # Make sure the host flux prior is built
@@ -591,12 +588,7 @@ class SpecModel:
                 **optimization_kwargs,
             )
 
-        if sampling:
-            self.inf_data = self._model_host_sampling(params_init=params_init, **sampling_kwargs)
-            # TODO: self.gp_params
-
-        if not optimization and not sampling:
-            self.gp_params = params_init
+        self.gp_params = params_init
 
         self._gp_1d, self._gp_2d = self._build_host_gp(params=self.gp_params)
 
@@ -626,7 +618,7 @@ class SpecModel:
             extract_weights = None
         else:
             extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
-            
+
         self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type="mean", weights=extract_weights)
 
         if not hasattr(self, "_f_pred"):
@@ -805,28 +797,6 @@ class SpecModel:
         _print_params(params)
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params
-
-    def _model_host_sampling(self, params_init: dict = None, **kwargs):
-        """
-        Perform host sampling using MCMC.
-
-        Parameters
-        ----------
-        num_chains : int
-            The number of MCMC chains to run.
-        num_samples : int
-            The number of samples to draw from each chain.
-        num_warmup : int
-            The number of warmup steps for each chain.
-        **kwargs
-            Additional keyword arguments.
-
-        Returns
-        -------
-        samples : arviz.InferenceData
-        """
-
-        raise NotImplementedError("Sampling is not implemented yet.")
 
     def _build_host_gp(
         self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = (None, None)
