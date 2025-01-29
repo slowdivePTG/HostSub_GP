@@ -255,11 +255,18 @@ class SpecData:
         dist_spec_pix = spec_pix - trace_spec_pix
         dist_pix = np.sqrt(dist_spat_pix**2 + dist_spec_pix**2) * np.where(dist_spat_pix > 0, 1, -1)
 
+        # The spatial coordinates for interpolation
         slit_radius_pix = int(np.ceil(slit_len / pixel_scale / 2))
         spat_range = (-slit_radius_pix, slit_radius_pix + 1)
-
         if spat_rect is None:
             spat_rect = np.arange(*spat_range) * pixel_scale
+        msgs.info(
+            f"Distance from the trace: {dist_spat_pix.min() * pixel_scale:.2f} - {dist_spat_pix.max() * pixel_scale:.2f} arcsec"
+        )
+        if spat_rect.min() < dist_spat_pix.min() * pixel_scale or spat_rect.max() > dist_spat_pix.max() * pixel_scale:
+            raise ValueError("The spatial range is out of the trace range.")
+
+        # The spectral coordinates for interpolation
         if spec_rect is None:
             spec_rect = trace_spec
 

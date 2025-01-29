@@ -1038,7 +1038,7 @@ class SpecModel:
         # Combine the batch indices
         spat_batch_2d_idx = spat_batch_2d_left + spat_batch_2d_sci + spat_batch_2d_right
         spat_batch_2d_idx_in_host = (jnp.arange(len(spat_batch_2d_idx)) < len(spat_batch_2d_left)) | (
-            jnp.arange(len(spat_batch_2d_idx)) > len(spat_batch_2d_left + spat_batch_2d_sci)
+            jnp.arange(len(spat_batch_2d_idx)) >= len(spat_batch_2d_left + spat_batch_2d_sci)
         )
         return spat_batch_2d_idx, spat_batch_2d_idx_in_host
 
@@ -1555,7 +1555,7 @@ class SpecModel:
         for k, (r, err, p) in enumerate(zip(raw.T, raw_err.T, pred.T)):
             # c_raw = cmap(norm(k))
             c_raw = "k"
-            ax.plot(self.dist_host_batch_2d.spat, r - offset * k, color=c_raw, ls="--")
+            ax.plot(self.dist_host_batch_2d.spat, r - offset * k, "--x", color=c_raw, alpha=0.5)
             ax.fill_between(
                 self.dist_host_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5
             )

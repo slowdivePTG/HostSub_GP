@@ -15,11 +15,13 @@ from hostsub_gp._plt import plt
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput
 
+
 def Float(value: int | float | str) -> float:
     if (value == "None") or (value == "none") or value is None:
         return None
     else:
         return float(value)
+
 
 class HostSub(ScriptBase):
     @classmethod
@@ -74,12 +76,13 @@ class HostSub(ScriptBase):
         # Loop over science files
         sci_idx = np.argwhere(hostsubFile.data["frametype"] == "science").ravel()
         spec_data_list = []
-        spec_rect = None # For all the science files, use the same points for interpolation
+        spec_rect = None  # For all the science files, use the same points for interpolation
+        base_file_list = []
         for i in sci_idx:
             sci_file_1d = hostsubFile.filenames[i]
             sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
             sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace("spec1d", "spec2d")
-            base_file = sci_file_1d.replace("spec1d_", "").replace(".fits", "")
+            base_file_list.append(sci_file_1d.replace("spec1d_", "").replace(".fits", ""))
 
             # If the object ID is not provided,
             # Set it to None and use the standard star file
@@ -135,7 +138,10 @@ class HostSub(ScriptBase):
         # Parameters for identifying host emission lines
         par_host_emission = par_hostsub.get("host_emission", {})
         host_emission_cfg = {}
-        host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in ["True", "true"]
+        host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in [
+            "True",
+            "true",
+        ]
         host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 0.05))
         host_emission_cfg["kernel_wid"] = (
             None if "kernel_wid" not in par_host_emission else Float(par_host_emission["kernel_wid"])
@@ -145,7 +151,7 @@ class HostSub(ScriptBase):
 
         spec_model = spec_data_coadd2d.to_SpecModel(
             show=args.debug,
-            save=f"QA/{os.path.basename(base_file)}.pdf",
+            save=f"QA/raw.pdf",
             host_emission_cfg=host_emission_cfg,
             **host_sub_cfg,
         )
@@ -154,7 +160,7 @@ class HostSub(ScriptBase):
         spec_model.model_host_prior(
             show=args.debug,
             filters=par_hostsub.get("filters", "ugrizy"),
-            save=f"QA/{os.path.basename(base_file)}_host_prior.pdf",
+            save=f"QA/host_prior.pdf",
         )
 
         # Skip the subsequent modeling if requested
@@ -215,26 +221,26 @@ class HostSub(ScriptBase):
         # QA plots
         # Raw, model, and residual
         spec_model._plot_pred()
-        plt.savefig(f"QA/{os.path.basename(base_file)}_pred.pdf")
+        plt.savefig(f"QA/pred.pdf")
         if args.debug:
             plt.show()
         plt.close()
 
         # Prior and posterior of the host profiles
         spec_model._plot_host_profile_prior()
-        plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_prior.pdf")
+        plt.savefig(f"QA/host_profile_prior.pdf")
         if args.debug:
             plt.show()
         plt.close()
         spec_model._plot_host_profile_pred()
-        plt.savefig(f"QA/{os.path.basename(base_file)}_host_profile_pred.pdf")
+        plt.savefig(f"QA/host_profile_pred.pdf")
         if args.debug:
             plt.show()
         plt.close()
 
         # Extract the science spectrum
         spec_model.extract_sci()
-        plt.savefig(f"QA/{os.path.basename(base_file)}_sci.pdf")
+        plt.savefig(f"QA/sci.pdf")
         if args.debug:
             plt.show()
         plt.close()
