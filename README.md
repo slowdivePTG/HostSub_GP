@@ -1,11 +1,11 @@
-# HostSub_\mathrm{sky}P
+# HostSub_GP
 Modeling the 2d spectrum of host galaxies with Gaussian process (GP) for better background subtraction in supernova spectroscopy.
 
 ## Installation (under developement)
 
 ```shell
-git clone https://github.com/slowdivePTG/HostSub_\mathrm{sky}P.git
-cd HostSub_\mathrm{sky}P
+git clone https://github.com/slowdivePTG/HostSub_GP.git
+cd HostSub_GP
 pip install -e .
 ```
 
