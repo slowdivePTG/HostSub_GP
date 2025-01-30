@@ -12,7 +12,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
 
-from pypeit import msgs
+from ._msgs import msgs
 
 from hostsub_gp import SpecModel, SpecData, HostProfile
 from hostsub_gp.spectrum_model import SpecWrapper

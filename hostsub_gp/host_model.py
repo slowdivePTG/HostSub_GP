@@ -281,9 +281,9 @@ class HostProfile:
                 )
             )
             # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
-            err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1)
+            err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
             # Smooth the error: convolution with a boxcar filter
-            err = (np.convolve(err**2, np.ones(3) / 3, mode="same")) ** 0.5
+            # err = (np.convolve(err**2, np.ones(3) / 3, mode="same")) ** 0.5
             counts_err_slit.append(err)
 
         return cls(
@@ -327,21 +327,27 @@ class HostProfile:
         # Multiple bands
         else:
             params = dict(
-                log_amp=np.float64(-2),
-                log_scale=np.log10([1 / 2.355, 1e4]),
+                log_amp=np.ones((2, 2)) * -2,
+                log_scale=np.log10([[1, 1 / 2.355], [1e3, 1e1]]),
                 mean=np.float64(1 / self.host_wid),
             )
             params_limit = dict(
-                log_scale=np.log10([[0.8 / 2.355, 1e2], [1.5 / 2.355, 1e5]]),
+                # log_scale=np.log10([[0.8 / 2.355, 1e2], [1.5 / 2.355, 1e5]]),
+                log_scale=np.log10(
+                    [
+                        [[0.8 / 2.355, 0.8 / 2.355], [1e2, 1e0]],  # lower bound
+                        [[10, 1.5 / 2.355], [1e4, 1e2]],  # upper bound
+                    ]
+                )
             )
             gp_host_prior = GP(
                 X=self.X,
                 y=self.prof,
                 yerr=self.prof_err,
-                # params=params,
                 params_init=params,
                 params_limit=params_limit,
                 optimization=True,
+                kernel_type="composite",
             )
             host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x, return_var=True))
 

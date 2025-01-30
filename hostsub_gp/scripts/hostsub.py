@@ -2,18 +2,14 @@
 # The main script to conduct an end-to-end host subtraction
 
 import numpy as np
-from astropy.io import fits
 
 import os
-
-from pypeit import msgs
-from pypeit.spectrographs.util import load_spectrograph
-from pypeit.par import pypeitpar
 
 from hostsub_gp import SpecData
 from hostsub_gp._plt import plt
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput
+from .._msgs import msgs
 
 
 def Float(value: int | float | str) -> float:
@@ -184,28 +180,25 @@ class HostSub(ScriptBase):
 
         params_limit_1d["log_scale"] = params_limit_1d.get(
             "log_scale",
-            np.array(
+            np.log10(
                 [
-                    # log range of the slow varying component
-                    [1, 3],
-                    # log range of the fast varying component
-                    # typical scale = spectral resolution
-                    np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 10]),
+                    # lower bound
+                    [1e1, spec_model.spec_resln / 2.355 / 2],
+                    # upper bound
+                    [1e3, spec_model.spec_resln * 2],
                 ]
-            ).T,
+            ),
         )
         params_limit_2d["log_scale"] = params_limit_2d.get(
             "log_scale",
-            np.array(
+            np.log10(
                 [
-                    # log range of the spatial component
-                    # typical scale = spatial resolution
-                    np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln]),
-                    # log range of the spectral component
-                    # typical scale = spectral resolution
-                    np.log10([spec_model.spec_resln / 2.355, 1e4]),
+                    # lower bound
+                    [spec_model.spat_resln / 2.355, spec_model.spec_resln / 2.355],
+                    # upper bound
+                    [spec_model.spat_resln, 1e4],
                 ]
-            ).T,
+            ),
         )
 
         params_limit = [params_limit_1d, params_limit_2d]

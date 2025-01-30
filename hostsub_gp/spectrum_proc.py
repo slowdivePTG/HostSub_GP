@@ -15,8 +15,7 @@ import glob
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
 from astropy import units as u
-from pypeit import spec2dobj, specobjs
-from pypeit import msgs
+from ._msgs import msgs
 
 from .interp import Interp1D_Grid, Interp2D_Grid
 from .spectrum_model import SpecModel
@@ -139,6 +138,7 @@ class SpecData:
         spec_rect : ArrayLike, optional (default: None - determined from the trace)
             The rectified spectral coordinates.
         """
+        from pypeit import spec2dobj, specobjs
 
         if "spec1d" in sci_file:
             spec1d_file = sci_file

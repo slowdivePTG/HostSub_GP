@@ -19,7 +19,7 @@ from ._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _ini
 from .gp import GP
 from .host_model import HostProfile
 
-from pypeit import msgs
+from ._msgs import msgs
 
 from typing import Callable
 from jax._src.typing import ArrayLike, Array
@@ -818,7 +818,7 @@ class SpecModel:
         """
         params_1d, params_2d = _init_params(params)
         try:
-            params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False, params_type="limit")
+            params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False)
         except:
             raise ValueError("Invalid parameter limits")
 

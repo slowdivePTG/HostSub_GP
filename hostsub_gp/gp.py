@@ -19,6 +19,7 @@ from tinygp.kernels.distance import L1Distance, L2Distance
 from jax._src.typing import ArrayLike, Array
 
 from ._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
+from ._msgs import msgs
 
 import warnings
 
@@ -81,14 +82,14 @@ class GP:
             self.params_init_unbound, params_limit=self.params_limit, X=X, y=y, yerr=yerr, kernel_type=self.kernel_type
         )
         if ~jnp.isfinite(neg_log_prob_init):
-            print(f"Initial parameters:")
-            print(self.params_init)
-            print(self.params_init_unbound)
+            msgs.parameter(f"Initial parameters:")
+            _print_params(self.params_init)
+            _print_params(self.params_init_unbound)
             raise ValueError("Invalid initial parameters")
         soln = solver.run(self.params_init_unbound, params_limit=self.params_limit, X=X, y=y, yerr=yerr)
         params_unbound = soln.params
-        print(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
-        print(f"Final negative log-probability: {soln.state.fun_val:.1f}")
+        msgs.parameter(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
+        msgs.parameter(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params_unbound
 
 
@@ -133,7 +134,7 @@ class _build_gp:
         scale = 10**self.log_scale
 
         # Standard single kernel types
-        if (kernel_type != "composite") and (kernel_type != "EmissionLine"):
+        if not kernel_type in ["composite", "EmissionLine"]:
             if self.log_amp.size != 1:
                 raise ValueError(f"The {kernel_type} kernel requires only 1 set of parameters")
             if kernel_type == "ExpSquared":
@@ -143,13 +144,30 @@ class _build_gp:
 
         # Composite kernel - combination of ExpSquared and Matern52
         elif kernel_type == "composite":
-            if self.log_amp.size != 2:
-                raise ValueError("The composite kernel requires 2 set of parameters")
-            # kernel1 : ExpSquared - long-term variations (continuum)
-            kernel_expsqr = amp[0] * transforms.Linear(1 / scale[0], kernel=kernels.ExpSquared())
-            # kernel2 : Matern - short-term variations (sky lines, emission lines)
-            kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52(distance=L2Distance()))
-            kernel = kernel_expsqr + kernel_matern
+            # if self.log_amp.size != 2:
+            #     raise ValueError("The composite kernel requires 2 set of parameters")
+            if self.log_amp.ndim == 1:
+                # kernel1 : ExpSquared - long-term variations (continuum)
+                kernel_expsqr = amp[0] * transforms.Linear(1 / scale[0], kernel=kernels.ExpSquared())
+                # kernel2 : Matern - short-term variations (sky lines, emission lines)
+                kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52(distance=L2Distance()))
+                kernel = kernel_expsqr + kernel_matern
+            else:
+                # spatially varying parameters
+                # TODO: only 3 free parameters in amp
+                # kernel1 : ExpSquared - long-term variations (continuum)
+                # evaluate the kernel only on the spatial coordinates
+                kernel_spat_expsqr = amp[0, 0] * transforms.Linear(1 / scale[0, 0], kernel=kernels.ExpSquared())
+                # kernel2 : Matern - short-term variations (sky lines, emission lines)
+                kernel_spat_matern = amp[0, 1] * transforms.Linear(1 / scale[0, 1], kernel=kernels.Matern52(distance=L2Distance()))
+                kernel_spat = OneDKernel(kernel=kernel_spat_expsqr + kernel_spat_matern, axis=0)
+                # spectral varying parameters
+                # kernel1 : ExpSquared - long-term variations (continuum)
+                kernel_spec_expsqr = amp[1, 0] * transforms.Linear(1 / scale[1, 0], kernel=kernels.ExpSquared())
+                # kernel2 : Matern - short-term variations
+                kernel_spec_matern = amp[1, 1] * transforms.Linear(1 / scale[1, 1], kernel=kernels.Matern52(distance=L2Distance()))
+                kernel_spec = OneDKernel(kernel=kernel_spec_expsqr + kernel_spec_matern, axis=1)
+                kernel = kernel_spat * kernel_spec
 
         # EmissionLine kernel - to handle discontinuities at narrow emission lines
         elif kernel_type == "EmissionLine":
@@ -177,6 +195,16 @@ class _build_gp:
             )
 
         return kernel
+
+
+class OneDKernel(kernels.Kernel):
+    """A kernel only evaluated on the spatial coordinates."""
+
+    kernel: kernels.Kernel
+    axis: int
+
+    def evaluate(self, X1: Array, X2: Array) -> Array:
+        return self.kernel.evaluate(X1[..., self.axis], X2[..., self.axis])
 
 
 class EmissionLineKernel(kernels.Kernel):
@@ -219,32 +247,6 @@ class EmissionLineKernel(kernels.Kernel):
             k_x1_x2 *= emission_line_effect
 
         return k_x1_x2
-
-        # # Calculate proximity to any emission line for each point
-        # x1_line_sep = jnp.min(jnp.abs(x1_spec - self.emission_lines))
-        # x2_line_sep = jnp.min(jnp.abs(x2_spec - self.emission_lines))
-
-        # # x1_close = _gaussian(x1_line_sep, 0.0, self.scale_line)
-        # # x2_close = _gaussian(x2_line_sep, 0.0, self.scale_line)
-        # # x1_close = _sigmoid(x1_line_sep, 0.0, self.scale_line)
-        # # x2_close = _sigmoid(x2_line_sep, 0.0, self.scale_line)
-        # # x1_close = _tophat(x1_line_sep, 0.0, self.scale_line)
-        # # x2_close = _tophat(x2_line_sep, 0.0, self.scale_line)
-        # x1_close = _hyperbolic_tangent(x1_line_sep, 0.0, self.scale_line)
-        # x2_close = _hyperbolic_tangent(x2_line_sep, 0.0, self.scale_line)
-
-        # # Effect when both x1 and x2 are close to the line
-        # both_close = x1_close * x2_close
-
-        # # Effect when exactly one of x1 and x2 is close to the line
-        # one_close = x1_close * (1 - x2_close) + (1 - x1_close) * x2_close
-
-        # # Emission line effect
-        # # - decrease the covariance when exactly one point is close to the line
-        # # - increase the covariance when both points are close to the line
-        # emission_line_effect = 1 - one_close + self.amp_line * both_close
-
-        # return emission_line_effect
 
 
 @jax.jit

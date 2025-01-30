@@ -2,7 +2,6 @@
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.linalg import solve
 from functools import partial
 from typing import Callable
 
