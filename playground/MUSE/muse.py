@@ -12,7 +12,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
 
-from ._msgs import msgs
+from hostsub_gp._msgs import msgs
 
 from hostsub_gp import SpecModel, SpecData, HostProfile
 from hostsub_gp.spectrum_model import SpecWrapper
@@ -164,7 +164,12 @@ def model_host_prior(
     on_slit = np.abs(spec_model.ra_offset - mask_offset) <= slit_len / 2
     for flt in flts:
         counts_slit.append(np.nanmean(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1])
-        counts_err_slit.append(np.nanstd(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1] / 5**0.5)
+        # counts_err_slit.append(np.nanstd(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1] / 5**0.5)
+        counts_slit_left_off = np.nanmean(syn_flux[flt][row - 3 : row + 2], axis=0)[on_slit][::-1]
+        counts_slit_right_off = np.nanmean(syn_flux[flt][row - 1 : row + 4], axis=0)[on_slit][::-1]
+        counts_err_slit.append(
+            (np.abs(counts_slit_right_off - counts_slit[-1]) + np.abs(counts_slit_left_off - counts_slit[-1])) / 4
+        )
         spat_slit.append(spec_model.ra_offset[on_slit][::-1])
 
     host_prof = HostProfile(
