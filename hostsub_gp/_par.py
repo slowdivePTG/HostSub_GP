@@ -64,22 +64,6 @@ def sequence_input(func: Optional[Callable] = None, *, verbose: bool = False) ->
     return decorator(func) if callable(func) else decorator
 
 
-# def sequence_input(func: Callable[[dict], dict]) -> Callable[[DictInput], DictOutput]:
-#     """Decorator to handle sequence-like inputs."""
-
-#     @wraps(func)
-#     def wrapper(arg: DictInput, *args, **kwargs) -> DictOutput:
-#         if isinstance(arg, (tuple, list)):
-#             if not all((isinstance(item, dict) | (item is None)) for item in arg):
-#                 raise TypeError("All elements in tuple must be dictionaries")
-#             return [func(item, *args, **kwargs) for item in arg]
-#         if not (isinstance(arg, dict) | (arg is None)):
-#             raise TypeError("Input must be a dictionary or tuple of dictionaries")
-#         return func(arg, *args, **kwargs)
-
-#     return wrapper
-
-
 @sequence_input
 def _check_params(params: dict, require_all: bool = True):
     """Check if the parameters are valid."""

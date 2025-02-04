@@ -173,4 +173,4 @@ cython_debug/
 playground/SN2022jli/
 playground/mock/
 playground/keck_lris_red_mark4_A_hostsub/
-playground/MUSE/NGC0628/
+playground/MUSE/NGC0628*/*

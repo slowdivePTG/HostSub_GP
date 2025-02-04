@@ -78,15 +78,27 @@ class GP:
 
     def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
         solver = jaxopt.ScipyMinimize(fun=partial(_neg_log_prob, kernel_type=self.kernel_type))
+        valid = jnp.isfinite(y)
+
+        # Check if the initial parameters are valid
         neg_log_prob_init = _neg_log_prob(
-            self.params_init_unbound, params_limit=self.params_limit, X=X, y=y, yerr=yerr, kernel_type=self.kernel_type
+            self.params_init_unbound,
+            params_limit=self.params_limit,
+            X=X[valid],
+            y=y[valid],
+            yerr=yerr[valid],
+            kernel_type=self.kernel_type,
         )
         if ~jnp.isfinite(neg_log_prob_init):
-            msgs.parameter(f"Initial parameters:")
+            msgs.parameter(f"Initial parameters (bound):")
             _print_params(self.params_init)
+            msgs.parameter(f"Initial parameters (unbound):")
             _print_params(self.params_init_unbound)
             raise ValueError("Invalid initial parameters")
-        soln = solver.run(self.params_init_unbound, params_limit=self.params_limit, X=X, y=y, yerr=yerr)
+            
+        soln = solver.run(
+            self.params_init_unbound, params_limit=self.params_limit, X=X[valid], y=y[valid], yerr=yerr[valid]
+        )
         params_unbound = soln.params
         msgs.parameter(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
         msgs.parameter(f"Final negative log-probability: {soln.state.fun_val:.1f}")
@@ -159,22 +171,24 @@ class _build_gp:
                 # evaluate the kernel only on the spatial coordinates
                 kernel_spat_expsqr = amp[0, 0] * transforms.Linear(1 / scale[0, 0], kernel=kernels.ExpSquared())
                 # kernel2 : Matern - short-term variations (sky lines, emission lines)
-                kernel_spat_matern = amp[0, 1] * transforms.Linear(1 / scale[0, 1], kernel=kernels.Matern52(distance=L2Distance()))
+                kernel_spat_matern = amp[0, 1] * transforms.Linear(
+                    1 / scale[0, 1], kernel=kernels.Matern52(distance=L2Distance())
+                )
                 kernel_spat = OneDKernel(kernel=kernel_spat_expsqr + kernel_spat_matern, axis=0)
                 # spectral varying parameters
                 # kernel1 : ExpSquared - long-term variations (continuum)
                 kernel_spec_expsqr = amp[1, 0] * transforms.Linear(1 / scale[1, 0], kernel=kernels.ExpSquared())
                 # kernel2 : Matern - short-term variations
-                kernel_spec_matern = amp[1, 1] * transforms.Linear(1 / scale[1, 1], kernel=kernels.Matern52(distance=L2Distance()))
+                kernel_spec_matern = amp[1, 1] * transforms.Linear(
+                    1 / scale[1, 1], kernel=kernels.Matern52(distance=L2Distance())
+                )
                 kernel_spec = OneDKernel(kernel=kernel_spec_expsqr + kernel_spec_matern, axis=1)
                 kernel = kernel_spat * kernel_spec
 
         # EmissionLine kernel - to handle discontinuities at narrow emission lines
         elif kernel_type == "EmissionLine":
             if self.log_amp_line is None or self.scale_line is None:
-                raise ValueError(
-                    "EmissionLine kernel requires 'amp_line', and 'scale_line' parameters"
-                )
+                raise ValueError("EmissionLine kernel requires 'amp_line', and 'scale_line' parameters")
             emission_lines = kwargs.get("emission_lines")
             if emission_lines is None:
                 warnings.warn(
@@ -262,6 +276,7 @@ def _tophat(x: Array, mu: Array, width: Array) -> Array:
 @jax.jit
 def _gaussian(x: Array, mu: Array, width: Array) -> Array:
     return jnp.exp(-0.5 * (x - mu) ** 2 / width**2)
+
 
 @jax.jit
 def _hyperbolic_tangent(x: Array, mu: Array, width: Array) -> Array:

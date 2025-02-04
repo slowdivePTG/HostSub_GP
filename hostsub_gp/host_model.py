@@ -3,12 +3,11 @@
 __all__ = ["HostProfile"]
 
 import numpy as np
+
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 from astropy.coordinates import SkyCoord
 import astropy.units as u
-from matplotlib.patches import Rectangle
-from scipy.ndimage import rotate
 
 import jax
 import jax.numpy as jnp
@@ -127,7 +126,26 @@ class HostProfile:
         self.prof_err = jnp.concatenate(self.prof_err_slit)
         self.X = jnp.stack([jnp.concatenate(self.spat_slit), jnp.concatenate(self.wv_slit)], axis=-1)
 
+    @staticmethod
+    def _suppress_fitsfixed_warning(func):
+        """
+        Decorator to suppress FITSFixedWarning in the decorated function.
+        """
+        import warnings
+        from functools import wraps
+        from astropy.wcs import FITSFixedWarning
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Suppress FITSFixedWarning
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=FITSFixedWarning)
+                return func(*args, **kwargs)
+
+        return wrapper
+
     @classmethod
+    @_suppress_fitsfixed_warning
     def from_archival(
         cls,
         spec_model: any = None,
@@ -297,9 +315,14 @@ class HostProfile:
             pixel_scale=pixel_scale,
         )
 
-    def model_host_profile_prior(self, **kwargs) -> Callable[[Array], Array] | Callable[[Array], tuple[Array, Array]]:
+    def model_host_profile_prior(self, **kwargs) -> Callable[[Array], tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
+
+        Returns
+        -------
+        host_prior : Callable[[Array], tuple[Array, Array]]
+            A function that returns the mean and variance of the host profile.
         """
         # No prior photometric data
         if len(self.flts) == 0:

@@ -75,7 +75,7 @@ def pack_2d_spectrum(
         center_dec=center_dec,
         slit_wid=1,
         position_angle=90,
-        spat_resln=0.9,  # Seeing FWHM = 0.9 arcsec
+        spat_resln=1.5,  # Seeing FWHM = 0.9 arcsec
         spec_resln=2.7,  # Spectral resolution of MUSE
         spat_rect=ra_offset[np.abs(ra_offset) <= slit_len / 2][::-1],
         spec_rect=wv,
@@ -282,7 +282,6 @@ if __name__ == "__main__":
     hdul = fits.open(data_cube_file[0])
     dat = hdul[1].data
     dat_var = hdul[2].data
-    dat_im_stack = np.nanmean(dat, axis=0)
 
     # Load the wavelength and bin along the spectral axis
     wv = hdul[1].header["CRVAL3"] + hdul[1].header["CD3_3"] * np.arange(hdul[1].header["NAXIS3"])

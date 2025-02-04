@@ -597,19 +597,19 @@ class SpecData:
                 int(len(self.spat_rect) * jnp.round(slit_len / (self.spat_rect.max() - self.spat_rect.min())) // 2),
             )
 
-        host_prior = HostProfile(
+        host_prior = HostProfile.from_archival(
             center_ra=self.center_ra,
             center_dec=self.center_dec,
-            slit_wid=self.slit_wid,
             slit_len=slit_len,
+            slit_wid=self.slit_wid,
             position_angle=self.position_angle,
         ).model_host_profile_prior()
 
         flag = (
             jnp.isfinite(points[:, :, 0])
             & jnp.isfinite(flux)
-            & (flux > jnp.nanpercentile(flux, 25))  # mask the low flux region
-            & (flux < jnp.nanpercentile(flux, 75))  # mask the high flux region
+            # & (flux > jnp.nanpercentile(flux, 25))  # mask the low flux region
+            # & (flux < jnp.nanpercentile(flux, 75))  # mask the high flux region
         )
 
         sci_obj_mask = jnp.abs(spat) >= mask_wid
@@ -618,7 +618,7 @@ class SpecData:
         obs, _, _ = binned_statistic(
             points[:, :, 0][flag],
             flux[flag],
-            statistic="mean",
+            statistic="median",
             bins=len(spat),
             range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
         )
@@ -628,7 +628,7 @@ class SpecData:
 
         def corr_coef(offset):
             dist = spat - offset
-            prior = host_prior(jnp.stack([dist, wv_mean], axis=-1))
+            prior = host_prior(jnp.stack([dist, wv_mean], axis=-1))[0]
             return jnp.corrcoef(
                 (prior[sci_obj_mask] - prior[sci_obj_mask].min())
                 / (prior[sci_obj_mask].max() - prior[sci_obj_mask].min()),
@@ -663,7 +663,7 @@ class SpecData:
                     ],
                     axis=-1,
                 )
-            )
+            )[0]
             ax[1].scatter(
                 spat - offset,
                 (profile_prior - profile_prior.min()) / (profile_prior.max() - profile_prior.min()),

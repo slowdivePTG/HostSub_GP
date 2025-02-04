@@ -2,7 +2,6 @@
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
 from matplotlib.axes import Axes
-from jax._src.typing import ArrayLike
 
 plt.rcParams.update(
     {

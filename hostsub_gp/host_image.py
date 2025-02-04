@@ -3,10 +3,12 @@
 __all__ = ["PS1Image", "SDSSImage"]
 
 import numpy
+
 from astropy.io import fits
 from astropy import units as u
 from astropy.table import Table
 from astropy.coordinates import SkyCoord
+
 import subprocess
 import os
 import warnings
