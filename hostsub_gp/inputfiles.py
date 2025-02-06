@@ -1,6 +1,5 @@
 # hostsub_gp/inputfiles.py
 
-from ._msgs import msgs
 from pypeit.inputfiles import InputFile
 
 class HostSubInput(InputFile):

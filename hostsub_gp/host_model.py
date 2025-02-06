@@ -14,10 +14,10 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from ._plt import plt
 from .gp import GP
 from .host_image import PS1Image, SDSSImage
 from .interp import Interp2D_Grid
+from ._utils import plt
 
 from typing import Callable
 from jax._src.typing import Array, ArrayLike

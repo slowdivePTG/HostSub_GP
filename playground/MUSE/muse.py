@@ -1,5 +1,4 @@
 import numpy as np
-from hostsub_gp._plt import plt
 import glob
 import os
 
@@ -9,10 +8,8 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from astropy.io import fits
-from astropy.table import Table
-from astropy.wcs import WCS
 
-from hostsub_gp._msgs import msgs
+from hostsub_gp._utils import plt, msgs
 
 from hostsub_gp import SpecModel, SpecData, HostProfile
 from hostsub_gp.spectrum_model import SpecWrapper

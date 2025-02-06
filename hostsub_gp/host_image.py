@@ -13,7 +13,7 @@ import subprocess
 import os
 import warnings
 
-from ._msgs import msgs
+from ._utils import msgs
 
 class ArchivalImage:
     """

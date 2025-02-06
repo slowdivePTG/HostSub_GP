@@ -8,19 +8,16 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from functools import partial
 from jax._src.typing import ArrayLike, Array
 
-import glob
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
 from astropy import units as u
-from ._msgs import msgs
 
 from .interp import Interp1D_Grid, Interp2D_Grid
 from .spectrum_model import SpecModel
 from .host_model import HostProfile
-from ._plt import plt
+from ._utils import plt, msgs
 
 
 class SpecData:

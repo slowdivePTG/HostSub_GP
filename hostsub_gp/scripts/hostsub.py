@@ -7,10 +7,9 @@ import os
 import argparse
 
 from hostsub_gp import SpecData
-from hostsub_gp._plt import plt
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput
-from .._msgs import msgs
+from .._utils import plt, msgs
 
 
 def Float(value: int | float | str) -> float:
@@ -33,12 +32,6 @@ class HostSub(ScriptBase):
             default=False,
             action="store_true",
             help="Re-do the rectification and overwrite the fits files.",
-        )
-        parser.add_argument(
-            "--debug",
-            default=False,
-            action="store_true",
-            help="Run the script in debug mode and present the QA plots.",
         )
         parser.add_argument(
             "--par_outfile",
@@ -175,7 +168,6 @@ class HostSub(ScriptBase):
         host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
         spec_model = spec_data.to_SpecModel(
-            show=args.debug,
             save=f"QA/{output_suffix}_raw.pdf",
             host_emission_cfg=host_emission_cfg,
             **host_sub_cfg,
@@ -183,7 +175,6 @@ class HostSub(ScriptBase):
 
         # Model the host prior
         spec_model.model_host_prior(
-            show=args.debug,
             filters=par_hostsub.get("filters", "ugrizy"),
             save=f"QA/{output_suffix}_host_prior.pdf",
         )
@@ -244,21 +235,19 @@ class HostSub(ScriptBase):
         # Raw, model, and residual
         spec_model._plot_pred()
         plt.savefig(f"QA/{output_suffix}_pred.pdf")
-        if args.debug:
-            plt.show()
         plt.close()
+        msgs.info(f"Saving the raw, model, and residual plots to QA/{output_suffix}_pred.pdf")
 
         # Prior and posterior of the host profiles
         spec_model._plot_host_profile_prior()
         plt.savefig(f"QA/{output_suffix}_host_profile_prior.pdf")
-        if args.debug:
-            plt.show()
         plt.close()
+        msgs.info(f"Saving the prior of the host profiles to QA/{output_suffix}_host_profile_prior.pdf")
+
         spec_model._plot_host_profile_pred()
         plt.savefig(f"QA/{output_suffix}_host_profile_pred.pdf")
-        if args.debug:
-            plt.show()
         plt.close()
+        msgs.info(f"Saving the posterior of the host profiles to QA/{output_suffix}_host_profile_pred.pdf")
 
         # Extract the science spectrum
         spec_model.extract_sci()
@@ -268,6 +257,6 @@ class HostSub(ScriptBase):
             fmt="%.4f %.6e %.6e",
         )
         plt.savefig(f"QA/{output_suffix}_sci.pdf")
-        if args.debug:
-            plt.show()
         plt.close()
+        msgs.info(f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt")
+        msgs.info(f"Saving the extracted science spectrum plot to QA/{output_suffix}_sci.pdf")

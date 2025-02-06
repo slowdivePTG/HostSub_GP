@@ -3,7 +3,6 @@
 __all__ = ["GP"]
 
 import numpy as np
-from scipy import integrate
 
 import jax
 import jax.numpy as jnp
@@ -18,8 +17,8 @@ from tinygp.kernels.distance import L1Distance, L2Distance
 
 from jax._src.typing import ArrayLike, Array
 
-from ._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
-from ._msgs import msgs
+from ._utils._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
+from ._utils import msgs
 
 import warnings
 
@@ -95,7 +94,7 @@ class GP:
             msgs.parameter(f"Initial parameters (unbound):")
             _print_params(self.params_init_unbound)
             raise ValueError("Invalid initial parameters")
-            
+
         soln = solver.run(
             self.params_init_unbound, params_limit=self.params_limit, X=X[valid], y=y[valid], yerr=yerr[valid]
         )

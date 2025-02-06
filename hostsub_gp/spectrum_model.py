@@ -10,18 +10,14 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 import jaxopt
-from functools import partial
 
 from tinygp import GaussianProcess
 
-from ._plt import plt, MultipleLocator
-from ._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
+from ._utils import plt, msgs
+from ._utils._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
 from .gp import GP
 from .host_model import HostProfile
 
-from ._msgs import msgs
-
-from typing import Callable
 from jax._src.typing import ArrayLike, Array
 from matplotlib.axes import Axes
 
@@ -437,12 +433,10 @@ class SpecModel:
 
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
         msgs.info(f"Estimating the global sky background")
-        self.f_sky = self.f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip()  # .fill_nan()
-        # cmap = plt.cm.gray
-        # cmap.set_bad("red")
-        # plt.imshow(self.f_sky.Y, aspect="auto", origin="lower", cmap=cmap, vmin=np.nanpercentile(self.f_sky.Y, 5), vmax=np.nanpercentile(self.f_sky.Y, 95))
-        # plt.show()
+        self.f_sky = self.f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip().fill_nan()
         self.f_sky_1d = self.f_sky.marginalize(margin_type="mean")
+        # The 2D sky-subtracted, spectrum (to be sigma clipped)
+        self.f_sky_sub = self.f_obs.subtract(self.f_sky_1d)
 
         # Mask the trace from the source (|spat| < mask_wid / 2)
         if min(np.abs(self.sky_region)) <= mask_wid:
@@ -469,8 +463,12 @@ class SpecModel:
             self.spat < self.host_wid / 2 + self.mask_offset
         )
         self.spat_filter["host"] = host_left | host_right
+        # The 2D spectrum in the host galaxy region (outside the mask, to be sigma clipped)
+        self.f_host = self.f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
 
-        # The batched 2D grids for the normalized host galaxy spatial profiles
+        # Obtain the batched 2D grids 
+        # 1. To reduce the computational cost in optimizing the 2D GP model
+        # 2. To sigma clip the sky-subtracted 2D spectrum in each batch
         self.batch_2d = batch_2d
         # Spatial batch (only for the host galaxy pixels outside the mask)
         self._spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
@@ -480,7 +478,7 @@ class SpecModel:
         )
 
         # The 2D sky-subtracted, sigma-clipped spectrum
-        self.f_sky_sub = self.f_obs.subtract(self.f_sky_1d).sigma_clip(
+        self.f_sky_sub = self.f_sky_sub.sigma_clip(
             batch_idx=(self._spat_batch_2d_idx, self._spec_batch_2d_idx)
         )
         # The 2D spectrum in the host galaxy region: outside the mask
