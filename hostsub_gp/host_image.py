@@ -13,6 +13,8 @@ import subprocess
 import os
 import warnings
 
+from ._msgs import msgs
+
 class ArchivalImage:
     """
     Base class for loading images from archival services
@@ -23,6 +25,17 @@ class ArchivalImage:
         self.dec = dec
         self.filters = filters
         self.path = path
+
+    def check_exists(self) -> bool:
+        """
+        Check if images already exist in the path
+        """
+
+        for flt in self.filters:
+            file = f"{self.path}/{flt}.fits"
+            if not os.path.exists(file):
+                return False
+        return True
 
     def load(self) -> tuple[list, list]:
         """
@@ -65,6 +78,11 @@ class PS1Image(ArchivalImage):
         """
         Download images from the PS1 Image Cutout Service
         """
+        # Check if images already exist
+        if not overwrite and self.check_exists():
+            msgs.info("PS1 images already exist.")
+            return
+
         fitsurl = self._geturl()
         if len(fitsurl) == 0:
             warnings.warn("No images found in the PS1 database.")
@@ -115,6 +133,11 @@ class SDSSImage(ArchivalImage):
         """
         Download images from astroquery.sdss.SDSS
         """
+        # Check if images already exist
+        if not overwrite and self.check_exists():
+            msgs.info("SDSS images already exist.")
+            return
+
         from astroquery.sdss import SDSS
 
         # Define target coordinates (RA, Dec)

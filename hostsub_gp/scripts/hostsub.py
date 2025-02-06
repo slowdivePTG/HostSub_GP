@@ -4,6 +4,7 @@
 import numpy as np
 
 import os
+import argparse
 
 from hostsub_gp import SpecData
 from hostsub_gp._plt import plt
@@ -51,10 +52,16 @@ class HostSub(ScriptBase):
             action="store_true",
             help="Skip the modeling of the host galaxy (only load and rectify the spectrum).",
         )
+        parser.add_argument(
+            "--coadd2d",
+            default=False,
+            action="store_true",
+            help="Coadd the 2D spectra before modeling the host galaxy.",
+        )
         return parser
 
     @staticmethod
-    def main(args):
+    def main(args: argparse.Namespace):
         # Load the configuration file
         hostsubFile = HostSubInput.from_file(args.hostsub_file)
         par = hostsubFile.config
@@ -114,7 +121,29 @@ class HostSub(ScriptBase):
                 spec_data = SpecData.from_fits(sci_rect_file)
             spec_data_list.append(spec_data)
 
-        spec_data_coadd2d = SpecData.coadd2d(spec_data_list)
+        if args.coadd2d:
+            spec_data_coadd2d = SpecData.coadd2d(spec_data_list)
+            HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
+        else:
+            for spec_data, base_file in zip(spec_data_list, base_file_list):
+                HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
+
+    @staticmethod
+    def _model_host_subtraction(
+        args: argparse.Namespace, spec_data: SpecData, par_hostsub: dict, output_suffix: str = None
+    ):
+        """
+        Model the host galaxy and subtract it from the 1D spectrum.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            Arguments parsed by argparse.
+        spec_data : SpecData
+            2D spectrum data.
+        par_hostsub : dict
+            Parameters for host subtraction.
+        """
 
         # Convert the 2D spectrum to a SpecModel object
         # Parameters for defining the SpecModel object
@@ -145,9 +174,9 @@ class HostSub(ScriptBase):
         host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
         host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
-        spec_model = spec_data_coadd2d.to_SpecModel(
+        spec_model = spec_data.to_SpecModel(
             show=args.debug,
-            save=f"QA/raw.pdf",
+            save=f"QA/{output_suffix}_raw.pdf",
             host_emission_cfg=host_emission_cfg,
             **host_sub_cfg,
         )
@@ -156,7 +185,7 @@ class HostSub(ScriptBase):
         spec_model.model_host_prior(
             show=args.debug,
             filters=par_hostsub.get("filters", "ugrizy"),
-            save=f"QA/host_prior.pdf",
+            save=f"QA/{output_suffix}_host_prior.pdf",
         )
 
         # Skip the subsequent modeling if requested
@@ -214,26 +243,31 @@ class HostSub(ScriptBase):
         # QA plots
         # Raw, model, and residual
         spec_model._plot_pred()
-        plt.savefig(f"QA/pred.pdf")
+        plt.savefig(f"QA/{output_suffix}_pred.pdf")
         if args.debug:
             plt.show()
         plt.close()
 
         # Prior and posterior of the host profiles
         spec_model._plot_host_profile_prior()
-        plt.savefig(f"QA/host_profile_prior.pdf")
+        plt.savefig(f"QA/{output_suffix}_host_profile_prior.pdf")
         if args.debug:
             plt.show()
         plt.close()
         spec_model._plot_host_profile_pred()
-        plt.savefig(f"QA/host_profile_pred.pdf")
+        plt.savefig(f"QA/{output_suffix}_host_profile_pred.pdf")
         if args.debug:
             plt.show()
         plt.close()
 
         # Extract the science spectrum
         spec_model.extract_sci()
-        plt.savefig(f"QA/sci.pdf")
+        np.savetxt(
+            f"QA/{output_suffix}_sci.txt",
+            np.array([spec_model.f_sci_pred_1d.X.ravel(), spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr]).T,
+            fmt="%.4f %.6e %.6e",
+        )
+        plt.savefig(f"QA/{output_suffix}_sci.pdf")
         if args.debug:
             plt.show()
         plt.close()

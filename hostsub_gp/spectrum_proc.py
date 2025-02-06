@@ -327,7 +327,7 @@ class SpecData:
         return cls(**data)
 
     @classmethod
-    def coadd2d(cls, spec_data_list: list["SpecData"], output="coadd2d_rect.fits", **kwargs):
+    def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs):
         """
         Coadd multiple SpecData objects.
 
@@ -336,6 +336,8 @@ class SpecData:
         spec_data_list : list[SpecData]
             A list of SpecData objects to be coadded.
         """
+        from astropy.stats import sigma_clip
+
         if len(spec_data_list) == 0:
             raise ValueError("No SpecData object provided.")
 
@@ -366,6 +368,12 @@ class SpecData:
 
         msgs.info(f"Coadding 2D spectra from {len(spec_data_list)} objects...")
 
+        fig, ax = plt.subplots(len(spec_data_list), 1, figsize=(12, 6 * len(spec_data_list)))
+        for i, spec_data in enumerate(spec_data_list):
+            ax[i].imshow(spec_data.flux_rect, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(spec_data.flux_rect, 5), vmax=np.nanpercentile(spec_data.flux_rect, 95))
+            ax[i].set_title(f"Object {i+1}")
+        plt.show()
+
         # Coadd the flux and ivar arrays
         flux_rect_stack = jnp.stack([spec_data.flux_rect for spec_data in spec_data_list], axis=0)
         flux_ivar_rect_stack = jnp.stack([spec_data.flux_ivar_rect for spec_data in spec_data_list], axis=0)
@@ -373,6 +381,7 @@ class SpecData:
 
         # Calculate weighted means
         valid_mask = jnp.isfinite(flux_rect_stack) & jnp.isfinite(flux_err_rect_stack)
+        # sigma_clip_mask = sigma_clip(flux_err_rect_stack, axis=0, masked=True).mask
         w = flux_ivar_rect_stack
         weights = np.where(valid_mask, w, 0)
         weighted_values = np.where(valid_mask, flux_rect_stack * w, 0)
@@ -396,8 +405,6 @@ class SpecData:
             spec_rect=spec_data_list[0].spec_rect,
             flux_rect=flux_rect,
             flux_ivar_rect=flux_ivar_rect,
-            cache_path=output,
-            to_caches=True,
             **kwargs,
         )
 

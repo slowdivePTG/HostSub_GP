@@ -80,6 +80,73 @@ class SpecWrapper:
         else:
             raise ValueError("Y shape error")
 
+    def sigma_clip(self, sigma: float = 3, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None) -> "SpecWrapper":
+        """
+        Sigma clipping for the spectrum.
+
+        Parameters
+        ----------
+        sigma : float, optional
+            Sigma clipping threshold. Default is 3.
+        batch_idx : list | tuple[list, list], optional
+            Batch indices for sigma clipping. Default is None.
+
+        Returns
+        -------
+        SpecWrapper
+            The clipped spectrum.
+        """
+
+        def clip(Y: Array, Yerr: Array, sigma: float = 3) -> tuple[Array, Array]:
+            """
+            Sigma clipping for a batch of the spectrum.
+            """
+            from astropy.stats import mad_std
+
+            Y_meds = np.nanmedian(Y)
+            Y_stds = mad_std(Y[np.isfinite(Y)])
+            deviations = np.abs(Y - Y_meds)
+
+            sigma_mask = (deviations <= (sigma * Y_stds)) & np.isfinite(deviations)
+
+            Y_clipped = np.where(sigma_mask, Y, jnp.nan)
+            Yerr_clipped = np.where(sigma_mask, Yerr, jnp.nan)
+            return Y_clipped, Yerr_clipped
+
+        Y_target = np.array(self.Y)
+        masked_init = ~np.isfinite(self.Y)
+        Yerr_target = np.array(self.Yerr)
+
+        if batch_idx is None:
+            if self.Y.ndim == 1:
+                # Calculate the means and standard deviations over the entire spectrum
+                batch_idx = ([np.arange(self.shape[0])],)
+            else:
+                # Calculate the means and standard deviations at each wavelength (for all spatial pixels)
+                batch_idx = ([np.arange(self.shape[0])], [np.array(i) for i in np.arange(self.shape[1])])
+
+        if self.Y.ndim == 1:
+            for spec_idx in batch_idx[0]:
+                Y_target[spec_idx], Yerr_target[spec_idx] = clip(self.Y[spec_idx], self.Yerr[spec_idx], sigma)
+        else:
+            for spat_idx in batch_idx[0]:
+                for spec_idx in batch_idx[1]:
+                    if (spat_idx.ndim == 1) & (spec_idx.ndim == 1):
+                        # Both spat_idx and spec_idx are lists
+                        Y_target[np.ix_(spat_idx, spec_idx)], Yerr_target[np.ix_(spat_idx, spec_idx)] = clip(
+                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx], sigma
+                        )
+                    else:
+                        # Either spat_idx or spec_idx is a scalar
+                        Y_target[spat_idx, spec_idx], Yerr_target[spat_idx, spec_idx] = clip(
+                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx], sigma
+                        )
+
+        masked_final = ~np.isfinite(Y_target)
+        msgs.info(f"Sigma clipped {masked_final.sum() - masked_init.sum()} pixels")
+
+        return SpecWrapper(points=(self.spat, self.spec), values=Y_target, values_err=Yerr_target)
+
     def fill_nan(self) -> "SpecWrapper":
         """
         Fill the NaN values in the spectrum by interpolation.
@@ -370,9 +437,12 @@ class SpecModel:
 
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
         msgs.info(f"Estimating the global sky background")
-        self.f_sky = self.f_obs.apply_spatial_filter(self.spat_filter["sky"])
+        self.f_sky = self.f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip()  # .fill_nan()
+        # cmap = plt.cm.gray
+        # cmap.set_bad("red")
+        # plt.imshow(self.f_sky.Y, aspect="auto", origin="lower", cmap=cmap, vmin=np.nanpercentile(self.f_sky.Y, 5), vmax=np.nanpercentile(self.f_sky.Y, 95))
+        # plt.show()
         self.f_sky_1d = self.f_sky.marginalize(margin_type="mean")
-        self.f_sky_sub = self.f_obs.subtract(self.f_sky_1d)
 
         # Mask the trace from the source (|spat| < mask_wid / 2)
         if min(np.abs(self.sky_region)) <= mask_wid:
@@ -399,26 +469,31 @@ class SpecModel:
             self.spat < self.host_wid / 2 + self.mask_offset
         )
         self.spat_filter["host"] = host_left | host_right
-        self.f_host = self.f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
-
-        # The 1D grids for the sky-subtracted host galaxy spectra: sum along the spatial direction outside the mask
-        # Central wavelength in each row: spec
-        # Total flux in each row: weighted sum of the flux in each row
-        msgs.info(f"Obtaining the sky-subtracted 1D galaxy spectrum (outside the mask)")
-        self.f_host_1d = self.f_host.marginalize(margin_type="sum")
 
         # The batched 2D grids for the normalized host galaxy spatial profiles
         self.batch_2d = batch_2d
-        msgs.info(f"Batching the 2D galaxy spectrum (outside the mask) with the size: {batch_2d}")
-
         # Spatial batch (only for the host galaxy pixels outside the mask)
         self._spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
-
         # Spectral batch
         self._spec_batch_2d_idx = self._get_spec_batches(
             **host_emission_cfg, show=show, save=None if save is None else save.replace(".pdf", "_host_emission.pdf")
         )
 
+        # The 2D sky-subtracted, sigma-clipped spectrum
+        self.f_sky_sub = self.f_obs.subtract(self.f_sky_1d).sigma_clip(
+            batch_idx=(self._spat_batch_2d_idx, self._spec_batch_2d_idx)
+        )
+        # The 2D spectrum in the host galaxy region: outside the mask
+        self.f_host = self.f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
+
+        # The 1D grids for the sky-subtracted host galaxy spectra: sum along the spatial direction outside the mask
+        # Sigma clip the 2D spectrum in each batch
+        # Central wavelength in each row: spec
+        # Total flux in each row: weighted sum of the flux in each row
+        msgs.info(f"Obtaining the sky-subtracted 1D galaxy spectrum (outside the mask)")
+        self.f_host_1d = self.f_host.fill_nan().marginalize(margin_type="sum")
+
+        msgs.info(f"Batching the 2D galaxy spectrum (outside the mask) with the size: {batch_2d}")
         # New coordinates: mean of the batch
         shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
         spat_batch_2d = jnp.asarray([self.spat[idx].mean() for idx in self._spat_batch_2d_idx])
@@ -1374,12 +1449,15 @@ class SpecModel:
         from scipy.interpolate import interp1d
         from astropy.stats import mad_std
 
+        cmap_sci = plt.cm.gray
+        cmap_sci.set_bad("red")
+
         _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
             self.f_obs.Y,
             origin="lower",
-            cmap="gray",
+            cmap=cmap_sci,
             vmin=np.nanpercentile(self.f_obs.y, 5),
             vmax=np.nanpercentile(self.f_obs.y, 95),
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
@@ -1387,7 +1465,7 @@ class SpecModel:
         ax[1].imshow(
             self.f_sky_sub.Y,
             origin="lower",
-            cmap="gray",
+            cmap=cmap_sci,
             vmin=np.nanpercentile(self.f_sky_sub.y, 5),
             vmax=np.nanpercentile(self.f_sky_sub.y, 95),
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
@@ -1401,7 +1479,8 @@ class SpecModel:
             fill_value="extrapolate",
         )
         norm = plt.Normalize(np.nanmin(self.f_batch_2d.y), np.nanmax(self.f_batch_2d.y))
-        cmap = plt.cm.get_cmap("gray") if np.mean(self.f_host_1d.y) > 0 else plt.cm.get_cmap("gray_r")
+        cmap = plt.cm.get_cmap("gray") if np.nanmean(self.f_host_1d.y) > 0 else plt.cm.get_cmap("gray_r")
+        cmap.set_bad("red")
 
         shape_batch_2d = (len(self._spat_batch_2d_idx), len(self._spec_batch_2d_idx))
         delta_spat_typical = np.diff(self.spat).mean()
@@ -1427,11 +1506,16 @@ class SpecModel:
 
         # Plot the 1D batched spectrum
         ax[-1].plot(np.arange(len(self.spec)) + 1, self.f_host_1d.y)
+        ax[-1].plot(np.arange(len(self.spec)) + 1, self.f_sky_1d.y * self.f_host.shape[0], color="0.6", ls="--")
         ax[-1].fill_between(
             np.arange(len(self.spec)) + 1,
             self.f_host_1d.y - self.f_host_1d.yerr,
             self.f_host_1d.y + self.f_host_1d.yerr,
             alpha=0.5,
+        )
+        ax[-1].set_ylim(
+            np.nanpercentile(self.f_host_1d.y, 5) - np.nanstd(self.f_host_1d.y),
+            np.nanpercentile(self.f_host_1d.y, 95) + np.nanstd(self.f_host_1d.y),
         )
 
         # Titles
@@ -1446,7 +1530,6 @@ class SpecModel:
             ax_.set_aspect("auto")
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
             ax_.set_xlim(self.spec[0], self.spec[-1])
-            ax_.set_ylim(self.spat[0], self.spat[-1])
             ax_.set_xticks([])
         for ax_ in ax[:-2]:
             ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
@@ -1455,9 +1538,10 @@ class SpecModel:
             ax_.axhline(self.host_wid / 2 + self.mask_offset, color="crimson", linestyle="-.", lw=3)
             ax_.axhline(self.sky_region[0], color="darkgreen", linestyle="-.", lw=3)
             ax_.axhline(self.sky_region[1], color="darkgreen", linestyle="-.", lw=3)
+            ax_.set_ylim(self.spat[0], self.spat[-1])
 
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
-        major_tick_size = 500 if self.spec[-1] - self.spec[0] < 4000 else 5000
+        major_tick_size = 500 if self.spec[-1] - self.spec[0] < 4000 else 1000
         original_ticks = (
             np.arange(np.ceil(self.spec[0] / major_tick_size), np.ceil(self.spec[-1] / major_tick_size))
             * major_tick_size
@@ -1590,16 +1674,21 @@ class SpecModel:
         if not hasattr(self, "_f_pred"):
             raise ValueError("Please model the host galaxy first.")
 
+        cmap_sci = plt.cm.gray
+        cmap_sci.set_bad("red")
+        cmap_res = plt.cm.RdBu_r
+        cmap_res.set_bad("0.5")
+
         source_params = dict(
             origin="lower",
-            cmap="gray",
+            cmap=cmap_sci,
             aspect="auto",
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
         f_res_Y = self.f_sky_sub.Y - self._f_pred.reshape(-1, self.shape[1])
         residual_params = dict(
             origin="lower",
-            cmap="RdBu_r",
+            cmap=cmap_res,
             aspect="auto",
             vmin=np.nanmedian(self.f_host.yerr) * -1,
             vmax=np.nanmedian(self.f_host.yerr) * 1,

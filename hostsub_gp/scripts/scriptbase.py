@@ -62,7 +62,7 @@ class ScriptBase:
         return argparse.ArgumentParser(description=description)
 
     @staticmethod
-    def main(args):
+    def main(args: argparse.Namespace):
         """
         Execute the script.
 
