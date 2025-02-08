@@ -17,7 +17,13 @@ from tinygp.kernels.distance import L1Distance, L2Distance
 
 from jax._src.typing import ArrayLike, Array
 
-from ._utils._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _check_params, _print_params
+from ._utils._par import (
+    _transform_unbound_to_bound,
+    _transform_bound_to_unbound,
+    _init_params,
+    _check_params,
+    _print_params,
+)
 from ._utils import msgs
 
 import warnings
@@ -31,13 +37,13 @@ class GP:
 
     def __init__(
         self,
+        kernel_type: str,
         X: ArrayLike,
         y: ArrayLike = None,
         yerr: ArrayLike | float = None,
         params: dict = None,
         params_init: dict = None,
         params_limit: dict = None,
-        kernel_type: str = "ExpSquared",
         optimization: bool = False,
         **kwargs,
     ):
@@ -80,7 +86,17 @@ class GP:
         self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type, **kwargs)
 
     def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
-        solver = jaxopt.ScipyMinimize(fun=partial(_neg_log_prob, kernel_type=self.kernel_type))
+        solver = jaxopt.ScipyMinimize(
+            fun=partial(
+                _neg_log_prob,
+                params_limit=self.params_limit,
+                X=X[valid],
+                y=y[valid],
+                yerr=yerr[valid],
+                kernel_type=self.kernel_type,
+            ),
+            method="SLSQP",
+        )
         valid = jnp.isfinite(y)
 
         # Check if the initial parameters are valid
@@ -99,18 +115,23 @@ class GP:
             _print_params(self.params_init_unbound)
             raise ValueError("Invalid initial parameters")
 
-        soln = solver.run(
-            self.params_init_unbound, params_limit=self.params_limit, X=X[valid], y=y[valid], yerr=yerr[valid]
-        )
+        soln = solver.run(self.params_init_unbound)
         params_unbound = soln.params
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params_unbound
 
-    def predict(self, X_test: ArrayLike, return_var: bool=False) -> Array | tuple[Array, Array]:
+    def predict(self, X_test: ArrayLike, return_var: bool = False) -> Array | tuple[Array, Array]:
         """Predict the mean and variance of the Gaussian Process at the input points."""
 
-        return self.gp.predict(self.y, jnp.asarray(X_test), return_var=return_var)
+        # The 1D GP uses the quasiseparable kernel to speed up the computation
+        # which requires the input to be a 1D array
+        if X_test.shape[-1] == 1:
+            X_test = jnp.asarray(X_test.ravel())
+        else:
+            X_test = jnp.asarray(X_test)
+
+        return self.gp.predict(self.y, X_test, return_var=return_var)
 
         # def _predict(y: Array, X_test: Array, return_var: bool) -> Array | tuple[Array, Array]:
         #     """tinygp.GaussianProcess.predict wrapper."""
@@ -138,9 +159,7 @@ class GP:
 
 
 @partial(jax.jit, static_argnames=("kernel_type",))
-def _neg_log_prob(
-    params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str = "ExpSquared"
-) -> jnp.float32:
+def _neg_log_prob(params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str) -> jnp.float32:
     """Negative log-probability of the Gaussian Process."""
     params = _transform_unbound_to_bound(params, params_limit)
     gp = _build_gp(params, X, yerr)(kernel_type=kernel_type)
@@ -166,59 +185,73 @@ class _build_gp:
         self.log_amp_line = params.get("log_amp_line")
         self.scale_line = params.get("scale_line")
 
-        self.X = jnp.asarray(X)
+        self.ndim = X.shape[-1]
+        if self.ndim == 1:
+            self.X = jnp.asarray(X.ravel())
+        elif self.ndim == 2:
+            self.X = jnp.asarray(X)
+        else:
+            raise ValueError("Invalid number of dimensions: supported values are 1 or 2")
         self.yerr = jnp.asarray(yerr)
 
-    def __call__(self, kernel_type: str = "ExpSquared", **kwargs) -> GaussianProcess:
+    def __call__(self, kernel_type: str, **kwargs) -> GaussianProcess:
         kernel = self._build_kernel(kernel_type, **kwargs)
-        return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
+        try:
+            return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
+        except:
+            breakpoint()
 
     def _build_kernel(self, kernel_type: str, **kwargs) -> kernels.Kernel:
+        """
+        Build the kernel.
+        - HostProfile: 2D GP for the host profile - mean function for the consequent GP models
+        - 1D: 1D GP for the 1D spectrum
+        - 2D: 2D GP for the 2D spectrum
+        """
         amp = 10**self.log_amp
         scale = 10**self.log_scale
 
-        # Standard single kernel types
-        if not kernel_type in ["composite", "EmissionLine"]:
-            if self.log_amp.size != 1:
-                raise ValueError(f"The {kernel_type} kernel requires only 1 set of parameters")
-            if kernel_type == "ExpSquared":
-                kernel = amp * transforms.Linear(1 / scale, kernel=kernels.ExpSquared())
-            elif kernel_type == "Matern":
-                kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
+        # Model the host profile prior - 2D GP
+        # (ExpSquared + Matern52) x (ExpSquared + Matern52)
+        if kernel_type == "HostProfile":
+            if self.ndim != 2:
+                raise ValueError("HostProfile kernel: X must be a 2D array")
 
-        # Composite kernel - combination of ExpSquared and Matern52
-        elif kernel_type == "composite":
-            # if self.log_amp.size != 2:
-            #     raise ValueError("The composite kernel requires 2 set of parameters")
-            if self.log_amp.ndim == 1:
-                # kernel1 : ExpSquared - long-term variations (continuum)
-                kernel_expsqr = amp[0] * transforms.Linear(1 / scale[0], kernel=kernels.ExpSquared())
-                # kernel2 : Matern - short-term variations (sky lines, emission lines)
-                kernel_matern = amp[1] * transforms.Linear(1 / scale[1], kernel=kernels.Matern52(distance=L2Distance()))
-                kernel = kernel_expsqr + kernel_matern
-            else:
-                # spatially varying parameters
-                # TODO: only 3 free parameters in amp
-                # kernel1 : ExpSquared - long-term variations (continuum)
-                # evaluate the kernel only on the spatial coordinates
-                kernel_spat_expsqr = amp[0, 0] * transforms.Linear(1 / scale[0, 0], kernel=kernels.ExpSquared())
-                # kernel2 : Matern - short-term variations (sky lines, emission lines)
-                kernel_spat_matern = amp[0, 1] * transforms.Linear(
-                    1 / scale[0, 1], kernel=kernels.Matern52(distance=L2Distance())
-                )
-                kernel_spat = OneDKernel(kernel=kernel_spat_expsqr + kernel_spat_matern, axis=0)
-                # spectral varying parameters
-                # kernel1 : ExpSquared - long-term variations (continuum)
-                kernel_spec_expsqr = amp[1, 0] * transforms.Linear(1 / scale[1, 0], kernel=kernels.ExpSquared())
-                # kernel2 : Matern - short-term variations
-                kernel_spec_matern = amp[1, 1] * transforms.Linear(
-                    1 / scale[1, 1], kernel=kernels.Matern52(distance=L2Distance())
-                )
-                kernel_spec = OneDKernel(kernel=kernel_spec_expsqr + kernel_spec_matern, axis=1)
-                kernel = kernel_spat * kernel_spec
+            # TODO: only 3 free parameters in amp
+            # Spatially varying parameters
+            # kernel1 : Exp - long-term variations (continuum)
+            # Evaluate the kernel only on the spatial coordinates
+            kernel_spat_exp = amp[0, 0] * kernels.Exp(scale=scale[0, 0])
+            # kernel2 : Matern - short-term variations (sky lines, emission lines)
+            kernel_spat_matern = amp[0, 1] * kernels.Matern52(scale=scale[0, 1])
+            kernel_spat = OneDKernel(kernel=kernel_spat_exp + kernel_spat_matern, axis=0)
 
-        # EmissionLine kernel - to handle discontinuities at narrow emission lines
-        elif kernel_type == "EmissionLine":
+            # spectral varying parameters
+            # kernel1 : ExpSquared - long-term variations (continuum)
+            kernel_spec_exp = amp[1, 0] * kernels.Exp(scale=scale[1, 0])
+            # kernel2 : Matern - short-term variations
+            kernel_spec_matern = amp[1, 1] * kernels.Matern52(scale=scale[1, 1])
+            kernel_spec = OneDKernel(kernel=kernel_spec_exp + kernel_spec_matern, axis=1)
+            kernel = kernel_spat * kernel_spec
+
+        # Model the 1D spectrum - 1D GP
+        # ExpSquared + Matern52
+        elif kernel_type == "1D":
+            if self.ndim != 1:
+                raise ValueError("1D kernel: X must be a 1D array")
+
+            # kernel1 : Exp - long-term variations (continuum)
+            kernel_exp = amp[0] * kernels.quasisep.Exp(scale=scale[0])
+            # kernel2 : Matern - short-term variations (sky lines, emission lines)
+            kernel_matern = amp[1] * kernels.quasisep.Matern52(scale=scale[1])
+            kernel = kernel_exp + kernel_matern
+
+        # Model the 2D spectrum - 2D GP
+        # Matern52 * EmissionLine
+        elif kernel_type == "2D":
+            if self.ndim != 2:
+                raise ValueError("2D kernel: X must be a 2D array")
+
             if self.log_amp_line is None or self.scale_line is None:
                 raise ValueError("EmissionLine kernel requires 'amp_line', and 'scale_line' parameters")
             emission_lines = kwargs.get("emission_lines")
@@ -226,6 +259,7 @@ class _build_gp:
                 warnings.warn(
                     "EmissionLine kernel: emission_lines not provided, the kernel is equivalent to ExpSquared"
                 )
+            # Use transforms.Linear to handle anisotropic kernels
             base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
             emission_line_kernel = EmissionLineKernel(
                 amp_line=10**self.log_amp_line,
@@ -236,9 +270,7 @@ class _build_gp:
 
         # Invalid kernel type
         else:
-            raise ValueError(
-                "Invalid kernel type: supported types are 'ExpSquared', 'Matern', 'composite', 'EmissionLine'"
-            )
+            raise ValueError("Invalid kernel type: supported types are 'HostProfile', '1D', '2D'")
 
         return kernel
 

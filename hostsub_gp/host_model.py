@@ -17,7 +17,7 @@ import jax.numpy as jnp
 from .gp import GP
 from .host_image import PS1Image, SDSSImage
 from .interp import Interp2D_Grid
-from ._utils import plt
+from ._utils import plt, msgs
 
 from typing import Callable
 from jax._src.typing import Array, ArrayLike
@@ -315,6 +315,7 @@ class HostProfile:
             pixel_scale=pixel_scale,
         )
 
+    @msgs.timer
     def model_host_profile_prior(self, **kwargs) -> Callable[[Array], tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
@@ -336,6 +337,7 @@ class HostProfile:
             )
             params_limit = dict(log_scale=np.log10([0.8 / 2.355, 1.5 / 2.355]))
             gp_host_prior = GP(
+                kernel_type="HostProfie",
                 X=self.X[:, :1],  # Spatial coordinate only
                 y=self.prof,
                 yerr=self.prof_err,
@@ -363,13 +365,13 @@ class HostProfile:
                 )
             )
             gp_host_prior = GP(
+                kernel_type="HostProfile",
                 X=self.X,
                 y=self.prof,
                 yerr=self.prof_err,
                 params_init=params,
                 params_limit=params_limit,
                 optimization=True,
-                kernel_type="composite",
             )
             host_prior = lambda x: gp_host_prior.predict(X_test=x, return_var=True)
 

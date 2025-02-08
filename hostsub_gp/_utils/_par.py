@@ -14,7 +14,6 @@ import numpy as np
 
 # jax.config.update("jax_enable_x64", True)
 
-from functools import wraps
 from typing import Callable, Optional
 
 from ._msgs import msgs
@@ -41,6 +40,7 @@ def sequence_input(func: Optional[Callable] = None, *, verbose: bool = False) ->
     verbose : bool, optional
         Print verbose output, by default False
     """
+    from functools import wraps
 
     def decorator(func: Callable[[dict], dict]) -> Callable[[DictInput], DictOutput]:
         @wraps(func)

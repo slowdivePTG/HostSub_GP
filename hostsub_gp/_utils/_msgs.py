@@ -1,4 +1,7 @@
 # hostsub_gp/_msgs.py
+
+from typing import Callable
+
 class msgs():
     """Class to print messages of multiple types."""
 
@@ -25,3 +28,21 @@ class msgs():
     @staticmethod
     def parameter(message: str):
         print(f"{msgs.BLUE}{msgs.BOLD}[PARAM]   :: {msgs.RESET}" + message)
+
+    @staticmethod
+    def timer(func: Callable) -> Callable:
+        """
+        A decorator that times how long a function takes to run.
+        """
+        import time
+        from functools import wraps
+
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> any:
+            start = time.time()
+            result = func(*args, **kwargs)
+            end = time.time()
+            msgs.info(f"{func.__name__} completed in {end - start:.2f} seconds")
+            return result
+
+        return wrapper

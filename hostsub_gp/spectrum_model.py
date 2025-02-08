@@ -10,6 +10,7 @@ import jax.numpy as jnp
 # jax.config.update("jax_enable_x64", True)
 
 import jaxopt
+from functools import partial
 
 from ._utils import plt, msgs
 from ._utils._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
@@ -156,6 +157,7 @@ class SpecWrapper:
         # Interpolate
         Y_filled = griddata((x[valid], y[valid]), Y_masked[valid], (x, y), method="linear")
         Y_err_filled = griddata((x[valid], y[valid]), Y_err_masked[valid], (x, y), method="linear")
+        msgs.info(f"Filled {np.sum(~valid)} NaN pixels")
 
         return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
 
@@ -617,30 +619,16 @@ class SpecModel:
             params_limit = _init_params(params_limit, require_all=False)
 
         if optimization:
-            # Fitting the 1D spectrum of the host galaxy
-            msgs.info("Round 1: Fitting the 1D spectrum of the host galaxy")
-
+            # Initialize the limits for the parameters
             params_limit[0] = self._set_params_limit(params_limit[0], ndim=1)
-
-            params_1d = GP(
-                X=self.f_host_1d.X,
-                y=self.f_host_1d.y,
-                yerr=self.f_host_1d.yerr,
-                params_init=params_init[0],
-                params_limit=params_limit[0],
-                kernel_type="composite",
-                optimization=True,
-            ).params
-
-            # Update the initial parameters with the 1D results
-            params_init[0] = params_1d
-
-            # Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly
-            msgs.info("Round 2: Fitting the 2D spatial profile")
-
             params_limit[1] = self._set_params_limit(params_limit[1], ndim=2)
 
-            self.gp_params = self._model_host_optimization(
+            msgs.info("Round 1: Fitting the 1D spectrum of the host galaxy")
+            # Update the initial parameters with the 1D results
+            params_init[0] = self._model_host_1d_opt(params_init=params_init[0], params_limit=params_limit[0])
+
+            msgs.info("Round 2: Fitting the 2D spatial profile")
+            self.gp_params = self._model_host_2d_opt(
                 params_init=tuple(params_init),
                 params_limit=tuple(params_limit),
                 **optimization_kwargs,
@@ -819,24 +807,38 @@ class SpecModel:
     ############################ Host Galaxy Modeling #############################
     ###############################################################################
 
-    def _model_host_optimization(
+    @msgs.timer
+    def _model_host_1d_opt(
+        self,
+        params_init: dict,
+        params_limit: dict,
+    ) -> dict:
+        """
+        Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
+        Only the 1D spectrum is optimized in this step.
+        """
+
+        params_limit = self._set_params_limit(params_limit, ndim=1)
+
+        params_1d = GP(
+            kernel_type="1D",
+            X=self.f_host_1d.X,
+            y=self.f_host_1d.y,
+            yerr=self.f_host_1d.yerr,
+            params_init=params_init,
+            params_limit=params_limit,
+            optimization=True,
+        ).params
+
+        return params_1d
+
+    @msgs.timer
+    def _model_host_2d_opt(
         self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs
     ) -> tuple[dict, dict]:
         """
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
         Only the 2D spatial profile is optimized in this step.
-
-        Parameters
-        ----------
-        params_init : tuple[dict, dict]
-            Initial parameters (1D and 2D GP) for optimization.
-        params_limit : tuple[dict, dict]
-            Limits for the Gaussian Process parameters (1D and 2D GP).
-
-        Returns
-        -------
-        gp_params : tuple[dict, dict]
-            The optimized parameters for the Gaussian Process model.
         """
         params_init_unbound = _transform_bound_to_unbound(params_init, params_limit)
         msgs.info("Optimizing the host galaxy model...")
@@ -851,10 +853,16 @@ class SpecModel:
             _print_params(params_init_unbound)
             raise ValueError("Invalid initial parameters: please check the limits.")
 
-        solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, method="SLSQP", **kwargs)
-        soln = solver.run(
-            init_params=params_init_unbound[1], params_1d=params_init_unbound[0], params_limit=params_limit
+        solver = jaxopt.ScipyMinimize(
+            fun=partial(
+                self._get_host_neg_log_probability,
+                params_1d=params_init_unbound[0],
+                params_limit=params_limit,
+            ),
+            method="SLSQP",
+            **kwargs,
         )
+        soln = solver.run(params_init_unbound[1])
         if soln.state.status != 0:
             msgs.warning(f"Optimization failed with status {soln.state.status}.")
         params = _transform_unbound_to_bound(soln.params, params_limit[1])
@@ -890,24 +898,24 @@ class SpecModel:
         f_1d = self.f_host_1d
         f_1d_mask = np.isfinite(f_1d.y)
         gp_1d = GP(
+            kernel_type="1D",
             X=f_1d.X[f_1d_mask],
             y=f_1d.y[f_1d_mask],
             yerr=f_1d.yerr[f_1d_mask],
             params=params_1d,
             params_limit=params_limit_1d,
-            kernel_type="composite",
         )
 
         f_2d = self.dist_host_batch_2d
         f_2d_mask = np.isfinite(f_2d.y)
         gp_2d = GP(
+            kernel_type="2D",
+            emission_lines=self.emission_lines,
             X=f_2d.X[f_2d_mask],
             y=f_2d.y[f_2d_mask],
             yerr=f_2d.yerr[f_2d_mask],
             params=params_2d,
             params_limit=params_limit_2d,
-            kernel_type="EmissionLine",
-            emission_lines=self.emission_lines,
         )
 
         return gp_1d, gp_2d
@@ -917,7 +925,7 @@ class SpecModel:
         params_2d: dict = None,
         params_1d: dict = None,
         params: tuple[dict, dict] = None,
-        params_limit: tuple[dict, dict] = (None, None),
+        params_limit: tuple[dict, dict] = None,
     ) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
@@ -961,13 +969,13 @@ class SpecModel:
             """
             Compute the negative log probability of the host galaxy model
             """
-            gp_1d = GP(X=f_1d_X, y=f_1d_y, yerr=f_1d_yerr, params=params_1d, kernel_type="composite")
+            gp_1d = GP(kernel_type="1D", X=f_1d_X, y=f_1d_y, yerr=f_1d_yerr, params=params_1d)
             gp_2d = GP(
+                kernel_type="2D",
                 X=dist_2d_X,
                 y=dist_2d_y,
                 yerr=dist_2d_yerr,
                 params=params_2d,
-                kernel_type="EmissionLine",
                 emission_lines=emission_lines,
             )
             log_prob_1d = gp_1d.log_probability(f_1d_y)
