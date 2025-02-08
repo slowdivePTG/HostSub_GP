@@ -887,21 +887,23 @@ class SpecModel:
         except:
             raise ValueError("Invalid parameter limits")
 
-        f_1d_mask = np.isfinite(self.f_host_1d.y)
+        f_1d = self.f_host_1d
+        f_1d_mask = np.isfinite(f_1d.y)
         gp_1d = GP(
-            X=self.f_host_1d.X[f_1d_mask],
-            y=self.f_host_1d.y[f_1d_mask],
-            yerr=self.f_host_1d.yerr[f_1d_mask],
+            X=f_1d.X[f_1d_mask],
+            y=f_1d.y[f_1d_mask],
+            yerr=f_1d.yerr[f_1d_mask],
             params=params_1d,
             params_limit=params_limit_1d,
             kernel_type="composite",
         )
 
-        f_2d_mask = np.isfinite(self.dist_batch_2d.y)
+        f_2d = self.dist_host_batch_2d
+        f_2d_mask = np.isfinite(f_2d.y)
         gp_2d = GP(
-            X=self.dist_batch_2d.X[f_2d_mask],
-            y=self.dist_batch_2d.y[f_2d_mask],
-            yerr=self.dist_batch_2d.yerr[f_2d_mask],
+            X=f_2d.X[f_2d_mask],
+            y=f_2d.y[f_2d_mask],
+            yerr=f_2d.yerr[f_2d_mask],
             params=params_2d,
             params_limit=params_limit_2d,
             kernel_type="EmissionLine",
