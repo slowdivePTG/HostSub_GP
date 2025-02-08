@@ -7,7 +7,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 import jaxopt
 from functools import partial
@@ -44,12 +44,20 @@ class GP:
         """Initialize the Gaussian Process."""
         # Initialize the input arrays
         self.X = jnp.asarray(X)
+
+        if y is None:
+            if optimization:
+                raise ValueError("Optimization: y must be provided")
+        else:
+            self.y = jnp.asarray(y)
+
         if yerr is None:
             self.yerr = jnp.zeros_like(y)
         elif isinstance(yerr, (int, float)):
             self.yerr = jnp.ones_like(y) * yerr
         else:
             self.yerr = jnp.asarray(yerr)
+
         self.kernel_type = kernel_type
 
         # Initialize the parameters
@@ -60,10 +68,6 @@ class GP:
             except Exception as e:
                 raise ValueError("Optimization: " + str(e))
             self.params_init_unbound = _transform_bound_to_unbound(self.params_init, self.params_limit)
-
-            if y is None:
-                raise ValueError("Optimization: y must be provided")
-            self.y = jnp.asarray(y)
 
             self.params_unbound = self._optimize(X, self.y, self.yerr)
             self.params = _transform_unbound_to_bound(self.params_unbound, self.params_limit)
@@ -99,15 +103,44 @@ class GP:
             self.params_init_unbound, params_limit=self.params_limit, X=X[valid], y=y[valid], yerr=yerr[valid]
         )
         params_unbound = soln.params
-        msgs.parameter(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
-        msgs.parameter(f"Final negative log-probability: {soln.state.fun_val:.1f}")
+        msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
+        msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params_unbound
+
+    def predict(self, X_test: ArrayLike, return_var: bool=False) -> Array | tuple[Array, Array]:
+        """Predict the mean and variance of the Gaussian Process at the input points."""
+
+        return self.gp.predict(self.y, jnp.asarray(X_test), return_var=return_var)
+
+        # def _predict(y: Array, X_test: Array, return_var: bool) -> Array | tuple[Array, Array]:
+        #     """tinygp.GaussianProcess.predict wrapper."""
+        #     return self.gp.predict(y=y, X_test=X_test, return_var=return_var)
+
+        # # Vectorize the single point prediction
+        # predict_on_grid = jax.vmap(_predict, in_axes=(None, 0, None))
+
+        # X_test = jnp.asarray(X_test)
+        # if X_test.ndim == self.X.ndim:
+        #     return _predict(self.y, X_test, return_var)
+        # elif (X_test.ndim == self.X.ndim + 1) & (X_test.shape[-1] == self.X.shape[-1]):
+        #     res = predict_on_grid(self.y, X_test, return_var)
+        #     # Flatten the output
+        #     if return_var:
+        #         return res[0].ravel(), res[1].ravel()
+        #     else:
+        #         return res.ravel()
+        # else:
+        #     raise ValueError("Invalid input shape: X_test must have the same shape as X or one additional dimension")
+
+    def log_probability(self, y: ArrayLike) -> jnp.float32:
+        """Log-probability of the Gaussian Process."""
+        return self.gp.log_probability(jnp.asarray(y))
 
 
 @partial(jax.jit, static_argnames=("kernel_type",))
 def _neg_log_prob(
     params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str = "ExpSquared"
-) -> jnp.float64:
+) -> jnp.float32:
     """Negative log-probability of the Gaussian Process."""
     params = _transform_unbound_to_bound(params, params_limit)
     gp = _build_gp(params, X, yerr)(kernel_type=kernel_type)

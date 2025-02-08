@@ -12,7 +12,7 @@ import astropy.units as u
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 from .gp import GP
 from .host_image import PS1Image, SDSSImage
@@ -326,7 +326,7 @@ class HostProfile:
         """
         # No prior photometric data
         if len(self.flts) == 0:
-            host_prior = lambda _: (jnp.float64(1 / self.host_wid), jnp.float64(0))  # constant, variance = 0
+            host_prior = lambda _: (jnp.float32(1 / self.host_wid), jnp.float32(0))  # constant, variance = 0
         # Single band
         elif len(self.flts) == 1:
             params = dict(
@@ -336,16 +336,15 @@ class HostProfile:
             )
             params_limit = dict(log_scale=np.log10([0.8 / 2.355, 1.5 / 2.355]))
             gp_host_prior = GP(
-                X=self.X[:, 0][:, None],  # Spatial coordinate only
+                X=self.X[:, :1],  # Spatial coordinate only
                 y=self.prof,
                 yerr=self.prof_err,
-                # params=params,
                 params_init=params,
                 params_limit=params_limit,
                 optimization=True,
             )
             host_prior = jax.jit(
-                lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x[:, 0][:, None], return_var=True)
+                lambda x: gp_host_prior.predict(y=self.prof, X_test=x[:, :1], return_var=True)
             )
         # Multiple bands
         else:
@@ -372,7 +371,7 @@ class HostProfile:
                 optimization=True,
                 kernel_type="composite",
             )
-            host_prior = jax.jit(lambda x: gp_host_prior.gp.predict(y=self.prof, X_test=x, return_var=True))
+            host_prior = lambda x: gp_host_prior.predict(X_test=x, return_var=True)
 
         self._plot_host_profile(host_prior, **kwargs)
 
@@ -420,7 +419,7 @@ class HostProfile:
         plt.close()
 
 
-def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
+def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float32:
     """
     Compute the mean values in a bounded region.
     """
@@ -428,7 +427,7 @@ def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.fl
     if x_bound is None:
         x_bound = (x[0] - bin_size[0] / 2, x[-1] + bin_size[-1] / 2)
     if x_bound[1] <= x_bound[0]:
-        return jnp.float64(0)
+        return jnp.float32(0)
     # sum up all pixels that are fully contained in the region
     idx_center = (x > x_bound[0] + bin_size[0] / 2) & (x < x_bound[1] - bin_size[-1] / 2)
     sum_center = jnp.sum(y[idx_center] * bin_size[idx_center])
@@ -453,7 +452,7 @@ def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.fl
     return sum_center + sum_left + sum_right
 
 
-def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float64:
+def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float32:
     """
     Compute the sum in a bounded region.
     """

@@ -6,7 +6,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 from jax._src.typing import ArrayLike, Array
 
@@ -364,12 +364,6 @@ class SpecData:
             raise ValueError("All SpecData objects must have the same flux and ivar arrays.")
 
         msgs.info(f"Coadding 2D spectra from {len(spec_data_list)} objects...")
-
-        fig, ax = plt.subplots(len(spec_data_list), 1, figsize=(12, 6 * len(spec_data_list)))
-        for i, spec_data in enumerate(spec_data_list):
-            ax[i].imshow(spec_data.flux_rect, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(spec_data.flux_rect, 5), vmax=np.nanpercentile(spec_data.flux_rect, 95))
-            ax[i].set_title(f"Object {i+1}")
-        plt.show()
 
         # Coadd the flux and ivar arrays
         flux_rect_stack = jnp.stack([spec_data.flux_rect for spec_data in spec_data_list], axis=0)

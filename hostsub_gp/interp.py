@@ -7,7 +7,7 @@ from typing import Callable
 
 from jax._src.typing import ArrayLike, Array
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 ###################################################################################################
 ################################# Interpolation on a regular grid #################################
@@ -70,8 +70,8 @@ class Interp2D_base:
         values : ArrayLike
             Array of shape (n_points,) containing the values at each point
         """
-        self.points = jnp.asarray(points, dtype=jnp.float64) / self.scales
-        self.values = jnp.asarray(values, dtype=jnp.float64)
+        self.points = jnp.asarray(points, dtype=jnp.float32) / self.scales
+        self.values = jnp.asarray(values, dtype=jnp.float32)
 
     def predict(self, query_points: ArrayLike) -> Array:
         """

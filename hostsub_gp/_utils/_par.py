@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 from functools import wraps
 from typing import Callable, Optional
@@ -88,11 +88,11 @@ def _init_params(params: dict, require_all: bool = True) -> dict:
         if not isinstance(x, jax.Array):
             x = np.asarray(x, dtype=np.float64)  # In case x is a scalar or an array of str
         if x.size > 1:
-            return jnp.asarray(x, dtype=jnp.float64)  # Array[float64]
+            return jnp.asarray(x, dtype=jnp.float32)  # Array[float64]
         elif x.ndim == 0:
-            return jnp.asarray(x, dtype=jnp.float64)  # Scalar[float64]
+            return jnp.asarray(x, dtype=jnp.float32)  # Scalar[float64]
         else:
-            return jnp.asarray(x[0], dtype=jnp.float64)  # Scalar[float64]
+            return jnp.asarray(x[0], dtype=jnp.float32)  # Scalar[float64]
 
     params_output = {}
     for key in ["log_amp", "log_scale", "mean", "log_amp_line", "scale_line"]:

@@ -7,11 +7,9 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 import jaxopt
-
-from tinygp import GaussianProcess
 
 from ._utils import plt, msgs
 from ._utils._par import _transform_unbound_to_bound, _transform_bound_to_unbound, _init_params, _print_params
@@ -427,7 +425,7 @@ class SpecModel:
         sky_right = spat > self.sky_region[1]
         self.spat_filter["sky"] = sky_left | sky_right
         if np.nansum(self.spat_filter["sky"]) / self.spat_filter["sky"].ravel().size < 0.1:
-            msgs.warn(r"Sky region is < 10% of the overall pixels.")
+            msgs.warning(r"Sky region is < 10% of the overall pixels.")
         if np.nansum(self.spat_filter["sky"]) == 0:
             raise ValueError("No sky region is defined.")
 
@@ -466,7 +464,7 @@ class SpecModel:
         # The 2D spectrum in the host galaxy region (outside the mask, to be sigma clipped)
         self.f_host = self.f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
 
-        # Obtain the batched 2D grids 
+        # Obtain the batched 2D grids
         # 1. To reduce the computational cost in optimizing the 2D GP model
         # 2. To sigma clip the sky-subtracted 2D spectrum in each batch
         self.batch_2d = batch_2d
@@ -478,9 +476,7 @@ class SpecModel:
         )
 
         # The 2D sky-subtracted, sigma-clipped spectrum
-        self.f_sky_sub = self.f_sky_sub.sigma_clip(
-            batch_idx=(self._spat_batch_2d_idx, self._spec_batch_2d_idx)
-        )
+        self.f_sky_sub = self.f_sky_sub.sigma_clip(batch_idx=(self._spat_batch_2d_idx, self._spec_batch_2d_idx))
         # The 2D spectrum in the host galaxy region: outside the mask
         self.f_host = self.f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
 
@@ -547,7 +543,7 @@ class SpecModel:
         # Scale the host flux prior to the observed data
         # All pixels on the host region summed along the spatial axis = 1
         scale = lambda X: jnp.interp(
-            X[:, 1], self.spec, jnp.sum(host_flux_prior(self.f_host.X)[0].reshape(self.f_host.shape), axis=0)
+            X[..., 1].ravel(), self.spec, jnp.sum(host_flux_prior(self.f_host.X)[0].reshape(self.f_host.shape), axis=0)
         )
 
         def predict(X: Array) -> tuple[Array, Array]:
@@ -638,20 +634,9 @@ class SpecModel:
 
             # Update the initial parameters with the 1D results
             params_init[0] = params_1d
-            # Update the limits for parameters with the 1D results (within +/- 0.1%)
-            params_limit[0] = _init_params(
-                {
-                    key: (
-                        params_1d[key] - 1e-3 * np.abs(params_1d[key]),
-                        params_1d[key] + 1e-3 * np.abs(params_1d[key]),
-                    )
-                    for key in params_1d
-                },
-                require_all=False,
-            )
 
             # Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly
-            msgs.info("Round 2: Fitting the 2D spatial profile & 1D spectrum of the host galaxy jointly")
+            msgs.info("Round 2: Fitting the 2D spatial profile")
 
             params_limit[1] = self._set_params_limit(params_limit[1], ndim=2)
 
@@ -660,13 +645,15 @@ class SpecModel:
                 params_limit=tuple(params_limit),
                 **optimization_kwargs,
             )
-
-        self.gp_params = params_init
+        else:
+            self.gp_params = params_init
 
         self._gp_1d, self._gp_2d = self._build_host_gp(params=self.gp_params)
 
         # Predict the host galaxy flux on the entire 2D spectrum
-        self._f_1d_pred, self._f_2d_pred, self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, self.f_obs.X)
+        msgs.info("Predicting the host galaxy flux on the entire 2D spectrum")
+        X_obs = self.f_obs.X.reshape(self.f_obs.shape[0], self.f_obs.shape[1], -1)
+        self._f_1d_pred, self._f_2d_pred, self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, X=X_obs)
 
     def extract_sci(self, method="boxcar") -> Axes:  # TODO: adopt the extraction method of pypeit
         """
@@ -676,7 +663,8 @@ class SpecModel:
         msgs.info("Extracting the science spectrum.")
 
         self.f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
-        _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(self._gp_1d, self._gp_2d, self.f_mask.X, return_var=True)
+        X_mask = self.f_mask.X.reshape(self.f_mask.shape[0], self.f_mask.shape[1], -1)
+        _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(self._gp_1d, self._gp_2d, X_mask, return_var=True)
         self.f_mask_pred = SpecWrapper(
             points=(self.f_mask.spat, self.f_mask.spec),
             values=f_mask_pred.reshape(self.f_mask.shape),
@@ -833,26 +821,28 @@ class SpecModel:
 
     def _model_host_optimization(
         self, params_init: tuple[dict, dict], params_limit: tuple[dict, dict], **kwargs
-    ) -> dict:
+    ) -> tuple[dict, dict]:
         """
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
+        Only the 2D spatial profile is optimized in this step.
 
         Parameters
         ----------
-        params_init : dict
-            Initial parameters for optimization.
-        params_limit : dict
-            Limits for the Gaussian Process parameters.
+        params_init : tuple[dict, dict]
+            Initial parameters (1D and 2D GP) for optimization.
+        params_limit : tuple[dict, dict]
+            Limits for the Gaussian Process parameters (1D and 2D GP).
 
         Returns
         -------
-        gp_params : dict
+        gp_params : tuple[dict, dict]
             The optimized parameters for the Gaussian Process model.
         """
         params_init_unbound = _transform_bound_to_unbound(params_init, params_limit)
         msgs.info("Optimizing the host galaxy model...")
-        msgs.info(f"Initial negative log-probability: {self._get_host_neg_log_probability(params_init):.1f}")
-        if ~np.isfinite(self._get_host_neg_log_probability(params_init)):
+        neg_log_prob_init = self._get_host_neg_log_probability(params=params_init_unbound, params_limit=params_limit)
+        msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
+        if ~np.isfinite(neg_log_prob_init):
             msgs.info("Initial parameters:")
             _print_params(params_init)
             msgs.info("Parameter limits:")
@@ -861,19 +851,21 @@ class SpecModel:
             _print_params(params_init_unbound)
             raise ValueError("Invalid initial parameters: please check the limits.")
 
-        solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, **kwargs)
-        soln = solver.run(params_init_unbound, params_limit)
+        solver = jaxopt.ScipyMinimize(fun=self._get_host_neg_log_probability, method="SLSQP", **kwargs)
+        soln = solver.run(
+            init_params=params_init_unbound[1], params_1d=params_init_unbound[0], params_limit=params_limit
+        )
         if soln.state.status != 0:
-            msgs.warn(f"Optimization failed with status {soln.state.status}.")
-        params = _transform_unbound_to_bound(soln.params, params_limit)
+            msgs.warning(f"Optimization failed with status {soln.state.status}.")
+        params = _transform_unbound_to_bound(soln.params, params_limit[1])
+        msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         msgs.info("Final parameters:")
         _print_params(params)
-        msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
-        return params
+        return (params_init[0], params)
 
     def _build_host_gp(
         self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = (None, None)
-    ) -> tuple[GaussianProcess, GaussianProcess]:
+    ) -> tuple[GP, GP]:
         """
         Build the Gaussian Process for the 1D host galaxy spectra and 2D host galaxy spatial profiles.
 
@@ -886,8 +878,8 @@ class SpecModel:
 
         Returns
         -------
-        tuple[GaussianProcess, GaussianProcess]
-            tinygp.GaussianProcess objects for the 1D and 2D host galaxy.
+        tuple[GP, GP]
+            GP objects for the 1D and 2D host galaxy.
         """
         params_1d, params_2d = _init_params(params)
         try:
@@ -903,29 +895,37 @@ class SpecModel:
             params=params_1d,
             params_limit=params_limit_1d,
             kernel_type="composite",
-        ).gp
+        )
 
-        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
+        f_2d_mask = np.isfinite(self.dist_batch_2d.y)
         gp_2d = GP(
-            X=self.f_host_batch_2d.X[f_2d_mask],
-            y=self.f_host_batch_2d.y[f_2d_mask],
-            yerr=self.f_host_batch_2d.yerr[f_2d_mask],
+            X=self.dist_batch_2d.X[f_2d_mask],
+            y=self.dist_batch_2d.y[f_2d_mask],
+            yerr=self.dist_batch_2d.yerr[f_2d_mask],
             params=params_2d,
             params_limit=params_limit_2d,
             kernel_type="EmissionLine",
             emission_lines=self.emission_lines,
-        ).gp
+        )
 
         return gp_1d, gp_2d
 
     def _get_host_neg_log_probability(
-        self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = (None, None)
+        self,
+        params_2d: dict = None,
+        params_1d: dict = None,
+        params: tuple[dict, dict] = None,
+        params_limit: tuple[dict, dict] = (None, None),
     ) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
 
         Parameters
         ----------
+        params_2d : dict
+            Parameters for the 2D Gaussian Process.
+        params_1d : dict
+            Parameters for the 1D Gaussian Process.
         params : tuple[dict, dict]
             A tuple of parameters for the 1D and 2D Gaussian Processes.
         params_limit : dict, optional
@@ -936,6 +936,8 @@ class SpecModel:
         float
             The negative log probability of the host flux.
         """
+        if params is None:
+            params = (params_1d, params_2d)
         params_1d, params_2d = _init_params(_transform_unbound_to_bound(params, params_limit))
 
         @jax.jit
@@ -957,19 +959,20 @@ class SpecModel:
             """
             Compute the negative log probability of the host galaxy model
             """
-            gp_1d = GP(X=f_1d_X, yerr=f_1d_yerr, params=params_1d, kernel_type="composite").gp
+            gp_1d = GP(X=f_1d_X, y=f_1d_y, yerr=f_1d_yerr, params=params_1d, kernel_type="composite")
             gp_2d = GP(
                 X=dist_2d_X,
+                y=dist_2d_y,
                 yerr=dist_2d_yerr,
                 params=params_2d,
                 kernel_type="EmissionLine",
                 emission_lines=emission_lines,
-            ).gp
+            )
             log_prob_1d = gp_1d.log_probability(f_1d_y)
             log_prob_2d = gp_2d.log_probability(dist_2d_y)
 
-            y_host_1d = gp_1d.predict(y=f_1d_y, X_test=f_X[:, 1][:, None])
-            y_host_2d = gp_2d.predict(y=dist_2d_y, X_test=f_X) + f_mean
+            y_host_1d = gp_1d.predict(X_test=f_X[:, 1:])
+            y_host_2d = gp_2d.predict(X_test=f_X) + f_mean
             y_host = y_host_1d * y_host_2d
             log_prob_obs = jnp.nansum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
 
@@ -985,7 +988,7 @@ class SpecModel:
         # Only include finite values in the observation
         obs_mask = np.isfinite(self.f_host.y)
         f_1d_mask = np.isfinite(self.f_host_1d.y)
-        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
+        f_2d_mask = np.isfinite(self.dist_host_batch_2d.y)
 
         return _neg_log_probability(
             params_1d=params_1d,
@@ -1004,34 +1007,40 @@ class SpecModel:
         )
 
     def _get_pred(
-        self, gp_1d: GaussianProcess, gp_2d: GaussianProcess, X: Array, return_var=False
+        self, gp_1d: GP, gp_2d: GP, X: Array, return_var: bool = False
     ) -> tuple[Array, Array, Array] | tuple[tuple[Array, Array], tuple[Array, Array], tuple[Array, Array]]:
         """
         Get the predicted host galaxy flux on the given grids.
 
         Parameters
         ----------
-        gp_1d : GaussianProcess
+        gp_1d : GP
             The 1D Gaussian Process - the 1D spectrum of the host.
-        gp_2d : GaussianProcess
+        gp_2d : GP
             The 2D Gaussian Process - the spatial profile of the host.
         X : Array
             The 2D grids to make the prediction.
+            Shape: (n_spat, n_spec, 2)
 
         Returns
         -------
-        Array
-            The predicted host galaxy flux.
+        Array | tuple[Array, Array]
+            The flattened, predicted host galaxy flux.
         """
-        f_1d_mask = np.isfinite(self.f_host_1d.y)
-        f_2d_mask = np.isfinite(self.f_host_batch_2d.y)
+        if (X.ndim != 3) or (X.shape[-1] != 2):
+            raise ValueError("Invalid input grids: the shape of X must be (n_spat, n_spec, 2).")
+        # Input for the 1D GP: (n_spat, 1)
+        X_1d = X[0, :, 1:]
+        # Input for the 2D GP: (n_spat * n_spec, 2)
+        X_2d = X.reshape(-1, 2)
+
+        # Obtain the mean and standard deviation of the mean function
+        prior, prior_std = self.host_flux_prior(X_2d)
 
         if return_var:
-            y_1d, y_1d_var = gp_1d.predict(y=self.f_host_1d.y[f_1d_mask], X_test=X[:, 1][:, None], return_var=True)
-            y_2d, y_2d_var = gp_2d.predict(y=self.dist_host_batch_2d.y[f_2d_mask], X_test=X, return_var=True)
+            y_1d, y_1d_var = [jnp.tile(y, reps=X.shape[0]) for y in gp_1d.predict(X_test=X_1d, return_var=True)]
+            y_2d, y_2d_var = gp_2d.predict(X_test=X_2d, return_var=True)
 
-            # Obtain the mean and standard deviation of the mean function
-            prior, prior_std = self.host_flux_prior(X)
             y_2d += prior
             y_2d_var += prior_std**2
 
@@ -1041,8 +1050,8 @@ class SpecModel:
             return (y_1d, y_1d_var**0.5), (y_2d, y_2d_var**0.5), (y, y_var**0.5)
 
         else:
-            y_1d = gp_1d.predict(y=self.f_host_1d.y[f_1d_mask], X_test=X[:, 1][:, None])
-            y_2d = gp_2d.predict(y=self.dist_host_batch_2d.y[f_2d_mask], X_test=X) + self.host_flux_prior(X)[0]
+            y_1d = jnp.tile(gp_1d.predict(X_test=X_1d), reps=X.shape[0])
+            y_2d = gp_2d.predict(X_test=X_2d) + prior
             y = y_1d * y_2d
 
             return y_1d, y_2d, y
@@ -1591,9 +1600,6 @@ class SpecModel:
             # c_raw = cmap(norm(k))
             c_raw = "k"
             ax.plot(self.f_batch_2d.spat, r - offset * k, color=c_raw, alpha=0.5, ls="--")
-            ax.fill_between(
-                self.f_batch_2d.spat, r + r_err - offset * k, r - r_err - offset * k, color=c_raw, alpha=0.5
-            )
             ax.plot(self.f_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
             ax.text(
                 self.mask_offset,
@@ -1604,6 +1610,12 @@ class SpecModel:
                 fontsize=12,
                 zorder=110,
                 color=c_raw,
+            )
+        ylim = ax.get_ylim()
+        # Sometimes the errors are riduculously large
+        for k, (r, r_err, p) in enumerate(zip(raw.T, raw_err.T, prior.T)):
+            ax.fill_between(
+                self.f_batch_2d.spat, r + r_err - offset * k, r - r_err - offset * k, color=c_raw, alpha=0.5
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{Counts + offset}$")
@@ -1627,10 +1639,7 @@ class SpecModel:
 
         raw = self.dist_host_batch_2d.Y
         raw_err = self.dist_host_batch_2d.Yerr
-        f_2d_mask = np.isfinite(self.dist_host_batch_2d.y)
-        pred = (self._gp_2d.predict(y=self.dist_host_batch_2d.y[f_2d_mask], X_test=self.dist_batch_2d.X)).reshape(
-            self.dist_batch_2d.shape
-        )
+        pred = (self._gp_2d.predict(X_test=self.dist_batch_2d.X)).reshape(self.dist_batch_2d.shape)
 
         offset = max((np.percentile(pred, 95) - np.percentile(pred, 5)), np.nanmedian(raw_err) * 2)
 
