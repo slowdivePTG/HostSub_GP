@@ -86,17 +86,7 @@ class GP:
         self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type, **kwargs)
 
     def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
-        solver = jaxopt.ScipyMinimize(
-            fun=partial(
-                _neg_log_prob,
-                params_limit=self.params_limit,
-                X=X[valid],
-                y=y[valid],
-                yerr=yerr[valid],
-                kernel_type=self.kernel_type,
-            ),
-            method="SLSQP",
-        )
+        """Optimize the hyperparameters of the Gaussian Process with jaxopt.ScipyMinimize."""
         valid = jnp.isfinite(y)
 
         # Check if the initial parameters are valid
@@ -115,6 +105,17 @@ class GP:
             _print_params(self.params_init_unbound)
             raise ValueError("Invalid initial parameters")
 
+        solver = jaxopt.ScipyMinimize(
+            fun=partial(
+                _neg_log_prob,
+                params_limit=self.params_limit,
+                X=X[valid],
+                y=y[valid],
+                yerr=yerr[valid],
+                kernel_type=self.kernel_type,
+            ),
+            method="SLSQP",
+        )
         soln = solver.run(self.params_init_unbound)
         params_unbound = soln.params
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
