@@ -59,7 +59,11 @@ class SpecWrapper:
             if values.shape != values_err.shape:
                 raise ValueError("Values and errors shape mismatch.")
         Y = jnp.array(values)
-        Yerr = jnp.ones_like(values) if values_err is None else jnp.array(values_err)
+        if values_err is None:
+            Yerr = jnp.zeros_like(Y)
+            msgs.warning("No error is provided. Assuming the errors are zeros.")
+        else:
+            Yerr = jnp.array(values_err)
         self.Y = jnp.where(jnp.isfinite(Yerr), Y, np.nan)
         self.Yerr = jnp.where(jnp.isfinite(Yerr), Yerr, np.nan)
 
@@ -75,7 +79,9 @@ class SpecWrapper:
         else:
             raise ValueError("Y shape error")
 
-    def sigma_clip(self, sigma: float = 3, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None) -> "SpecWrapper":
+    def sigma_clip(
+        self, sigma: float = 3, clip_cr: bool = False, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None
+    ) -> "SpecWrapper":
         """
         Sigma clipping for the spectrum.
 
@@ -83,6 +89,8 @@ class SpecWrapper:
         ----------
         sigma : float, optional
             Sigma clipping threshold. Default is 3.
+        clip_cr : bool, optional
+            Whether to clip cosmic rays only (i.e., positive outliers). Default is False.
         batch_idx : list | tuple[list, list], optional
             Batch indices for sigma clipping. Default is None.
 
@@ -92,7 +100,7 @@ class SpecWrapper:
             The clipped spectrum.
         """
 
-        def clip(Y: Array, Yerr: Array, sigma: float = 3) -> tuple[Array, Array]:
+        def clip(Y: Array, Yerr: Array) -> tuple[Array, Array]:
             """
             Sigma clipping for a batch of the spectrum.
             """
@@ -100,9 +108,11 @@ class SpecWrapper:
 
             Y_meds = np.nanmedian(Y)
             Y_stds = mad_std(Y[np.isfinite(Y)])
-            deviations = np.abs(Y - Y_meds)
 
-            sigma_mask = (deviations <= (sigma * Y_stds)) & np.isfinite(deviations)
+            if clip_cr:  # Only remove positive outliers
+                sigma_mask = (Y - Y_meds) <= (sigma * Y_stds)
+            else:  # Remove both positive and negative outliers
+                sigma_mask = (np.abs(Y - Y_meds) <= (sigma * Y_stds)) & np.isfinite(Y)
 
             Y_clipped = np.where(sigma_mask, Y, jnp.nan)
             Yerr_clipped = np.where(sigma_mask, Yerr, jnp.nan)
@@ -122,19 +132,19 @@ class SpecWrapper:
 
         if self.Y.ndim == 1:
             for spec_idx in batch_idx[0]:
-                Y_target[spec_idx], Yerr_target[spec_idx] = clip(self.Y[spec_idx], self.Yerr[spec_idx], sigma)
+                Y_target[spec_idx], Yerr_target[spec_idx] = clip(self.Y[spec_idx], self.Yerr[spec_idx])
         else:
             for spat_idx in batch_idx[0]:
                 for spec_idx in batch_idx[1]:
                     if (spat_idx.ndim == 1) & (spec_idx.ndim == 1):
                         # Both spat_idx and spec_idx are lists
                         Y_target[np.ix_(spat_idx, spec_idx)], Yerr_target[np.ix_(spat_idx, spec_idx)] = clip(
-                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx], sigma
+                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx]
                         )
                     else:
                         # Either spat_idx or spec_idx is a scalar
                         Y_target[spat_idx, spec_idx], Yerr_target[spat_idx, spec_idx] = clip(
-                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx], sigma
+                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx]
                         )
 
         masked_final = ~np.isfinite(Y_target)
@@ -162,7 +172,7 @@ class SpecWrapper:
         return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
 
     def marginalize(
-        self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 3
+        self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 5
     ) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
@@ -177,14 +187,14 @@ class SpecWrapper:
             ivar: inverse variance
             snr: signal-to-noise ratio squared
         sigma_clip : float, optional
-            Sigma clipping threshold for the marginalization. Default is 3.
+            Sigma clipping threshold for the marginalization. Default is 5.
 
         Returns
         -------
         SpecWrapper
             The marginalized 1D spectrum.
         """
-        if weights is None:
+        if (weights is None) or jnp.all(self.Yerr == 0):
             w = jnp.ones_like(self.Y)
         elif isinstance(weights, (ArrayLike, Array)):
             if weights.ndim < self.Y.ndim:
@@ -203,24 +213,24 @@ class SpecWrapper:
             raise ValueError("Invalid weights.")
 
         # Calculate the overall means and standard deviations
-        Y_means = np.nanmean(self.Y, axis=0)
-        Y_stds = np.nanstd(self.Y, axis=0)
+        Y_meds = np.nanmedian(self.Y, axis=0)
+        Y_stds = np.nanstd(self.Y, axis=0, ddof=1)
 
         # Create the mask for sigma clipping
         # Broadcasting to compare each column with its own mean and std
-        deviations = np.abs(self.Y - Y_means[None, :])
+        deviations = np.abs(self.Y - Y_meds[None, :])
         sigma_masks = deviations <= (sigma_clip * Y_stds[None, :])
         valid_masks = np.isfinite(self.Y)
         combined_mask = sigma_masks & valid_masks
 
         # Calculate weighted means
         weights = np.where(combined_mask, w, 0)
-        weighted_values = np.where(combined_mask, self.Y * w, 0)
+        weighted_values = np.where(combined_mask, self.Y * weights, 0)
 
         mean_value = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
 
         # Calculate errors
-        weighted_errors = np.where(combined_mask, (self.Yerr * w) ** 2, 0)
+        weighted_errors = np.where(combined_mask, (self.Yerr * weights) ** 2, 0)
         mean_value_err = np.sqrt(np.sum(weighted_errors, axis=0) / np.sum(weights, axis=0) ** 2)
 
         if margin_type == "mean":
@@ -592,14 +602,14 @@ class SpecModel:
         self.f_batch_prior = SpecWrapper(
             points=(self.f_batch_2d.spat, self.f_batch_2d.spec),
             values=prior_batch.reshape(self.f_batch_2d.shape),
-            values_err=prior_batch_std.reshape(self.f_batch_2d.shape),
+            # values_err=prior_batch_std.reshape(self.f_batch_2d.shape),
         )
         # Batched 2D data (host region)
         prior_host_batch, prior_host_batch_std = self.host_flux_prior(self.f_host_batch_2d.X)
         self.f_host_batch_prior = SpecWrapper(
             points=(self.f_host_batch_2d.spat, self.f_host_batch_2d.spec),
             values=prior_host_batch.reshape(self.f_host_batch_2d.shape),
-            values_err=prior_host_batch_std.reshape(self.f_host_batch_2d.shape),
+            # values_err=prior_host_batch_std.reshape(self.f_host_batch_2d.shape),
         )
 
         # Calculate the distance relative to the prior
@@ -656,7 +666,9 @@ class SpecModel:
         self.f_mask_pred = SpecWrapper(
             points=(self.f_mask.spat, self.f_mask.spec),
             values=f_mask_pred.reshape(self.f_mask.shape),
+            # values_err=jnp.zeros(self.f_mask.shape),
             values_err=f_mask_pred_err.reshape(self.f_mask.shape),
+            # TODO: add reasonable errors
         )
         self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
 
@@ -665,8 +677,10 @@ class SpecModel:
 
         if method == "boxcar":
             extract_weights = None
-        else:
+        elif method == "optimal":
             extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
+        else:
+            raise ValueError("Invalid extraction method.")
 
         self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type="mean", weights=extract_weights)
 
@@ -845,12 +859,11 @@ class SpecModel:
         neg_log_prob_init = self._get_host_neg_log_probability(params=params_init_unbound, params_limit=params_limit)
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
         if ~np.isfinite(neg_log_prob_init):
+            msgs.error("Initial log-probability is infinite.")
             msgs.info("Initial parameters:")
             _print_params(params_init)
             msgs.info("Parameter limits:")
             _print_params(params_limit)
-            msgs.info("Initial unbound parameters:")
-            _print_params(params_init_unbound)
             raise ValueError("Invalid initial parameters: please check the limits.")
 
         solver = jaxopt.ScipyMinimize(
@@ -1052,7 +1065,7 @@ class SpecModel:
             y_2d, y_2d_var = gp_2d.predict(X_test=X_2d, return_var=True)
 
             y_2d += prior
-            y_2d_var += prior_std**2
+            # y_2d_var += prior_std**2
 
             y = y_1d * y_2d
             y_var = y**2 * (y_1d_var / y_1d**2 + y_2d_var / y_2d**2)
@@ -1649,18 +1662,21 @@ class SpecModel:
 
         raw = self.dist_host_batch_2d.Y
         raw_err = self.dist_host_batch_2d.Yerr
-        pred = (self._gp_2d.predict(X_test=self.dist_batch_2d.X)).reshape(self.dist_batch_2d.shape)
+        pred, pred_err = [
+            p.reshape(self.dist_batch_2d.shape)
+            for p in self._gp_2d.predict(X_test=self.dist_batch_2d.X, return_var=True)
+        ]
 
         offset = max((np.percentile(pred, 95) - np.percentile(pred, 5)), np.nanmedian(raw_err) * 2)
 
-        for k, (r, err, p) in enumerate(zip(raw.T, raw_err.T, pred.T)):
+        for k, (r, err, p, perr) in enumerate(zip(raw.T, raw_err.T, pred.T, pred_err.T)):
             # c_raw = cmap(norm(k))
             c_raw = "k"
             ax.plot(self.dist_host_batch_2d.spat, r - offset * k, "--x", color=c_raw, alpha=0.5)
             ax.fill_between(
                 self.dist_host_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5
             )
-            ax.scatter(self.dist_batch_2d.spat, p - offset * k, color=c_raw, lw=2)
+            ax.errorbar(self.dist_batch_2d.spat, p - offset * k, yerr=perr, fmt="-o", capsize=3, color=c_raw)
             ax.text(
                 self.mask_offset,
                 -offset * k + np.nanmedian(raw[:, 0]),

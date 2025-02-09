@@ -97,11 +97,12 @@ class GP:
             kernel_type=self.kernel_type,
         )
         if ~jnp.isfinite(neg_log_prob_init):
-            msgs.parameter(f"Initial parameters (bound):")
+            msgs.error("Initial log-probability is infinite.")
+            msgs.info("Initial parameters:")
             _print_params(self.params_init)
-            msgs.parameter(f"Initial parameters (unbound):")
-            _print_params(self.params_init_unbound)
-            raise ValueError("Invalid initial parameters")
+            msgs.info("Parameter limits:")
+            _print_params(self.params_limit)
+            raise ValueError("Invalid initial parameters: please check the limits.")
 
         solver = jaxopt.ScipyMinimize(
             fun=partial(

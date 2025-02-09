@@ -51,7 +51,7 @@ def sequence_input(func: Optional[Callable] = None, *, verbose: bool = False) ->
                 results = []
                 for k, item in enumerate(arg):
                     if verbose:
-                        msgs.info(f"Processing the {msgs.BLUE}{msgs.BOLD}{k+1}D{msgs.RESET} parameters")
+                        msgs.info(f"The {msgs.BLUE}{msgs.BOLD}{k+1}D{msgs.RESET} parameters")
                     results.append(func(item, *args, **kwargs))
                 return results
             if not (isinstance(arg, dict) | (arg is None)):
@@ -119,7 +119,7 @@ def _print_params(params: dict):
             )
 
     try:
-        _check_params(params)
+        _check_params(params, require_all=False)
         _print_param(params, "log_amp", "Amp")
         _print_param(params, "log_scale", "Scale")
         _print_param(params, "mean", "Mean")

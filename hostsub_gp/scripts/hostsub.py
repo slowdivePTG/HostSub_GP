@@ -53,6 +53,7 @@ class HostSub(ScriptBase):
         )
         return parser
 
+    @msgs.timer
     @staticmethod
     def main(args: argparse.Namespace):
         # Load the configuration file
