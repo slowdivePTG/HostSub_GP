@@ -70,9 +70,9 @@ def pack_2d_spectrum(
         pixel_scale=pixel_scale,
         center_ra=center_ra,
         center_dec=center_dec,
-        slit_wid=1,
+        slit_wid=1.0,
         position_angle=90,
-        spat_resln=1.5,  # Seeing FWHM = 0.9 arcsec
+        spat_resln=0.73,  # Seeing FWHM = 0.73 arcsec
         spec_resln=2.7,  # Spectral resolution of MUSE
         spat_rect=ra_offset[np.abs(ra_offset) <= slit_len / 2][::-1],
         spec_rect=wv,
@@ -84,7 +84,7 @@ def pack_2d_spectrum(
         slit_len=slit_len,
         spec_range=(5500, 9200),  # Edge (throughput = half maximum) of the PS1 r and z filters
         host_wid=8,
-        mask_wid=1.0,
+        mask_wid=1.2,
         mask_offset=mask_offset,
         sky_region=sky_region,
         batch_2d=(2, 128),

@@ -2,8 +2,6 @@
 
 __all__ = ["GP"]
 
-import numpy as np
-
 import jax
 import jax.numpy as jnp
 
@@ -13,7 +11,7 @@ import jaxopt
 from functools import partial
 
 from tinygp import GaussianProcess, kernels, transforms
-from tinygp.kernels.distance import L1Distance, L2Distance
+from tinygp.kernels.distance import L2Distance
 
 from jax._src.typing import ArrayLike, Array
 
