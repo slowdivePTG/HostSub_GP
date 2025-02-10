@@ -12,7 +12,7 @@ from astropy.io import fits
 from hostsub_gp._utils import plt, msgs
 
 from hostsub_gp import SpecModel, SpecData, HostProfile
-from hostsub_gp.spec_model import SpecWrapper
+from hostsub_gp.spec_wrapper import SpecWrapper
 
 from numpy.typing import ArrayLike, NDArray
 
