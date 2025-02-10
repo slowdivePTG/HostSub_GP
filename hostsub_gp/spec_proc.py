@@ -1,4 +1,4 @@
-# hostsub_gp/spectrum_proc.py
+# hostsub_gp/spec_proc.py
 
 __all__ = ["SpecData"]
 
@@ -15,7 +15,7 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 
 from .interp import Interp1D_Grid, Interp2D_Grid
-from .spectrum_model import SpecModel
+from .spec_model import SpecModel
 from .host_model import HostProfile
 from ._utils import plt, msgs
 
@@ -471,6 +471,16 @@ class SpecData:
             spec_mask = jnp.ones_like(self.spec_rect, dtype=bool)
         else:
             spec_mask = (self.spec_rect >= spec_range[0]) & (self.spec_rect <= spec_range[1])
+
+        # Update the spectral and spatial resolutions if specified in the config file
+        spec_resln_cfg = kwargs.pop("spec_resln")
+        spat_resln_cfg = kwargs.pop("spat_resln")
+        if spec_resln_cfg is not None:
+            self.spec_resln = spec_resln_cfg
+            msgs.info(f"Spectral resolution specified in the config file: setting it to {self.spec_resln:.2f} Ang.")
+        if spat_resln_cfg is not None:
+            self.spat_resln = spat_resln_cfg
+            msgs.info(f"Spatial resolution specified in the config file: setting it to {self.spat_resln:.2f} arcsec.")
 
         return SpecModel(
             dat=self.flux_rect[spat_mask, :][:, spec_mask],

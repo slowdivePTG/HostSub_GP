@@ -153,6 +153,9 @@ class HostSub(ScriptBase):
         host_sub_cfg["batch_2d"] = (
             (2, 128) if "batch_2d" not in par_hostsub else tuple(map(int, par_hostsub["batch_2d"]))
         )
+        host_sub_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
+        host_sub_cfg["spec_resln"] = Float(par_hostsub.get("spec_resln", None))
+        host_sub_cfg["sigma_clip"] = Float(par_hostsub.get("sigma_clip", 5.0))
 
         # Parameters for identifying host emission lines
         par_host_emission = par_hostsub.get("host_emission", {})

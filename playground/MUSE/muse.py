@@ -12,7 +12,7 @@ from astropy.io import fits
 from hostsub_gp._utils import plt, msgs
 
 from hostsub_gp import SpecModel, SpecData, HostProfile
-from hostsub_gp.spectrum_model import SpecWrapper
+from hostsub_gp.spec_model import SpecWrapper
 
 from numpy.typing import ArrayLike, NDArray
 
@@ -89,6 +89,7 @@ def pack_2d_spectrum(
         sky_region=sky_region,
         batch_2d=(2, 128),
         host_emission_cfg={"find_host_emission": True, "z": z, "z_err": 0.001, "p_value": 0.05},
+        sigma_clip=100, # Essentially no clipping
         show=False,
         save=f"{args.galaxy}/QA/{targetid}.pdf",
     )
