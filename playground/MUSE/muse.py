@@ -221,10 +221,22 @@ def model_host_prior(
 
 def plot_QA(spec_model: "SpecModel", targetid: str):
     """Plot the QA figures."""
+    # Prior and posterior of the host profiles
+    spec_model._plot_host_profile_prior()
+    plt.savefig(f"QA/{targetid}_host_profile_prior.pdf")
+    plt.close()
+    msgs.info(f"Saving the prior of the host profiles to QA/{targetid}_host_profile_prior.pdf")
+
+    spec_model._plot_host_profile_pred()
+    plt.savefig(f"QA/{targetid}_host_profile_pred.pdf")
+    plt.close()
+    msgs.info(f"Saving the posterior of the host profiles to QA/{targetid}_host_profile_pred.pdf")
+
     # Raw, model, and residual
     spec_model._plot_pred()
     plt.savefig(f"{args.galaxy}/QA/{targetid}_pred.pdf")
     plt.close()
+    msgs.info(f"Saving the raw, model, and residual to {args.galaxy}/QA/{targetid}_pred.pdf")
 
     # Extract the science spectrum
     spec_model.extract_sci()
@@ -250,6 +262,8 @@ def plot_QA(spec_model: "SpecModel", targetid: str):
     plt.legend()
 
     plt.savefig(f"{args.galaxy}/QA/{targetid}_sci.pdf")
+    plt.close()
+    msgs.info(f"Saving the science spectrum to {args.galaxy}/QA/{targetid}_sci.pdf")
 
     # Save the 1D spectra
     dat = np.array([spec_model.spec, spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr, classic_pred, classic_pred_err]).T

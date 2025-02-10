@@ -473,8 +473,8 @@ class SpecData:
             spec_mask = (self.spec_rect >= spec_range[0]) & (self.spec_rect <= spec_range[1])
 
         # Update the spectral and spatial resolutions if specified in the config file
-        spec_resln_cfg = kwargs.pop("spec_resln")
-        spat_resln_cfg = kwargs.pop("spat_resln")
+        spec_resln_cfg = kwargs.pop("spec_resln", None)
+        spat_resln_cfg = kwargs.pop("spat_resln", None)
         if spec_resln_cfg is not None:
             self.spec_resln = spec_resln_cfg
             msgs.info(f"Spectral resolution specified in the config file: setting it to {self.spec_resln:.2f} Ang.")
