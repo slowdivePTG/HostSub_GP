@@ -8,15 +8,12 @@ import argparse
 
 from hostsub_gp import SpecData
 from .scriptbase import ScriptBase
-from ..inputfiles import HostSubInput
+from ..inputfiles import HostSubInput, Digitize
 from .._utils import plt, msgs
 
 
-def Float(value: int | float | str) -> float:
-    if (value == "None") or (value == "none") or value is None:
-        return None
-    else:
-        return float(value)
+Float = Digitize(float)
+Int = Digitize(int)
 
 
 class HostSub(ScriptBase):
@@ -143,16 +140,12 @@ class HostSub(ScriptBase):
         # Parameters for defining the SpecModel object
         host_sub_cfg = {}
         host_sub_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
-        host_sub_cfg["spec_range"] = (
-            None if "spec_range" not in par_hostsub else tuple(map(Float, par_hostsub["spec_range"]))
-        )
+        host_sub_cfg["spec_range"] = None if "spec_range" not in par_hostsub else Float(par_hostsub["spec_range"])
         host_sub_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
         host_sub_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
-        host_sub_cfg["sky_region"] = tuple(map(Float, par_hostsub.get("sky_region", (-5.0, 5.0))))
+        host_sub_cfg["sky_region"] = Float(par_hostsub.get("sky_region", [-5.0, 5.0]))
         host_sub_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
-        host_sub_cfg["batch_2d"] = (
-            (2, 128) if "batch_2d" not in par_hostsub else tuple(map(int, par_hostsub["batch_2d"]))
-        )
+        host_sub_cfg["batch_2d"] = Int(par_hostsub.get("batch_2d", [2, 128]))
         host_sub_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
         host_sub_cfg["spec_resln"] = Float(par_hostsub.get("spec_resln", None))
         host_sub_cfg["sigma_clip"] = Float(par_hostsub.get("sigma_clip", 5.0))
@@ -190,18 +183,25 @@ class HostSub(ScriptBase):
         # Get the initial parameters
         params_init_1d = par_hostsub.get("params_init_1d", None)
         params_init_2d = par_hostsub.get("params_init_2d", None)
+        # Convert the initial parameters to the correct data type
+        for params in [params_init_1d, params_init_2d]:
+            if params is not None:
+                for key, value in params.items():
+                    params[key] = Float(value)
         params_init = [params_init_1d, params_init_2d]
 
         # Get limits for the parameters
+        # Reset the key names
         def _set_params_limit(params_limit_dict):
             """Integrate upper and lower limits of each parameter."""
-            upper = {k.replace("_upper", ""): v for k, v in params_limit_dict.items() if "upper" in k}
-            lower = {k.replace("_lower", ""): v for k, v in params_limit_dict.items() if "lower" in k}
+            upper = {k.replace("_upper", ""): Float(v) for k, v in params_limit_dict.items() if "upper" in k}
+            lower = {k.replace("_lower", ""): Float(v) for k, v in params_limit_dict.items() if "lower" in k}
             return {k: (lower[k], upper[k]) for k in lower}
 
         params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", {}))
         params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", {}))
 
+        # Set the default limits
         params_limit_1d["log_scale"] = params_limit_1d.get(
             "log_scale",
             np.log10(
@@ -218,9 +218,21 @@ class HostSub(ScriptBase):
             np.log10(
                 [
                     # lower bound
-                    [spec_model.spat_resln / 2.355, spec_model.spec_resln / 2.355],
+                    [
+                        # # spatial direction (slow & fast)
+                        # [spec_model.spat_resln / 2.355, spec_model.spat_resln / 2.355],
+                        # # spectral direction (slow & fast)
+                        # [spec_model.spec_resln / 2.355, spec_model.spec_resln / 2.355],
+                        spec_model.spat_resln / 2.355, spec_model.spec_resln / 2.355,
+                    ],
                     # upper bound
-                    [spec_model.spat_resln, 1e4],
+                    [
+                        # # spatial direction (slow & fast)
+                        # [spec_model.spat_resln * 2, spec_model.spat_resln],
+                        # # spectral direction (slow & fast)
+                        # [1e4, 1e4],
+                        spec_model.spat_resln * 2, 1e4,
+                    ],
                 ]
             ),
         )

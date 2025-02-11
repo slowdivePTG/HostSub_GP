@@ -86,7 +86,7 @@ def _init_params(params: dict, require_all: bool = True) -> dict:
 
     def ensure_scalar_or_array(x):
         if not isinstance(x, jax.Array):
-            x = np.asarray(x, dtype=np.float64)  # In case x is a scalar or an array of str
+            x = np.asarray(x, dtype=jnp.float32)  # In case x is a scalar or an array of str
         if x.size > 1:
             return jnp.asarray(x, dtype=jnp.float32)  # Array[float64]
         elif x.ndim == 0:

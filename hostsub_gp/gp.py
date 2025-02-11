@@ -217,22 +217,7 @@ class _build_gp:
             if self.ndim != 2:
                 raise ValueError("HostProfile kernel: X must be a 2D array")
 
-            # TODO: only 3 free parameters in amp
-            # Spatially varying parameters
-            # kernel1 : Exp - long-term variations (continuum)
-            # Evaluate the kernel only on the spatial coordinates
-            kernel_spat_exp = amp[0, 0] * kernels.Exp(scale=scale[0, 0])
-            # kernel2 : Matern - short-term variations (sky lines, emission lines)
-            kernel_spat_matern = amp[0, 1] * kernels.Matern52(scale=scale[0, 1])
-            kernel_spat = OneDKernel(kernel=kernel_spat_exp + kernel_spat_matern, axis=0)
-
-            # spectral varying parameters
-            # kernel1 : ExpSquared - long-term variations (continuum)
-            kernel_spec_exp = amp[1, 0] * kernels.Exp(scale=scale[1, 0])
-            # kernel2 : Matern - short-term variations
-            kernel_spec_matern = amp[1, 1] * kernels.Matern52(scale=scale[1, 1])
-            kernel_spec = OneDKernel(kernel=kernel_spec_exp + kernel_spec_matern, axis=1)
-            kernel = kernel_spat * kernel_spec
+            return _build_gp._build_2D_composite_kernel(amp, scale)
 
         # Model the 1D spectrum - 1D GP
         # ExpSquared + Matern52
@@ -240,11 +225,7 @@ class _build_gp:
             if self.ndim != 1:
                 raise ValueError("1D kernel: X must be a 1D array")
 
-            # kernel1 : Exp - long-term variations (continuum)
-            kernel_exp = amp[0] * kernels.quasisep.Exp(scale=scale[0])
-            # kernel2 : Matern - short-term variations (sky lines, emission lines)
-            kernel_matern = amp[1] * kernels.quasisep.Matern52(scale=scale[1])
-            kernel = kernel_exp + kernel_matern
+            return _build_gp._build_1D_composite_kernel(amp, scale)
 
         # Model the 2D spectrum - 2D GP
         # Matern52 * EmissionLine
@@ -259,8 +240,12 @@ class _build_gp:
                 warnings.warn(
                     "EmissionLine kernel: emission_lines not provided, the kernel is equivalent to ExpSquared"
                 )
-            # Use transforms.Linear to handle anisotropic kernels
-            base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
+
+            # # Use transforms.Linear to handle anisotropic kernels
+            # base_kernel = amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
+
+            base_kernel = _build_gp._build_2D_single_kernel(amp, scale)
+
             emission_line_kernel = EmissionLineKernel(
                 amp_line=10**self.log_amp_line,
                 scale_line=self.scale_line,
@@ -273,6 +258,57 @@ class _build_gp:
             raise ValueError("Invalid kernel type: supported types are 'HostProfile', '1D', '2D'")
 
         return kernel
+
+    @staticmethod
+    def _build_1D_composite_kernel(amp: Array, scale: Array) -> kernels.Kernel:
+        """
+        Build a composite kernel for 1D data.
+        Kernel (quasiseparable) = ExpSquared + Matern52
+        """
+        if amp.shape != (2,):
+            raise ValueError(f"Invalid amplitude shape {amp.shape}: expected (2,)")
+        # kernel1 : Exp - long-term variations (continuum)
+        kernel_exp = amp[0] * kernels.quasisep.Exp(scale=scale[0])
+        # kernel2 : Matern - short-term variations (sky lines, emission lines)
+        kernel_matern = amp[1] * kernels.quasisep.Matern52(scale=scale[1])
+        return kernel_exp + kernel_matern
+
+    @staticmethod
+    def _build_2D_single_kernel(amp: Array, scale: Array) -> kernels.Kernel:
+        """
+        Build a single kernel for 2D grid data.
+        Kernel = Matern52
+        """
+        if amp.shape != ():
+            raise ValueError(f"Invalid amplitude shape {amp.shape}: expected ()")
+        # Use transforms.Linear to handle anisotropic kernels
+        return amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
+
+    @staticmethod
+    def _build_2D_composite_kernel(amp: Array, scale: Array) -> kernels.Kernel:
+        """
+        Build a composite kernel for 2D grid data.
+        Kernel = (ExpSquared + Matern52) x (ExpSquared + Matern52)
+        """
+        # TODO: only 3 free parameters in amp
+        if amp.shape != (2, 2):
+            raise ValueError(f"Invalid amplitude shape {amp.shape}: expected (2, 2)")
+
+        # Spatially varying parameters
+        # kernel1 : Exp - long-term variations (continuum)
+        # Evaluate the kernel only on the spatial coordinates
+        kernel_spat_exp = amp[0, 0] * kernels.Exp(scale=scale[0, 0])
+        # kernel2 : Matern - short-term variations (sky lines, emission lines)
+        kernel_spat_matern = amp[0, 1] * kernels.Matern52(scale=scale[0, 1])
+        kernel_spat = OneDKernel(kernel=kernel_spat_exp + kernel_spat_matern, axis=0)
+
+        # spectral varying parameters
+        # kernel1 : ExpSquared - long-term variations (continuum)
+        kernel_spec_exp = amp[1, 0] * kernels.Exp(scale=scale[1, 0])
+        # kernel2 : Matern - short-term variations
+        kernel_spec_matern = amp[1, 1] * kernels.Matern52(scale=scale[1, 1])
+        kernel_spec = OneDKernel(kernel=kernel_spec_exp + kernel_spec_matern, axis=1)
+        return kernel_spat * kernel_spec
 
 
 class OneDKernel(kernels.Kernel):

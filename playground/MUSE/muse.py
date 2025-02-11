@@ -223,18 +223,18 @@ def plot_QA(spec_model: "SpecModel", targetid: str):
     """Plot the QA figures."""
     # Prior and posterior of the host profiles
     spec_model._plot_host_profile_prior()
-    plt.savefig(f"QA/{targetid}_host_profile_prior.pdf")
+    plt.savefig(f"{args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
     plt.close()
-    msgs.info(f"Saving the prior of the host profiles to QA/{targetid}_host_profile_prior.pdf")
+    msgs.info(f"Saving the prior of the host profiles to {args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
 
     spec_model._plot_host_profile_pred()
-    plt.savefig(f"QA/{targetid}_host_profile_pred.pdf")
+    plt.savefig(f"{args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
     plt.close()
-    msgs.info(f"Saving the posterior of the host profiles to QA/{targetid}_host_profile_pred.pdf")
+    msgs.info(f"Saving the posterior of the host profiles to {args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
 
     # Raw, model, and residual
     spec_model._plot_pred()
-    plt.savefig(f"{args.galaxy}/QA/{targetid}_pred.pdf")
+    plt.savefig(f"{args.galaxy}/{args.galaxy}/QA/{targetid}_pred.pdf")
     plt.close()
     msgs.info(f"Saving the raw, model, and residual to {args.galaxy}/QA/{targetid}_pred.pdf")
 
