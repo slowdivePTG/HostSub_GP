@@ -6,6 +6,7 @@ import jax.numpy as jnp
 
 # jax.config.update("jax_enable_x64", True)
 
+from functools import partial
 from ._utils import msgs
 
 from jax._src.typing import ArrayLike, Array
@@ -15,7 +16,7 @@ class SpecWrapper:
     """A wrapper for the 1D and 2D spectra."""
 
     def __init__(
-        self, points: ArrayLike | tuple[ArrayLike, ArrayLike], values: ArrayLike, values_err: ArrayLike = None
+        self, points: ArrayLike | tuple[ArrayLike, ArrayLike], values: ArrayLike = None, values_err: ArrayLike = None
     ):
         """
         Initialize the SpecWrapper object.
@@ -24,7 +25,7 @@ class SpecWrapper:
         ----------
         points : ArrayLike | tuple[ArrayLike, ArrayLike]
             The coordinates of the spectrum.
-        values : ArrayLike
+        values : ArrayLike, optional
             The values of the spectrum.
         values_err : ArrayLike, optional
             The errors of the values.
@@ -41,33 +42,38 @@ class SpecWrapper:
                 raise ValueError("Invalid shape of the input coordinates.")
             self.spec = self.spec_img = jnp.array(points)
             self.X = self.spec[:, None]
-
+        
+        self.shape = self.spec_img.shape
+        
         # Loading the values and errors
-        if not (((values.ndim == 1) | (values.ndim == 2)) & (values.shape == self.spec_img.shape)):
-            raise ValueError("Invalid shape of the input values.")
-        if values_err is not None:
-            if values.shape != values_err.shape:
-                raise ValueError("Values and errors shape mismatch.")
-        Y = jnp.array(values)
-        if values_err is None:
-            Yerr = jnp.zeros_like(Y)
-            msgs.warning("No error is provided. Assuming the errors are zeros.")
+        if values is None:
+            # No values are provided, only coordinates are loaded
+            self.Y = self.Yerr = None
+            self.y = self.yerr = None
         else:
-            Yerr = jnp.array(values_err)
-        self.Y = jnp.where(jnp.isfinite(Yerr), Y, np.nan)
-        self.Yerr = jnp.where(jnp.isfinite(Yerr), Yerr, np.nan)
+            if not (((values.ndim == 1) | (values.ndim == 2)) & (values.shape == self.spec_img.shape)):
+                raise ValueError("Invalid shape of the input values.")
+            if values_err is not None:
+                if values.shape != values_err.shape:
+                    raise ValueError("Values and errors shape mismatch.")
+            Y = jnp.array(values)
+            if values_err is None:
+                Yerr = jnp.zeros_like(Y)
+                msgs.warning("No error is provided. Assuming the errors are zeros.")
+            else:
+                Yerr = jnp.array(values_err)
+            self.Y = jnp.where(jnp.isfinite(Yerr), Y, np.nan)
+            self.Yerr = jnp.where(jnp.isfinite(Yerr), Yerr, np.nan)
 
-        self.shape = self.Y.shape
-
-        # Flatten the values and errors for GP
-        if self.Y.ndim == 1:
-            self.y = self.Y.copy()
-            self.yerr = self.Yerr.copy()
-        elif self.Y.ndim == 2:
-            self.y = self.Y.ravel()
-            self.yerr = self.Yerr.ravel()
-        else:
-            raise ValueError("Y shape error")
+            # Flatten the values and errors for GP
+            if self.Y.ndim == 1:
+                self.y = self.Y.copy()
+                self.yerr = self.Yerr.copy()
+            elif self.Y.ndim == 2:
+                self.y = self.Y.ravel()
+                self.yerr = self.Yerr.ravel()
+            else:
+                raise ValueError("Y shape error")
 
     def sigma_clip(
         self, sigma: float = 5.0, clip_cr: bool = False, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None
@@ -89,6 +95,9 @@ class SpecWrapper:
         SpecWrapper
             The clipped spectrum.
         """
+
+        if self.Y is None:
+            raise ValueError("sigma_clip requires non-empty spectra.")
 
         def clip(Y: Array, Yerr: Array) -> tuple[Array, Array]:
             """
@@ -148,6 +157,9 @@ class SpecWrapper:
         """
         from scipy.interpolate import griddata
 
+        if self.Y is None:
+            raise ValueError("Filling NaN requires non-empty spectra.")
+
         Y_masked = np.ma.masked_invalid(self.Y)
         Y_err_masked = np.ma.masked_invalid(self.Yerr)
         valid = ~Y_masked.mask
@@ -184,6 +196,9 @@ class SpecWrapper:
         SpecWrapper
             The marginalized 1D spectrum.
         """
+        if self.Y is None:
+            raise ValueError("Marginalizing requires non-empty spectra.")
+
         if (weights is None) or jnp.all(self.Yerr == 0):
             w = jnp.ones_like(self.Y)
         elif isinstance(weights, (ArrayLike, Array)):
@@ -244,6 +259,9 @@ class SpecWrapper:
         SpecWrapper
             The subtracted spectrum.
         """
+        if self.Y is None:
+            raise ValueError("Subtraction requires non-empty spectra.")
+
         if ((len(other.shape) == 1) & (other.shape[-1] != self.shape[-1])) | (
             (len(other.shape) == 2) & (other.shape != self.shape)
         ):
@@ -274,18 +292,43 @@ class SpecWrapper:
             values_err=self.Yerr[spat_filter],
         )
 
-    def convolve(self, kernel: ArrayLike) -> "SpecWrapper":
+    def convolve(self, kernel_wid: float | ArrayLike) -> "SpecWrapper":
         """
         Convolve the spectrum with a kernel.
 
         Parameters
         ----------
-        kernel : ArrayLike
-            The convolution kernel.
+        kernel_wid : float | ArrayLike
+            The width (FWHM) of the Gaussian kernel
 
         Returns
         -------
         SpecWrapper
-            The convolved spectrum.
+            The seeing-matched spectrum.
         """
-        raise NotImplementedError("Convolution is not implemented yet.")
+        if self.Y is None:
+            raise ValueError("Convolution requires non-empty spectra.")
+
+        def gaussian_filter(y: Array, sigma: Array) -> Array:
+            from scipy.ndimage import gaussian_filter1d
+
+            y_out = np.zeros_like(y)
+            for k in range(len(sigma)):
+                y_out[:, k] = gaussian_filter1d(y[:, k], sigma[k])
+            return y_out
+
+        if isinstance(kernel_wid, float):
+            kernel_sigma = jnp.ones_like(self.spec) * kernel_wid / 2.355
+        elif isinstance(kernel_wid, ArrayLike):
+            if kernel_wid.size != self.spec.size:
+                raise ValueError(
+                    f"The length of the kernel_wid array ({kernel_wid.size}) does not match the spectrum ({self.spec.size})."
+                )
+            kernel_sigma = kernel_wid / 2.355
+        else:
+            raise ValueError("Invalid kernel width.")
+
+        Y_conv = gaussian_filter(self.Y, kernel_sigma)
+        Yerr_conv = gaussian_filter(self.Yerr, kernel_sigma)
+
+        return SpecWrapper(points=(self.spat, self.spec), values=Y_conv, values_err=Yerr_conv)

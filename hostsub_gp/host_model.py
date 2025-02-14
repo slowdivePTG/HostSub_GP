@@ -26,7 +26,7 @@ from jax._src.typing import Array, ArrayLike
 class HostProfile:
     def __init__(
         self,
-        flts: str,
+        filters: str,
         wv_eff: list[float],
         spat_slit: list[ArrayLike],
         counts_slit: list[ArrayLike],
@@ -57,7 +57,7 @@ class HostProfile:
         pixel_scale : float, optional
             Pixel scale in arcsec.
         """
-        self.flts = flts
+        self.filters = filters
         self.wv_eff = wv_eff
 
         prof_slit, prof_err_slit = [], []
@@ -71,7 +71,7 @@ class HostProfile:
         else:
             mask_offset = 0
 
-        for k in range(len(self.flts)):
+        for k in range(len(self.filters)):
             if spec_model is not None:
                 host_left = (
                     -spec_model.host_wid / 2 + spec_model.mask_offset,
@@ -115,13 +115,13 @@ class HostProfile:
 
         host_idx = [
             np.argwhere(np.abs(spat_slit[k] - mask_offset) <= np.ceil(self.host_wid / 2)).ravel()
-            for k in range(len(self.flts))
+            for k in range(len(self.filters))
         ]
 
-        self.prof_slit = [prof_slit[k][host_idx[k]] for k in range(len(self.flts))]
-        self.prof_err_slit = [prof_err_slit[k][host_idx[k]] for k in range(len(self.flts))]
-        self.spat_slit = [spat_slit[k][host_idx[k]] for k in range(len(self.flts))]
-        self.wv_slit = [np.ones_like(host_idx[k]) * self.wv_eff[k] for k in range(len(self.flts))]
+        self.prof_slit = [prof_slit[k][host_idx[k]] for k in range(len(self.filters))]
+        self.prof_err_slit = [prof_err_slit[k][host_idx[k]] for k in range(len(self.filters))]
+        self.spat_slit = [spat_slit[k][host_idx[k]] for k in range(len(self.filters))]
+        self.wv_slit = [np.ones_like(host_idx[k]) * self.wv_eff[k] for k in range(len(self.filters))]
         self.prof = jnp.concatenate(self.prof_slit)
         self.prof_err = jnp.concatenate(self.prof_err_slit)
         self.X = jnp.stack([jnp.concatenate(self.spat_slit), jnp.concatenate(self.wv_slit)], axis=-1)
@@ -305,7 +305,7 @@ class HostProfile:
             counts_err_slit.append(err)
 
         return cls(
-            flts=flts,
+            filters=flts,
             wv_eff=wv_eff,
             spat_slit=spat_slit,
             counts_slit=counts_slit,
@@ -326,10 +326,10 @@ class HostProfile:
             A function that returns the mean and variance of the host profile.
         """
         # No prior photometric data
-        if len(self.flts) == 0:
+        if len(self.filters) == 0:
             host_prior = lambda _: (jnp.float32(1 / self.host_wid), jnp.float32(0))  # constant, variance = 0
         # Single band
-        elif len(self.flts) == 1:
+        elif len(self.filters) == 1:
             params = dict(
                 log_amp=np.float64(-3),
                 log_scale=np.float64(-0.5),
@@ -389,13 +389,13 @@ class HostProfile:
         save = kwargs.get("save", None)
 
         _, ax = plt.subplots(
-            len(self.flts), 1, figsize=(6, 2 * len(self.flts)), sharex=True, sharey=True, constrained_layout=True
+            len(self.filters), 1, figsize=(6, 2 * len(self.filters)), sharex=True, sharey=True, constrained_layout=True
         )
         ax = np.atleast_1d(ax)
         cmap = plt.cm.get_cmap("coolwarm")
-        norm = plt.Normalize(vmin=0, vmax=len(self.flts) - 1)
-        for k in range(len(self.flts)):
-            ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.flts[k]}", color=cmap(norm(k)))
+        norm = plt.Normalize(vmin=0, vmax=len(self.filters) - 1)
+        for k in range(len(self.filters)):
+            ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.filters[k]}", color=cmap(norm(k)))
             ax[k].plot(
                 self.spat_slit[k],
                 host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1))[0],
@@ -411,7 +411,7 @@ class HostProfile:
             )
             ax[k].set_ylabel(r"$\mathrm{Profile}$")
             ax[k].text(
-                0.05, 0.8, f"{self.flts[k]}: {self.wv_eff[k]:.0f} Ang", color=cmap(norm(k)), transform=ax[k].transAxes
+                0.05, 0.8, f"{self.filters[k]}: {self.wv_eff[k]:.0f} Ang", color=cmap(norm(k)), transform=ax[k].transAxes
             )
         ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         if save is not None:

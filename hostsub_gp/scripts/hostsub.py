@@ -145,10 +145,11 @@ class HostSub(ScriptBase):
         host_sub_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
         host_sub_cfg["sky_region"] = Float(par_hostsub.get("sky_region", [-5.0, 5.0]))
         host_sub_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
-        host_sub_cfg["batch_2d"] = Int(par_hostsub.get("batch_2d", [2, 128]))
         host_sub_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
         host_sub_cfg["spec_resln"] = Float(par_hostsub.get("spec_resln", None))
-        host_sub_cfg["sigma_clip"] = Float(par_hostsub.get("sigma_clip", 5.0))
+        spec_wrapper_cfg = {}
+        spec_wrapper_cfg["batch_2d"] = Int(par_hostsub.get("batch_2d", [2, 128]))
+        spec_wrapper_cfg["sigma_clip"] = Float(par_hostsub.get("sigma_clip", 5.0))
 
         # Parameters for identifying host emission lines
         par_host_emission = par_hostsub.get("host_emission", {})
@@ -164,10 +165,13 @@ class HostSub(ScriptBase):
         host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
         host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
-        spec_model = spec_data.to_SpecModel(
-            save=f"QA/{output_suffix}_raw.pdf",
+        spec_model = spec_data.to_SpecModel(**host_sub_cfg)
+
+        spec_model.construct_spec_wrapper(
+            f_obs=spec_model.f_obs,
             host_emission_cfg=host_emission_cfg,
-            **host_sub_cfg,
+            **spec_wrapper_cfg,
+            save=f"QA/{output_suffix}_raw.pdf",
         )
 
         # Model the host prior
@@ -223,7 +227,8 @@ class HostSub(ScriptBase):
                         # [spec_model.spat_resln / 2.355, spec_model.spat_resln / 2.355],
                         # # spectral direction (slow & fast)
                         # [spec_model.spec_resln / 2.355, spec_model.spec_resln / 2.355],
-                        spec_model.spat_resln / 2.355, spec_model.spec_resln / 2.355,
+                        spec_model.spat_resln / 2.355,
+                        spec_model.spec_resln / 2.355,
                     ],
                     # upper bound
                     [
@@ -231,7 +236,8 @@ class HostSub(ScriptBase):
                         # [spec_model.spat_resln * 2, spec_model.spat_resln],
                         # # spectral direction (slow & fast)
                         # [1e4, 1e4],
-                        spec_model.spat_resln * 2, 1e4,
+                        spec_model.spat_resln * 2,
+                        1e4,
                     ],
                 ]
             ),
@@ -249,30 +255,17 @@ class HostSub(ScriptBase):
 
         # QA plots
         # Raw, model, and residual
-        spec_model._plot_pred()
-        plt.savefig(f"QA/{output_suffix}_pred.pdf")
-        plt.close()
-        msgs.info(f"Saving the raw, model, and residual plots to QA/{output_suffix}_pred.pdf")
+        spec_model._plot_pred(show=False, save=f"QA/{output_suffix}_pred.pdf")
 
         # Prior and posterior of the host profiles
-        spec_model._plot_host_profile_prior()
-        plt.savefig(f"QA/{output_suffix}_host_profile_prior.pdf")
-        plt.close()
-        msgs.info(f"Saving the prior of the host profiles to QA/{output_suffix}_host_profile_prior.pdf")
-
-        spec_model._plot_host_profile_pred()
-        plt.savefig(f"QA/{output_suffix}_host_profile_pred.pdf")
-        plt.close()
-        msgs.info(f"Saving the posterior of the host profiles to QA/{output_suffix}_host_profile_pred.pdf")
+        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
+        spec_model._plot_host_profile_pred(show=False, save=f"QA/{output_suffix}_host_profile_pred.pdf")
 
         # Extract the science spectrum
-        spec_model.extract_sci()
+        spec_model.extract_sci(show=False, save=f"QA/{output_suffix}_sci.pdf")
         np.savetxt(
             f"QA/{output_suffix}_sci.txt",
             np.array([spec_model.f_sci_pred_1d.X.ravel(), spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr]).T,
             fmt="%.4f %.6e %.6e",
         )
-        plt.savefig(f"QA/{output_suffix}_sci.pdf")
-        plt.close()
         msgs.info(f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt")
-        msgs.info(f"Saving the extracted science spectrum plot to QA/{output_suffix}_sci.pdf")
