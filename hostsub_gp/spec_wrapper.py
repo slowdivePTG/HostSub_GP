@@ -59,7 +59,7 @@ class SpecWrapper:
             Y = jnp.array(values)
             if values_err is None:
                 Yerr = jnp.zeros_like(Y)
-                msgs.warning("No error is provided. Assuming the errors are zeros.")
+                # msgs.warning("No error is provided. Assuming the errors are zeros.")
             else:
                 Yerr = jnp.array(values_err)
             self.Y = jnp.where(jnp.isfinite(Yerr), Y, np.nan)
@@ -299,7 +299,7 @@ class SpecWrapper:
         Parameters
         ----------
         kernel_wid : float | ArrayLike
-            The width (FWHM) of the Gaussian kernel
+            The width (FWHM in pixel) of the Gaussian kernel
 
         Returns
         -------
@@ -310,12 +310,26 @@ class SpecWrapper:
             raise ValueError("Convolution requires non-empty spectra.")
 
         def gaussian_filter(y: Array, sigma: Array) -> Array:
-            from scipy.ndimage import gaussian_filter1d
+            """
+            Vectorized 1D Gaussian filter
+            """
+            @partial(jax.jit, static_argnums=(2,))
+            def jax_gaussian_filter1d(y: Array, sigma: float, max_kernel_size = 30) -> Array:
+                """
+                JAX implementation of 1D Gaussian filter
+                """
+                # Create Gaussian kernel
+                radius = max_kernel_size // 2
+                x = jnp.arange(-radius, radius + 1)
+                kernel = jnp.exp(-0.5 * (x / sigma) ** 2)
+                kernel = kernel / jnp.sum(kernel)
+                
+                # Pad and convolve
+                pad_width = len(kernel) // 2
+                y_padded = jnp.pad(y, (pad_width, pad_width), mode="constant")
+                return jnp.convolve(y_padded, kernel, mode="valid")
 
-            y_out = np.zeros_like(y)
-            for k in range(len(sigma)):
-                y_out[:, k] = gaussian_filter1d(y[:, k], sigma[k])
-            return y_out
+            return jax.vmap(jax_gaussian_filter1d, in_axes=(1, 0), out_axes=1)(y, sigma)
 
         if isinstance(kernel_wid, float):
             kernel_sigma = jnp.ones_like(self.spec) * kernel_wid / 2.355

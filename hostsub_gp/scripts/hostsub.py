@@ -171,13 +171,24 @@ class HostSub(ScriptBase):
             f_obs=spec_model.f_obs,
             host_emission_cfg=host_emission_cfg,
             **spec_wrapper_cfg,
-            save=f"QA/{output_suffix}_raw.pdf",
+            # save=f"QA/{output_suffix}_raw.pdf",
         )
 
         # Model the host prior
         spec_model.model_host_prior(
             filters=par_hostsub.get("filters", "ugrizy"),
             save=f"QA/{output_suffix}_host_prior.pdf",
+        )
+
+        # Match the seeing of the host and science spectra
+        dseeing_opt = spec_model._match_seeing()
+
+        # Update the SpecWrapper objects
+        spec_model.construct_spec_wrapper(
+            f_obs=spec_model.f_obs.convolve(dseeing_opt / spec_model.pixel_scale),
+            host_emission_cfg=host_emission_cfg,
+            **spec_wrapper_cfg,
+            save=f"QA/{output_suffix}_raw.pdf",
         )
 
         # Skip the subsequent modeling if requested

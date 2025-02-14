@@ -252,7 +252,9 @@ class SpecModel:
         # Total flux in each row: weighted sum of the flux in each row
         self.f_host_1d = self.f_host.fill_nan().marginalize(margin_type="sum")
 
-        self.f_batch_2d = self.get_normalized_batch_spec(self._spat_batch_2d_idx, self._spec_batch_2d_idx)
+        self.f_batch_2d = self.get_normalized_batch_spec(
+            self._spat_batch_2d_idx, self._spec_batch_2d_idx, f_2d=self.f_sky_sub, f_1d_norm=self.f_host_1d
+        )
         self.f_host_batch_2d = self.f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
         msgs.info(f"Batched 2D galaxy spectrum: {self.f_host_batch_2d.shape}")
 
@@ -392,7 +394,7 @@ class SpecModel:
         )
 
     @msgs.timer
-    def _match_seeing(self, max_dseeing: float = 1) -> Array:
+    def _match_seeing(self, min_dseeing: float = 0.0, max_dseeing: float = 0.5, step_dseeing: float = 0.01) -> Array:
         """
         Match the seeing of the host galaxy profile with the instrumental seeing.
         """
@@ -407,30 +409,47 @@ class SpecModel:
         chi2 = []
 
         # If the seeing of the archival images is worse than the spectra
-        _f_obs_raw = self.f_obs.sigma_clip().fill_nan()
-        for dseeing in np.linspace(0, max_dseeing, 100)[1:]:
+        _f_obs_raw = self.f_obs  # .sigma_clip().fill_nan()
+        dseeing_lst = np.arange(min_dseeing, max_dseeing, step=step_dseeing) + step_dseeing
+        for k, dseeing in enumerate(dseeing_lst):
             # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.75)
             dseeing_spec = dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-1 / 2.75)
             _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
 
             # Sky subtraction
-            _f_sky = _f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip().fill_nan()
+            _f_sky = _f_obs.apply_spatial_filter(self.spat_filter["sky"])
             _f_sky_sub = _f_obs.subtract(_f_sky.marginalize(margin_type="mean"))
             _f_host = _f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
-            _f_host_1d = _f_host.marginalize(margin_type="mean")
+            _f_host_1d = _f_host.marginalize(margin_type="sum")
 
             # Batch the 2D spectrum
-            _f_batch_2d = self.get_normalized_batch_spec(_spat_batch_2d_idx, _spec_batch_2d_idx, f_1d_norm=_f_host_1d)
+            _f_batch_2d = self.get_normalized_batch_spec(
+                _spat_batch_2d_idx, _spec_batch_2d_idx, f_2d=_f_sky_sub, f_1d_norm=_f_host_1d
+            )
             _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
 
+            # Get the prior
+            if k == 0:
+                prior_host_batch, _ = self.host_flux_prior(_f_host_batch_2d.X)
+                _f_host_batch_prior = SpecWrapper(
+                    points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
+                    values=prior_host_batch.reshape(_f_host_batch_2d.shape),
+                )
+
             # Calculate the distance relative to the prior
-            _dist_host_batch_2d = _f_host_batch_2d.subtract(self.f_host_batch_prior)
+            _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
             # Calculate the chi2
             chi2.append(jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2))
 
         # Find the best seeing
-        best_dseeing = np.linspace(0, 1, 100)[np.argmin(chi2)]
+        plt.figure(figsize=(6, 4), constrained_layout=True)
+        plt.plot(dseeing_lst, chi2, color="tab:blue")
+        plt.xlabel(r"$\Delta \mathrm{Seeing\ [arcsec]}$")
+        plt.ylabel(r"$\chi^2$")
+        plt.show()
+        
+        best_dseeing = dseeing_lst[np.argmin(chi2)]
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
         return best_dseeing * (self.spec / self.spec.mean()) ** (-1 / 2.75)
 
@@ -880,47 +899,55 @@ class SpecModel:
     ###############################################################################
 
     def get_normalized_batch_spec(
-        self, spat_batch_idx: list, spec_batch_idx: list, f_1d_norm: SpecWrapper = None
+        self, spat_batch_idx: list, spec_batch_idx: list, f_2d: SpecWrapper, f_1d_norm: SpecWrapper
     ) -> SpecWrapper:
         """
         Get the batched 2D spectrum normalized by a 1D spectrum.
 
         Parameters
         ----------
-        _spat_batch_idx : ArrayLike
+        spat_batch_idx : ArrayLike
             Batch indices for the spatial axis.
-        _spec_batch_idx : ArrayLike
+        spec_batch_idx : ArrayLike
             Batch indices for the spectral axis.
+        f_2d : SpecWrapper, optional
+            The 2D spectrum to be batched.
+        f_1d_norm : SpecWrapper, optional
+            The 1D spectrum to normalize the 2D spectrum.
 
         Returns
         -------
         SpecWrapper
             The batched 2D spectrum.
         """
-        if f_1d_norm is None:
-            f_1d_norm = self.f_host_1d
 
         # New coordinates: mean of the batch
         shape_batch_2d = (len(spat_batch_idx), len(spec_batch_idx))
-        spat_batch_2d = jnp.asarray([self.spat[idx].mean() for idx in spat_batch_idx])
-        spec_batch_2d = jnp.asarray([self.spec[idx].mean() for idx in spec_batch_idx])
+        spat_batch_2d = np.asarray([self.spat[idx].mean() for idx in spat_batch_idx])
+        spec_batch_2d = np.asarray([self.spec[idx].mean() for idx in spec_batch_idx])
 
         # New values: mean of the batch
         values_batch_2d = np.empty(shape_batch_2d)
         values_err_batch_2d = np.empty(shape_batch_2d)
-        for x in range(shape_batch_2d[0]):
-            for y in range(shape_batch_2d[1]):
+
+        for y, idx_spec in enumerate(spec_batch_idx):
+            # Get the 1D spectrum within the spectral batch
+            Y_1d = f_1d_norm.Y[idx_spec]
+            Y_err_1d = f_1d_norm.Yerr[idx_spec]
+            # Get the 2D spectrum within the spectral batch
+            Y_2d_spec = f_2d.Y[:, idx_spec]
+            Y_err_2d_spec = f_2d.Yerr[:, idx_spec]
+
+            for x, idx_spat in enumerate(spat_batch_idx):
                 # Step 1: Bin along the spatial axis
-                Y_2d = np.nanmean(self.f_sky_sub.Y[spat_batch_idx[x], :][:, spec_batch_idx[y]], axis=0)
-                Y_err_2d = (
-                    np.nanmean(self.f_sky_sub.Yerr[spat_batch_idx[x], :][:, spec_batch_idx[y]] ** 2, axis=0)
-                    / len(spat_batch_idx[x])
-                ) ** 0.5
-                Y_1d = f_1d_norm.Y[spec_batch_idx[y]]
-                Y_err_1d = f_1d_norm.Yerr[spec_batch_idx[y]]
+                n_spat = len(idx_spat)
+                Y_2d = np.nanmean(Y_2d_spec[idx_spat], axis=0)
+                Y_err_2d = (np.nanmean(Y_err_2d_spec[idx_spat] ** 2, axis=0) / n_spat) ** 0.5
+
                 # Step 2: Estimate the flux ratios (normalized profiles)
                 Y_2d_1d = Y_2d / Y_1d
                 Y_err_2d_1d = Y_2d_1d * ((Y_err_2d / Y_2d) ** 2 + (Y_err_1d / Y_1d) ** 2) ** 0.5
+
                 # Step 3: Bin along the spectral axis
                 values_batch_2d[x, y] = np.nanmedian(Y_2d_1d)
                 values_err_batch_2d[x, y] = np.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5
@@ -993,7 +1020,8 @@ class SpecModel:
         emission_lines_idx, emission_lines = self._find_host_emission(**kwargs)
         if "find_host_emission" in kwargs:
             self.emission_lines = emission_lines
-            msgs.info(f"Emission lines found at: {self.emission_lines}")
+            if len(emission_lines) > 0:
+                msgs.info(f"Emission lines found at: {self.emission_lines}")
 
         emission_lines_idx = np.concatenate([[0], emission_lines_idx, [self.spec.size - 1]])
         batch_edges = []
@@ -1016,7 +1044,7 @@ class SpecModel:
         p_value: float = 0.05,
         kernel_wid: int = None,
         z: float = None,
-        z_err: float = None
+        z_err: float = None,
     ) -> tuple[Array, Array]:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
