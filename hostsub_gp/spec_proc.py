@@ -18,6 +18,7 @@ from .interp import Interp1D_Grid, Interp2D_Grid
 from .spec_model import SpecModel
 from .host_model import HostProfile
 from ._utils import plt, msgs
+from ._utils._plt import show_and_save
 
 
 class SpecData:
@@ -587,13 +588,50 @@ class SpecData:
 
         return flux_rect, flux_ivar_rect
 
+    @show_and_save
     def get_offset(
         self, points: ArrayLike, flux: ArrayLike, show: bool = True, slit_len: float = None, mask_wid: float = 2.0
     ) -> float:
         """
         Center the trace of the science object.
         """
-        from scipy.stats import binned_statistic
+
+        def binned_mean_with_clipping(
+            points: ArrayLike, values: ArrayLike, bins: int, bin_range: tuple[float, float], **kwargs
+        ):
+            from astropy.stats import sigma_clip, mad_std
+
+            bin_edges = np.linspace(bin_range[0], bin_range[1], bins + 1)
+            bin_indices = np.digitize(points, bin_edges) - 1
+
+            # Initialize an array to store the sigma-clipped statistics
+            obs = np.full(bins, np.nan)
+
+            # Iterate over each bin
+            n_bin = np.array([np.sum(bin_indices == i) for i in range(bins)])
+            med_n_bin = np.median(n_bin)
+            std_n_bin = mad_std(n_bin)
+            for i in range(bins):
+                # Skip the bin if there are two few points
+                if n_bin[i] <= med_n_bin - 3 * std_n_bin:
+                    continue
+                # Get the indices of points in the current bin
+                bin_mask = bin_indices == i
+                valid_mask = np.isfinite(values)
+
+                # Extract the values in the current bin
+                y_in_bin = values[bin_mask & valid_mask]
+
+                # Apply sigma clipping to the values in the bin
+                y_clipped = sigma_clip(y_in_bin, stdfunc="mad_std", **kwargs)
+
+                # Compute the statistic (e.g., mean) of the clipped values (requires at least 95% valid data)
+                if (~y_clipped.mask).sum() > 0.95 * len(y_clipped):
+                    obs[i] = np.nanmean(y_clipped[~y_clipped.mask])
+
+            obs[obs <= 0] = np.nan
+
+            return obs
 
         if slit_len is None:
             spat = self.spat_rect
@@ -613,34 +651,27 @@ class SpecData:
             position_angle=self.position_angle,
         ).model_host_profile_prior()
 
-        flag = (
-            jnp.isfinite(points[:, :, 0])
-            & jnp.isfinite(flux)
-            # & (flux > jnp.nanpercentile(flux, 25))  # mask the low flux region
-            # & (flux < jnp.nanpercentile(flux, 75))  # mask the high flux region
-        )
-
-        sci_obj_mask = jnp.abs(spat) >= mask_wid
-
-        # Profile from the 2D spectrum - 75 percentile in each spatial bin
-        obs, _, _ = binned_statistic(
-            points[:, :, 0][flag],
-            flux[flag],
-            statistic="median",
+        obs = binned_mean_with_clipping(
+            points[:, :, 0],
+            flux,
             bins=len(spat),
-            range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
+            bin_range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
+            sigma=5,
         )
+
+        sci_obj_mask = (jnp.abs(spat) >= mask_wid) & jnp.isfinite(obs)
 
         # Profile from the prior - flux evaluated at the weighted-mean wavelength
-        wv_mean = jnp.mean(points[:, :, 1][flag] * flux[flag]) / jnp.mean(flux[flag]) * jnp.ones_like(spat)
+        wv_mean = jnp.nanmean(points[..., 1] * flux) / jnp.nanmean(flux) * jnp.ones_like(spat)
 
         def corr_coef(offset):
             dist = spat - offset
             prior = host_prior(jnp.stack([dist, wv_mean], axis=-1))[0]
             return jnp.corrcoef(
-                (prior[sci_obj_mask] - prior[sci_obj_mask].min())
-                / (prior[sci_obj_mask].max() - prior[sci_obj_mask].min()),
-                (obs[sci_obj_mask] - obs[sci_obj_mask].min()) / (obs[sci_obj_mask].max() - obs[sci_obj_mask].min()),
+                (prior[sci_obj_mask] - jnp.nanmin(prior[sci_obj_mask]))
+                / (jnp.nanmax(prior[sci_obj_mask]) - jnp.nanmin(prior[sci_obj_mask])),
+                (obs[sci_obj_mask] - jnp.nanmin(obs[sci_obj_mask]))
+                / (jnp.nanmax(obs[sci_obj_mask]) - jnp.nanmin(obs[sci_obj_mask])),
             )[0, 1]
 
         offset_list = np.arange(-1, 1 + self.pixel_scale / 10, self.pixel_scale / 10)
@@ -648,40 +679,38 @@ class SpecData:
 
         offset = offset_list[np.argmax(ccf)]
 
-        if show:
-            _, ax = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
-            ax[0].plot(offset_list, ccf)
-            ax[0].set_xlabel(r"$\mathrm{SCI - STD\ [arcsec]}$")
-            ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
-            ax[0].xaxis.set_major_locator(plt.MultipleLocator(0.5))
-            ax[0].xaxis.set_minor_locator(plt.MultipleLocator(0.1))
-            ax[0].axvline(offset, color="k", linestyle="--")
+        _, ax = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+        ax[0].plot(offset_list, ccf)
+        ax[0].set_xlabel(r"$\mathrm{SCI - STD\ [arcsec]}$")
+        ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
+        ax[0].xaxis.set_major_locator(plt.MultipleLocator(0.2))
+        ax[0].xaxis.set_minor_locator(plt.MultipleLocator(0.02))
+        ax[0].axvline(offset, color="k", linestyle="--")
 
-            ax[1].scatter(
-                spat - offset,
-                (obs - obs.min()) / (obs.max() - obs.min()),
-                label="obs",
-            )
+        ax[1].scatter(
+            spat - offset,
+            (obs - jnp.nanmin(obs)) / (jnp.nanmax(obs) - jnp.nanmin(obs)),
+            label="obs",
+        )
 
-            profile_prior = host_prior(
-                jnp.stack(
-                    [
-                        spat - offset,
-                        jnp.mean(points[:, :, 1][flag] * flux[flag]) / jnp.mean(flux[flag]) * jnp.ones_like(spat),
-                    ],
-                    axis=-1,
-                )
-            )[0]
-            ax[1].scatter(
-                spat - offset,
-                (profile_prior - profile_prior.min()) / (profile_prior.max() - profile_prior.min()),
-                label="prior",
+        profile_prior = host_prior(
+            jnp.stack(
+                [
+                    spat - offset,
+                    jnp.nanmean(points[:, :, 1] * flux) / jnp.nanmean(flux) * jnp.ones_like(spat),
+                ],
+                axis=-1,
             )
-            ax[1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
-            ax[1].set_ylabel(r"$\mathrm{Normalized\ Counts}$")
-            ax[1].xaxis.set_major_locator(plt.MultipleLocator(5))
-            ax[1].xaxis.set_minor_locator(plt.MultipleLocator(1))
-            ax[1].legend()
-            plt.show()
+        )[0]
+        ax[1].scatter(
+            spat - offset,
+            (profile_prior - profile_prior.min()) / (profile_prior.max() - profile_prior.min()),
+            label="prior",
+        )
+        ax[1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+        ax[1].set_ylabel(r"$\mathrm{Normalized\ Counts}$")
+        ax[1].xaxis.set_major_locator(plt.MultipleLocator(5))
+        ax[1].xaxis.set_minor_locator(plt.MultipleLocator(1))
+        ax[1].legend()
 
         return offset
