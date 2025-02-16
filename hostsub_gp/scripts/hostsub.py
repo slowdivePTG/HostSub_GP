@@ -89,11 +89,11 @@ class HostSub(ScriptBase):
             # Get the parameters for host subtraction
             par_hostsub = par.get("hostsub", {})
             raw_dir = par_hostsub.get("raw_dir", None)
-            spec2d_cfg = {}
-            spec2d_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
-            spec2d_cfg["ra"] = Float(par_hostsub.get("ra", None))
-            spec2d_cfg["dec"] = Float(par_hostsub.get("dec", None))
-            spec2d_cfg["sky_offset"] = Float(par_hostsub.get("sky_offset", None))
+            spec_data_cfg = {}
+            spec_data_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
+            spec_data_cfg["ra"] = Float(par_hostsub.get("ra", None))
+            spec_data_cfg["dec"] = Float(par_hostsub.get("dec", None))
+            spec_data_cfg["sky_offset"] = Float(par_hostsub.get("sky_offset", None))
 
             # Run the host subtraction
             if args.overwrite or not os.path.exists(sci_rect_file):
@@ -104,7 +104,7 @@ class HostSub(ScriptBase):
                     std_file=std_file,
                     obj_id=objid,
                     spec_rect=spec_rect,
-                    **spec2d_cfg,
+                    **spec_data_cfg,
                 )
                 spec_rect = spec_data.spec_rect
             else:
@@ -138,15 +138,17 @@ class HostSub(ScriptBase):
 
         # Convert the 2D spectrum to a SpecModel object
         # Parameters for defining the SpecModel object
-        host_sub_cfg = {}
-        host_sub_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
-        host_sub_cfg["spec_range"] = None if "spec_range" not in par_hostsub else Float(par_hostsub["spec_range"])
-        host_sub_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
-        host_sub_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
-        host_sub_cfg["sky_region"] = Float(par_hostsub.get("sky_region", [-5.0, 5.0]))
-        host_sub_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
-        host_sub_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
-        host_sub_cfg["spec_resln"] = Float(par_hostsub.get("spec_resln", None))
+        spec_model_cfg = {}
+        spec_model_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
+        spec_model_cfg["spec_range"] = None if "spec_range" not in par_hostsub else Float(par_hostsub["spec_range"])
+        spec_model_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
+        spec_model_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
+        spec_model_cfg["sky_region"] = Float(par_hostsub.get("sky_region", [-5.0, 5.0]))
+        spec_model_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
+        spec_model_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
+        spec_model_cfg["spec_resln"] = Float(par_hostsub.get("spec_resln", None))
+
+        # Parameters for all the SpecWrapper attributes of the SpecModel object
         spec_wrapper_cfg = {}
         spec_wrapper_cfg["batch_2d"] = Int(par_hostsub.get("batch_2d", [2, 128]))
         spec_wrapper_cfg["sigma_clip"] = Float(par_hostsub.get("sigma_clip", 5.0))
@@ -165,30 +167,39 @@ class HostSub(ScriptBase):
         host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
         host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
-        spec_model = spec_data.to_SpecModel(**host_sub_cfg)
+        spec_model = spec_data.to_SpecModel(**spec_model_cfg)
 
         spec_model.construct_spec_wrapper(
             f_obs=spec_model.f_obs,
             host_emission_cfg=host_emission_cfg,
             **spec_wrapper_cfg,
-            # save=f"QA/{output_suffix}_raw.pdf",
+        )
+
+        # Model the host prior
+        spec_model.model_host_prior(
+            filters=par_hostsub.get("filters", "ugrizy"),
+            # save=f"QA/{output_suffix}_host_prior.pdf",
+        )
+
+        # Match the seeing of the host and science spectra
+        dseeing_opt = spec_model._match_seeing(max_dseeing=1.2)
+
+        # Update the SpecModel object
+        spec_model.update_seeing(dseeing_opt)
+
+        # Update the SpecWrapper objects
+        dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.75)
+        spec_model.construct_spec_wrapper(
+            f_obs=spec_model.f_obs.sigma_clip().fill_nan().convolve(dseeing_wv),
+            host_emission_cfg=host_emission_cfg,
+            **spec_wrapper_cfg,
+            save=f"QA/{output_suffix}_raw.pdf",
         )
 
         # Model the host prior
         spec_model.model_host_prior(
             filters=par_hostsub.get("filters", "ugrizy"),
             save=f"QA/{output_suffix}_host_prior.pdf",
-        )
-
-        # Match the seeing of the host and science spectra
-        dseeing_opt = spec_model._match_seeing()
-
-        # Update the SpecWrapper objects
-        spec_model.construct_spec_wrapper(
-            f_obs=spec_model.f_obs.convolve(dseeing_opt / spec_model.pixel_scale),
-            host_emission_cfg=host_emission_cfg,
-            **spec_wrapper_cfg,
-            save=f"QA/{output_suffix}_raw.pdf",
         )
 
         # Skip the subsequent modeling if requested

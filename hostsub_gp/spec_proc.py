@@ -89,6 +89,7 @@ class SpecData:
                 f_values=(flux, flux_ivar, flag),
                 spat_rect=self.spat_rect,
                 spec_rect=self.spec_rect,
+                interp_method="rbf",
             )
 
             # Save the 2D spectra to cache files
@@ -590,7 +591,7 @@ class SpecData:
 
     @show_and_save
     def get_offset(
-        self, points: ArrayLike, flux: ArrayLike, show: bool = True, slit_len: float = None, mask_wid: float = 2.0
+        self, points: ArrayLike, flux: ArrayLike, slit_len: float = None, mask_wid: float = 2.0
     ) -> float:
         """
         Center the trace of the science object.
@@ -652,7 +653,7 @@ class SpecData:
         ).model_host_profile_prior()
 
         obs = binned_mean_with_clipping(
-            points[:, :, 0],
+            points[..., 0],
             flux,
             bins=len(spat),
             bin_range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
@@ -665,8 +666,8 @@ class SpecData:
         wv_mean = jnp.nanmean(points[..., 1] * flux) / jnp.nanmean(flux) * jnp.ones_like(spat)
 
         def corr_coef(offset):
-            dist = spat - offset
-            prior = host_prior(jnp.stack([dist, wv_mean], axis=-1))[0]
+            # Evaluate the profile from the prior at the offset position
+            prior = host_prior(jnp.stack([spat - offset, wv_mean], axis=-1))[0]
             return jnp.corrcoef(
                 (prior[sci_obj_mask] - jnp.nanmin(prior[sci_obj_mask]))
                 / (jnp.nanmax(prior[sci_obj_mask]) - jnp.nanmin(prior[sci_obj_mask])),
@@ -677,7 +678,10 @@ class SpecData:
         offset_list = np.arange(-1, 1 + self.pixel_scale / 10, self.pixel_scale / 10)
         ccf = jax.vmap(corr_coef)(offset_list)
 
-        offset = offset_list[np.argmax(ccf)]
+        # F_obs(x_spat) = F_prior(x_spat - offset_opt) 
+        # => F_obs(offset_opt) = F_prior(0) = Location of the SN
+        # => Subtract offset_opt from the spatial coordinates of the 2D spectrum
+        offset_opt = offset_list[np.argmax(ccf)]
 
         _, ax = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
         ax[0].plot(offset_list, ccf)
@@ -685,10 +689,10 @@ class SpecData:
         ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
         ax[0].xaxis.set_major_locator(plt.MultipleLocator(0.2))
         ax[0].xaxis.set_minor_locator(plt.MultipleLocator(0.02))
-        ax[0].axvline(offset, color="k", linestyle="--")
+        ax[0].axvline(offset_opt, color="k", linestyle="--")
 
         ax[1].scatter(
-            spat - offset,
+            spat - offset_opt,
             (obs - jnp.nanmin(obs)) / (jnp.nanmax(obs) - jnp.nanmin(obs)),
             label="obs",
         )
@@ -696,14 +700,14 @@ class SpecData:
         profile_prior = host_prior(
             jnp.stack(
                 [
-                    spat - offset,
+                    spat - offset_opt,
                     jnp.nanmean(points[:, :, 1] * flux) / jnp.nanmean(flux) * jnp.ones_like(spat),
                 ],
                 axis=-1,
             )
         )[0]
         ax[1].scatter(
-            spat - offset,
+            spat - offset_opt,
             (profile_prior - profile_prior.min()) / (profile_prior.max() - profile_prior.min()),
             label="prior",
         )
@@ -713,4 +717,4 @@ class SpecData:
         ax[1].xaxis.set_minor_locator(plt.MultipleLocator(1))
         ax[1].legend()
 
-        return offset
+        return offset_opt
