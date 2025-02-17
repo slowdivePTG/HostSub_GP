@@ -301,7 +301,7 @@ class HostProfile:
             # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
             err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
             # Smooth the error: convolution with a boxcar filter
-            # err = (np.convolve(err**2, np.ones(3) / 3, mode="same")) ** 0.5
+            err = (np.convolve(err**2, np.ones(3) / 3, mode="same")) ** 0.5
             counts_err_slit.append(err)
 
         return cls(
@@ -335,7 +335,7 @@ class HostProfile:
                 log_scale=np.float64(-0.5),
                 mean=np.float64(1 / self.host_wid),
             )
-            params_limit = dict(log_scale=np.log10([0.8 / 2.355, 1.5 / 2.355]))
+            params_limit = dict(log_scale=np.log10([1.1 / 2.355, 1.5 / 2.355]))
             gp_host_prior = GP(
                 kernel_type="HostProfie",
                 X=self.X[:, :1],  # Spatial coordinate only
@@ -356,10 +356,9 @@ class HostProfile:
                 mean=np.float64(1 / self.host_wid),
             )
             params_limit = dict(
-                # log_scale=np.log10([[0.8 / 2.355, 1e2], [1.5 / 2.355, 1e5]]),
                 log_scale=np.log10(
                     [
-                        [[0.8 / 2.355, 0.8 / 2.355], [1e2, 1e0]],  # lower bound
+                        [[1.1 / 2.355, 0.8 / 2.355], [1e2, 1e0]],  # lower bound
                         [[10, 1.5 / 2.355], [1e4, 1e2]],  # upper bound
                     ]
                 )

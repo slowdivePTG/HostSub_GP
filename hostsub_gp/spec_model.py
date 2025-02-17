@@ -410,6 +410,7 @@ class SpecModel:
         )
 
     @msgs.timer
+    @show_and_save
     def _match_seeing(self, min_dseeing: float = 0.0, max_dseeing: float = 0.5, step_dseeing: float = 0.01) -> Array:
         """
         Match the seeing of the host galaxy profile with the instrumental seeing.
@@ -463,7 +464,6 @@ class SpecModel:
         plt.plot(dseeing_lst, chi2, color="tab:blue")
         plt.xlabel(r"$\Delta \mathrm{Seeing\ [arcsec]}$")
         plt.ylabel(r"$\chi^2$")
-        plt.show()
 
         best_dseeing = dseeing_lst[np.argmin(chi2)]
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
@@ -476,7 +476,7 @@ class SpecModel:
         # Update the spatial resolution
         spat_resln_0 = self.spat_resln
         msgs.info(f"Original spatial resolution: {spat_resln_0:.2f} arcsec")
-        self.spat_resln = (spat_resln_0 ** 2 + dseeing ** 2) ** 0.5
+        self.spat_resln = (spat_resln_0**2 + dseeing**2) ** 0.5
         msgs.info(f"Updated spatial resolution: {self.spat_resln:.2f} arcsec")
 
         # Update the mask, sky, and host regions
@@ -596,7 +596,6 @@ class SpecModel:
             The merged parameters limits.
         """
         large_scale = 1e4
-        small_scale = 1e-3
 
         # 1D spectrum of the host galaxy
         ## scale >= spectral resolution / 2.355
@@ -613,7 +612,7 @@ class SpecModel:
                         ],
                         [
                             self.spec_resln * large_scale,  # Limit for the ExpSquared kernel
-                            self.spec_resln * 2,  # Limit for the Matern kernel
+                            self.spec_resln * large_scale,  # Limit for the Matern kernel
                         ],
                     ]
                 ),
@@ -627,12 +626,26 @@ class SpecModel:
             params_limit_default = dict(
                 log_scale=np.log10(
                     [
-                        [self.spat_resln / 2.355, self.spat_resln * large_scale],
-                        [self.spec_resln / 2.355, self.spec_resln * large_scale],
+                        # lower bound
+                        [
+                            # # spatial direction (slow & fast)
+                            # [self.spat_resln / 2.355, self.spat_resln / 2.355],
+                            # # spectral direction (slow & fast)
+                            # [self.spec_resln / 2.355, self.spec_resln / 2.355],
+                            self.spat_resln / 2.355,
+                            self.spat_resln / 2.355,
+                        ],
+                        # upper bound
+                        [
+                            # # spatial direction (slow & fast)
+                            # [self.spat_resln * 2, self.spat_resln],
+                            # # spectral direction (slow & fast)
+                            # [1e4, 1e4],
+                            self.spat_resln * large_scale,
+                            self.spec_resln * large_scale,
+                        ],
                     ]
                 ),
-                mean=[-small_scale, small_scale],
-                scale_line=[self.spec_resln / 2.355 / 2, self.spec_resln * large_scale],
             )
 
         else:
@@ -644,7 +657,7 @@ class SpecModel:
             for key in params_limit:
                 if key in params_limit_default:
                     params_limit_default.pop(key)
-            params_limit[0] = {**params_limit_default, **params_limit}
+            params_limit = {**params_limit_default, **params_limit}
 
         return _init_params(params_limit, require_all=False)
 

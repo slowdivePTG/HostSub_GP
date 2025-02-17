@@ -80,7 +80,7 @@ class SpecData:
             self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
 
             self.flux_rect, self.flux_ivar_rect = self.rectify(
-                points=self._points, f_values=(flux, flux_ivar), interp_method="linear"
+                points=self._points, f_values=(flux, flux_ivar), interp_method="rbf"
             )
 
             # Save the 2D spectra to cache files

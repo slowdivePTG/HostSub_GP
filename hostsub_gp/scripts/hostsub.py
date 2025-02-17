@@ -9,7 +9,7 @@ import argparse
 from hostsub_gp import SpecData
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput, Digitize
-from .._utils import plt, msgs
+from .._utils import msgs
 
 
 Float = Digitize(float)
@@ -30,11 +30,17 @@ class HostSub(ScriptBase):
             action="store_true",
             help="Re-do the rectification and overwrite the fits files.",
         )
+        # parser.add_argument(
+        #     "--par_outfile",
+        #     type=str,
+        #     default="hostsub.par",
+        #     help="Name of output file to save the parameters used by the GP.",
+        # )
         parser.add_argument(
-            "--par_outfile",
-            type=str,
-            default="hostsub.par",
-            help="Name of output file to save the parameters used by the GP.",
+            "--skip_seeing_match",
+            default=False,
+            action="store_true",
+            help="Skip the matching of the seeing between the host and science spectra.",
         )
         parser.add_argument(
             "--skip_model",
@@ -180,29 +186,30 @@ class HostSub(ScriptBase):
         # Model the host prior
         spec_model.model_host_prior(
             filters=par_hostsub.get("filters", "ugrizy"),
-            # save=f"QA/{output_suffix}_host_prior.pdf",
-        )
-
-        # Match the seeing of the host and science spectra
-        dseeing_opt = spec_model._match_seeing(max_dseeing=1.2)
-
-        # Update the SpecModel object
-        spec_model.update_seeing(dseeing_opt)
-
-        # Update the SpecWrapper objects
-        dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.75)
-        spec_model.construct_spec_wrapper(
-            f_obs=spec_model.f_obs.sigma_clip().fill_nan().convolve(dseeing_wv),
-            host_emission_cfg=host_emission_cfg,
-            **spec_wrapper_cfg,
-            save=f"QA/{output_suffix}_raw.pdf",
-        )
-
-        # Model the host prior
-        spec_model.model_host_prior(
-            filters=par_hostsub.get("filters", "ugrizy"),
             save=f"QA/{output_suffix}_host_prior.pdf",
         )
+
+        if not args.skip_seeing_match:
+            # Match the seeing of the host and science spectra
+            dseeing_opt = spec_model._match_seeing(max_dseeing=1.2, show=False)
+
+            # Update the SpecModel object
+            spec_model.update_seeing(dseeing_opt)
+
+            # Update the SpecWrapper objects
+            dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.75)
+            spec_model.construct_spec_wrapper(
+                f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),
+                host_emission_cfg=host_emission_cfg,
+                **spec_wrapper_cfg,
+                save=f"QA/{output_suffix}_raw.pdf",
+            )
+
+            # Model the host prior
+            spec_model.model_host_prior(
+                filters=par_hostsub.get("filters", "ugrizy"),
+                save=f"QA/{output_suffix}_host_prior.pdf",
+            )
 
         # Skip the subsequent modeling if requested
         if args.skip_model:
@@ -228,44 +235,6 @@ class HostSub(ScriptBase):
 
         params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", {}))
         params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", {}))
-
-        # Set the default limits
-        params_limit_1d["log_scale"] = params_limit_1d.get(
-            "log_scale",
-            np.log10(
-                [
-                    # lower bound
-                    [1e1, spec_model.spec_resln / 2.355 / 2],
-                    # upper bound
-                    [1e3, spec_model.spec_resln * 2],
-                ]
-            ),
-        )
-        params_limit_2d["log_scale"] = params_limit_2d.get(
-            "log_scale",
-            np.log10(
-                [
-                    # lower bound
-                    [
-                        # # spatial direction (slow & fast)
-                        # [spec_model.spat_resln / 2.355, spec_model.spat_resln / 2.355],
-                        # # spectral direction (slow & fast)
-                        # [spec_model.spec_resln / 2.355, spec_model.spec_resln / 2.355],
-                        spec_model.spat_resln / 2.355,
-                        spec_model.spec_resln / 2.355,
-                    ],
-                    # upper bound
-                    [
-                        # # spatial direction (slow & fast)
-                        # [spec_model.spat_resln * 2, spec_model.spat_resln],
-                        # # spectral direction (slow & fast)
-                        # [1e4, 1e4],
-                        spec_model.spat_resln * 2,
-                        1e4,
-                    ],
-                ]
-            ),
-        )
 
         params_limit = [params_limit_1d, params_limit_2d]
 
