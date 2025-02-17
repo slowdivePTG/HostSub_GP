@@ -6,6 +6,7 @@ from functools import partial
 from typing import Callable
 
 from jax._src.typing import ArrayLike, Array
+from typing import Optional
 
 # jax.config.update("jax_enable_x64", True)
 
@@ -13,13 +14,14 @@ from jax._src.typing import ArrayLike, Array
 ################################# Interpolation on a regular grid #################################
 ###################################################################################################
 
+
 class Interp1D_Grid:
     """
     1D interpolation using a regular grid.
     A wrapper around jax.numpy.interp.
     """
 
-    def __init__(self, points: tuple[ArrayLike, ArrayLike], values: ArrayLike, method="linear"):
+    def __init__(self, points: ArrayLike, values: ArrayLike, method="linear"):
         self.method = method
         self.points = points
         self.values = jnp.asarray(values)
@@ -49,34 +51,173 @@ class Interp2D_Grid:
 ################################# Interpolation on a irregular grid ###############################
 ###################################################################################################
 
-class Interp2D_base:
+from abc import ABC, abstractmethod
+
+
+class Interp2D_base(ABC):
     """
-    Base class for 2D interpolation.
+    Abstract base class for 2D interpolation on semi-uniform grids.
     """
 
-    def __init__(self, scales: tuple[float, float] = (1, 1)):
+    def __init__(self, scales: tuple | ArrayLike = (1, 1)):
+        """
+        Initialize base interpolator for semi-uniform grid (nx, ny).
+
+        Parameters
+        ----------
+        scales : tuple or ArrayLike
+            Scales for each dimension
+        """
         self.scales = jnp.asarray(scales)
         self.points = None
         self.values = None
+        self.shape = None
+        self.x_grid = None
+        self.y_grid = None
 
     def fit(self, points: ArrayLike, values: ArrayLike) -> None:
         """
-        Store the training data.
+        Store the training data and grid information.
 
         Parameters
         ----------
         points : ArrayLike
-            Array of shape (n_points, 2) containing the 2D coordinates
+            Array of shape (nx, ny, 2) containing the 2D coordinates
         values : ArrayLike
-            Array of shape (n_points,) containing the values at each point
+            Array of shape (nx, ny) containing the values at each point
         """
-        self.points = jnp.asarray(points, dtype=jnp.float32) / self.scales
+        points = jnp.asarray(points, dtype=jnp.float32)
+        self.shape = points.shape[:2]
+        if values.shape != self.shape:
+            raise ValueError(f"Shape mismatch between points {(points.shape)} and values {(values.shape)}")
+
+        self.points = points / self.scales
         self.values = jnp.asarray(values, dtype=jnp.float32)
+        # Separate x and y coordinates for easier access
+        self.x_grid = self.points[..., 0]
+        self.y_grid = self.points[..., 1]
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _find_nearest_cell(self, query_point: Array) -> tuple[Array, Array]:
+        """
+        Find the cell in the semi-uniform grid containing or nearest to the query point
+        using binary search (searchsorted).
+
+        Parameters
+        ----------
+        query_point : Array
+            Point to interpolate at, shape (2,)
+
+        Returns
+        -------
+        Tuple[Array, Array]
+            i, j: indices of the lower-left corner of the containing cell
+        """
+        qx, qy = query_point
+
+        # First search for x position in middle column
+        mid_row = self.shape[1] // 2
+        i_mid = jnp.searchsorted(self.x_grid[:, mid_row], qx) - 1
+        i_mid = jnp.clip(i_mid, 0, self.shape[0] - 2)
+
+        # Get y values for this row
+        y_row = self.y_grid[i_mid, :]
+        j_index = jnp.searchsorted(y_row, qy) - 1
+        j_index = jnp.clip(j_index, 0, self.shape[1] - 2)
+
+        # Refine x search in the found column
+        i_index = jnp.searchsorted(self.x_grid[:, j_index], qx) - 1
+        i_index = jnp.clip(i_index, 0, self.shape[0] - 2)
+
+        return i_index, j_index
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _get_cell_points_and_values(self, i: int, j: int) -> tuple[Array, Array]:
+        """
+        Get the four corners of a grid cell and their values.
+
+        Parameters
+        ----------
+        i, j : int
+            Indices of the lower-left corner of the cell
+
+        Returns
+        -------
+        Tuple[Array, Array]
+            points: Array of shape (4, 2) containing corner coordinates
+            values: Array of shape (4,) containing corner values
+        """
+        points = jnp.stack(
+            [
+                self.points[i, j],  # lower-left
+                self.points[i, j + 1],  # lower-right
+                self.points[i + 1, j],  # upper-left
+                self.points[i + 1, j + 1],  # upper-right
+            ]
+        )
+
+        values = jnp.stack(
+            [
+                self.values[i, j],
+                self.values[i, j + 1],
+                self.values[i + 1, j],
+                self.values[i + 1, j + 1],
+            ]
+        )
+
+        return points, values
+
+    @abstractmethod
+    def _compute_weights(self, cell_points: Array, query_point: Array, cell_values: Optional[Array] = None) -> Array:
+        """
+        Compute interpolation weights for given cell points and query point.
+        To be implemented by subclasses.
+
+        Parameters
+        ----------
+        cell_points : Array
+            Corner points of the cell, shape (4, 2)
+        query_point : Array
+            Point to interpolate at, shape (2,)
+        cell_values : Array, optional
+            Values at the corner points, shape (4,)
+
+        Returns
+        -------
+        Array
+            Weights for interpolation, shape (4,)
+        """
+        raise NotImplementedError
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _interpolate_single(self, query_point: Array) -> Array:
+        """
+        Interpolate value at a single query point with NaN handling
+        """
+        # Find containing/nearest cell
+        i, j = self._find_nearest_cell(query_point)
+
+        # Get cell points and values
+        cell_points, cell_values = self._get_cell_points_and_values(i, j)
+
+        # Check for NaN values
+        valid_mask = ~jnp.isnan(cell_values)
+        n_valid = jnp.sum(valid_mask)
+
+        def interpolate():
+            # Compute weights using subclass implementation
+            weights = self._compute_weights(cell_points, query_point, cell_values)
+            # Handle NaN values by redistributing weights
+            weights = jnp.where(valid_mask, weights, 0.0)
+            weights = weights / (jnp.sum(weights) + 1e-10)
+            return jnp.sum(jnp.where(valid_mask, cell_values, 0.0) * weights)
+
+        # Return NaN if not enough valid values
+        return jax.lax.cond(n_valid >= 3, lambda: interpolate(), lambda: jnp.nan)
 
     def predict(self, query_points: ArrayLike) -> Array:
         """
-        Make predictions at new points.
-        To be implemented in subclasses.
+        Make predictions at new points with NaN handling
 
         Parameters
         ----------
@@ -88,7 +229,36 @@ class Interp2D_base:
         Array
             Array of interpolated values at query_points
         """
-        raise NotImplementedError
+        query_points = jnp.asarray(query_points)
+
+        # Check for NaN in query points
+        valid_queries = ~jnp.any(jnp.isnan(query_points), axis=1)
+
+        # Scale query points
+        scaled_points = query_points / self.scales
+
+        # Vectorize the single point interpolation
+        predictions = jax.vmap(self._interpolate_single)(scaled_points)
+
+        # Ensure NaN for invalid query points
+        return jnp.where(valid_queries, predictions, jnp.nan)
+
+
+class Interp2D_Linear(Interp2D_base):
+    """
+    2D bilinear interpolation on semi-uniform grid.
+    """
+
+    def _compute_weights(self, cell_points: Array, query_point: Array, cell_values: Optional[Array] = None) -> Array:
+        """
+        Compute weights for bilinear interpolation
+        """
+        # Weights proportional to the inverse of the distance
+        distances = jnp.linalg.norm(cell_points - query_point, axis=1)
+        # Handle zero distance (exact match)
+        return jax.lax.cond(
+            jnp.any(distances < 1e-10), lambda: jnp.where(distances == 0, 1.0, 0.0), lambda: 1.0 / distances
+        )
 
 
 class Interp2D_RBF(Interp2D_base):
@@ -99,13 +269,11 @@ class Interp2D_RBF(Interp2D_base):
     def __init__(
         self,
         kernel: str = "gaussian",
-        epsilon: float = 1.0, # epsilon = 1.0 - exact solution
-        n_neighbors: int = 10,
-        min_neighbors: int = 3,
+        epsilon: float = 1.0,
         scales: tuple | ArrayLike = (1, 1),
     ):
         """
-        Initialize Robust RBF interpolator with NaN handling
+        Initialize RBF interpolator
 
         Parameters
         ----------
@@ -113,18 +281,13 @@ class Interp2D_RBF(Interp2D_base):
             Type of RBF kernel ('gaussian', 'multiquadric', or 'inverse_multiquadric')
         epsilon : float
             Shape parameter for the RBF kernel
-        n_neighbors : int
-            Maximum number of nearest neighbors to use
-        min_neighbors : int
             Minimum number of valid neighbors required for interpolation
         scales : tuple or ArrayLike
             Scales for each dimension
         """
+        super().__init__(scales)
         self.epsilon = epsilon
         self.kernel = self._get_kernel(kernel)
-        self.n_neighbors = n_neighbors
-        self.min_neighbors = min_neighbors
-        super().__init__(scales)
 
     def _get_kernel(self, kernel_name: str) -> Callable:
         """Define the RBF kernel function"""
@@ -141,114 +304,20 @@ class Interp2D_RBF(Interp2D_base):
         kernels = {"gaussian": gaussian, "multiquadric": multiquadric, "inverse_multiquadric": inverse_multiquadric}
         return kernels[kernel_name]
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _compute_distances(self, x1: Array, x2: Array) -> Array:
-        """Compute pairwise distances between points"""
-        diff = x1[:, None] - x2
-        return jnp.sqrt(jnp.sum(diff**2, axis=-1))
-
-    def _find_neighbors(self, query_point: Array) -> tuple[Array, Array, Array]:
-        """Find valid k-nearest neighbors for a query point, excluding NaN values"""
-        # Compute distances to all points
-        distances = jnp.sum((self.points - query_point) ** 2, axis=1)
-
-        # Get indices of nearest valid neighbors
-        dist_order = jnp.argsort(distances)
-        indices = dist_order[: self.n_neighbors]
-
-        return (indices, self.points[indices], self.values[indices])
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _interpolate_single(self, query_point: Array) -> Array:
-        """Interpolate value at a single query point with NaN handling"""
-        # Find valid nearest neighbors
-        indices, neighbor_points, neighbor_values = self._find_neighbors(query_point)
-
-        valid_points_mask = ~jnp.any(jnp.isnan(neighbor_points), axis=1)
-        valid_values_mask = ~jnp.isnan(neighbor_values)
-        valid_mask = valid_points_mask & valid_values_mask
-
-        # Push invalid neighbors to infinity
-        # neighbor_points = jnp.where(valid_mask[:, None], neighbor_points, jnp.zeros_like(neighbor_points))
-        neighbor_points = jnp.where(valid_mask[:, None], neighbor_points, jnp.ones_like(neighbor_points) * jnp.inf)
-        # Fill NaN values with median of valid neighbors
-        neighbor_values = jnp.where(valid_mask, neighbor_values, jnp.nanmedian(neighbor_values))
-
-        # Check if we have enough valid neighbors
-        # n_valid = indices.shape[0]
-
-        def interpolate():
-            # Compute local RBF interpolation
-            distances = self._compute_distances(neighbor_points, neighbor_points)
-            kernel_matrix = self.kernel(distances)
-
-            # Add regularization term
-            kernel_matrix = kernel_matrix + jnp.eye(self.n_neighbors) * 1e-10
-
-            # Solve local system with robust solver
-            try:
-                weights = jnp.linalg.solve(kernel_matrix, neighbor_values)
-                query_distances = self._compute_distances(jnp.expand_dims(query_point, 0), neighbor_points)
-                query_kernel = self.kernel(query_distances[0])
-                return jnp.dot(query_kernel, weights)
-            except:
-                raise ValueError("Singular matrix in RBF interpolation")
-
-        # Return NaN if not enough valid neighbors
-        return jax.lax.cond(valid_mask.sum() >= self.min_neighbors, lambda: interpolate(), lambda: jnp.nan)
-
-    def predict(self, query_points: ArrayLike) -> Array:
+    def _compute_weights(self, cell_points: Array, query_points: Array, cell_values: Array) -> Array:
         """
-        Make predictions at new points with NaN handling
-
-        Parameters
-        ----------
-        query_points : ArrayLike
-            Array of shape (n_queries, 2) containing points to interpolate
-
-        Returns
-        -------
-        Array
-            Array of interpolated values at query_points, with NaN for points where interpolation failed
+        Compute weights using RBF kernel
         """
-        query_points = jnp.asarray(query_points)
-
-        # Check for NaN in query points
-        valid_queries = ~jnp.any(jnp.isnan(query_points), axis=1)
-
-        # Vectorize the single point interpolation
-        predictions = jax.vmap(self._interpolate_single)(query_points / self.scales)
-
-        # Ensure NaN for invalid query points
-        return jnp.where(valid_queries, predictions, jnp.nan)
-
-
-class Interp2D_Nearest(Interp2D_base):
-    """
-    2D interpolation using nearest neighbors.
-    A wrapper around scipy.interpolate.NearestNDInterpolator.
-    """
-
-    def __init__(self, scales: tuple[float, float] = (1, 1)):
-        super().__init__(scales)
-
-    def predict(self, query_points: ArrayLike) -> Array:
-        """
-        Make predictions at new points.
-
-        Parameters
-        ----------
-        query_points : ArrayLike
-            Array of shape (n_queries, 2) containing points to interpolate
-
-        Returns
-        -------
-        Array
-            Array of interpolated values at query_points
-        """
-        from scipy.interpolate import NearestNDInterpolator
-
-        interpolator = NearestNDInterpolator(self.points, self.values)
-        query_points = jnp.asarray(query_points) / self.scales
-        
-        return interpolator(query_points)
+        distances = jnp.linalg.norm(cell_points - query_points, axis=1)
+        kernel_matrix = self.kernel(distances)
+        try:
+            weights = jnp.linalg.solve(kernel_matrix, cell_values)
+            return self.kernel(distances) @ weights
+        except:
+            # Fallback to simpler weighting if matrix is singular
+            # if jnp.any(distances < 1e-10):
+            #     return jnp.where(distances == 0, 1.0, 0.0)
+            # return 1.0 / distances
+            return jax.lax.cond(
+                jnp.any(distances < 1e-10), lambda: jnp.where(distances == 0, 1.0, 0.0), lambda: 1.0 / distances
+            )

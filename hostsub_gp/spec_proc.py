@@ -32,6 +32,7 @@ class SpecData:
         center_ra: float,
         center_dec: float,
         slit_wid: float,
+        slit_len: float,
         position_angle: float,
         spat_resln: float,
         spec_resln: float,
@@ -40,10 +41,9 @@ class SpecData:
         flux_rect: ArrayLike = None,
         flux_ivar_rect: ArrayLike = None,
         dist: ArrayLike = None,
+        waveimg: ArrayLike = None,
         flux: ArrayLike = None,
         flux_ivar: ArrayLike = None,
-        waveimg: ArrayLike = None,
-        spat_padding: float = 1.0,
         sky_offset: float = None,
         to_caches: bool = False,
         cache_path: str = None,
@@ -54,6 +54,7 @@ class SpecData:
         self.center_ra = center_ra
         self.center_dec = center_dec
         self.slit_wid = slit_wid
+        self.slit_len = slit_len
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
@@ -73,23 +74,13 @@ class SpecData:
                     flux=flux,
                     show=True,
                     mask_wid=2.5,
-                    slit_len=(spat_rect.max() - spat_rect.min()) * 1.25,
+                    slit_len=spat_rect.max() - spat_rect.min(),
                 )
 
             self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
 
-            # valid points - not NaN/inf
-            valid_flag = jnp.isfinite(self._points).all(axis=-1)
-            # valid spatial range - within the slit + padding (in case the trace is not perfectly centered)
-            dist_flag = (dist >= spat_rect.min() - spat_padding) & (dist <= spat_rect.max() + spat_padding)
-            flag = jnp.array(valid_flag & dist_flag, dtype=bool)
-
             self.flux_rect, self.flux_ivar_rect = self.rectify(
-                points=self._points,
-                f_values=(flux, flux_ivar, flag),
-                spat_rect=self.spat_rect,
-                spec_rect=self.spec_rect,
-                interp_method="rbf",
+                points=self._points, f_values=(flux, flux_ivar), interp_method="linear"
             )
 
             # Save the 2D spectra to cache files
@@ -107,7 +98,6 @@ class SpecData:
         ra: float = None,
         dec: float = None,
         spat_resln: float = None,
-        slit_len: float = 20.0,
         spat_rect: ArrayLike = None,
         spec_rect: ArrayLike = None,
         **kwargs,
@@ -132,10 +122,6 @@ class SpecData:
             The spatial resolution (seeing) of the science frame.
         slit_len : float, optional (default: 20.0, in arcsec)
             The length of the slit in the spatial direction.
-        spat_rect : ArrayLike, optional (default: None - determined from the trace)
-            The rectified spatial coordinates.
-        spec_rect : ArrayLike, optional (default: None - determined from the trace)
-            The rectified spectral coordinates.
         """
         from pypeit import spec2dobj, specobjs
 
@@ -252,22 +238,27 @@ class SpecData:
 
         dist_spat_pix = spat_pix - trace_spat_pix
         dist_spec_pix = spec_pix - trace_spec_pix
-        dist_pix = np.sqrt(dist_spat_pix**2 + dist_spec_pix**2) * np.where(dist_spat_pix > 0, 1, -1)
+        dist = np.sqrt(dist_spat_pix**2 + dist_spec_pix**2) * np.where(dist_spat_pix > 0, 1, -1) * pixel_scale
 
-        # The spatial coordinates for interpolation
-        slit_radius_pix = int(np.ceil(slit_len / pixel_scale / 2))
-        spat_range = (-slit_radius_pix, slit_radius_pix + 1)
+        # Remove spatial pixels outside the slit (all spat values are NaN)
+        valid_spat = jnp.any(np.isfinite(dist), axis=1)
+        # Remove spectral pixels outside the wavelength range (some spec values are NaN)
+        valid_spec = jnp.all(np.isfinite(dist[valid_spat]), axis=1)
+
+        dist = dist[valid_spat][valid_spec]
+        waveimg = waveimg[valid_spat][valid_spec]
+        flux = flux[valid_spat][valid_spec]
+        ivar = ivar[valid_spat][valid_spec]
+
         if spat_rect is None:
-            spat_rect = np.arange(*spat_range) * pixel_scale
-        msgs.info(
-            f"Distance from the trace: {dist_spat_pix.min() * pixel_scale:.2f} - {dist_spat_pix.max() * pixel_scale:.2f} arcsec"
-        )
-        if spat_rect.min() < dist_spat_pix.min() * pixel_scale or spat_rect.max() > dist_spat_pix.max() * pixel_scale:
-            raise ValueError("The spatial range is out of the trace range.")
-
-        # The spectral coordinates for interpolation
+            # Spatial coordinates: within the range of the slit
+            spat_rect = jnp.arange(dist[0].max() // pixel_scale, dist[-1].min() // pixel_scale + 1) * pixel_scale
+            msgs.info(f"Distance from the trace: {spat_rect[0]:.2f} - {spat_rect[-1]:.2f} arcsec")
+        
         if spec_rect is None:
+            # Spectral coordinates: at the location of the trace
             spec_rect = trace_spec
+            msgs.info(f"Wavelength range: {spec_rect[0]:.2f} - {spec_rect[-1]:.2f} Angstrom")
 
         return cls(
             pixel_scale=pixel_scale,
@@ -279,8 +270,8 @@ class SpecData:
             spec_resln=spec_resln,
             flux=flux,
             flux_ivar=ivar,
+            dist=dist,
             waveimg=waveimg,
-            dist=dist_pix * pixel_scale,
             spat_rect=spat_rect,
             spec_rect=spec_rect,
             cache_path=spec2d_file.replace(".fits", "_rect.fits"),
@@ -289,7 +280,7 @@ class SpecData:
         )
 
     @classmethod
-    def from_fits(cls, fits_path: str = None):
+    def from_fits(cls, fits_path: str = None, **kwargs):
         """
         Load 2D spectra from cache files.
 
@@ -323,7 +314,7 @@ class SpecData:
                 )
         except FileNotFoundError:
             raise FileNotFoundError(f"Fits file {fits_path} not found.")
-        return cls(**data)
+        return cls(**data, **kwargs)
 
     @classmethod
     def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs):
@@ -353,8 +344,6 @@ class SpecData:
             and (spec_data.spec_rect == spec_data_list[0].spec_rect).all()
             for spec_data in spec_data_list
         ):
-            for spec_data in spec_data_list:
-                print(spec_data.spat_rect, spec_data.spec_rect)
             raise ValueError("All SpecData objects must have the same spatial and spectral coordinates.")
 
         # Check if the flux and ivar arrays have the same shape
@@ -503,10 +492,6 @@ class SpecData:
         self,
         points: ArrayLike,
         f_values: tuple[ArrayLike, ArrayLike, ArrayLike],
-        spat_rect: ArrayLike,
-        spec_rect: ArrayLike,
-        batch_size: int = 8,
-        padding_size: int = 1,
         interp_method: str = "rbf",
     ) -> tuple[ArrayLike, ArrayLike]:
         """
@@ -518,81 +503,54 @@ class SpecData:
             The spatial and spectral pixel coordinates.
         f_values : tuple[ArrayLike, ArrayLike, ArrayLike]
             The flux, ivar, and flag values.
-        spat_rect : Array
-            The rectified spatial coordinates.
-        spec_rect : Array
-            The rectified spectral coordinates.
         batch_size : int, optional (default: 8, in pixels)
             The batch size for interpolation.
         padding_size : int, optional (default: 1, in pixels)
             The padding size for interpolation.
         """
 
-        from .interp import Interp2D_RBF, Interp2D_Nearest
+        from .interp import Interp2D_RBF, Interp2D_Linear
 
-        if interp_method not in ["rbf", "nearest"]:
+        if ~jnp.all(jnp.isfinite(points)):
+            raise ValueError("Some points are NaN.")
+
+        if interp_method not in ["rbf", "linear"]:
             raise ValueError("Invalid interpolation method.")
         elif interp_method == "rbf":
             msgs.info("Interpolating the flux with RBF...")
-        elif interp_method == "nearest":
-            msgs.info("Interpolating the flux with nearest neighbor...")
-            batch_size = len(spec_rect)
+        elif interp_method == "linear":
+            msgs.info("Interpolating the flux with linear method...")
 
-        flux, ivar, flag = f_values
+        # Initialize the flux and ivar arrays on a semi-rectified grid
+        # The spatial/spectral coordinate monitonically increases in each row/column
+        flux, ivar = f_values
 
-        spec_batch_idx = jnp.array_split(jnp.arange(len(spec_rect)), len(spec_rect) // batch_size)
-        spec_pix_rect, spat_pix_rect = jnp.meshgrid(spec_rect, spat_rect)
+        spec_pix_rect, spat_pix_rect = jnp.meshgrid(self.spec_rect, self.spat_rect)
 
-        flux_rect = np.zeros((len(spat_rect), len(spec_rect)))
-        flux_ivar_rect = np.zeros((len(spat_rect), len(spec_rect)))
+        flux_rect = np.zeros((len(self.spat_rect), len(self.spec_rect)))
+        flux_ivar_rect = np.zeros((len(self.spat_rect), len(self.spec_rect)))
 
-        # Interpolate the flux row by row
-        for idx_list in spec_batch_idx:
-            # The range of the spectrum to interpolate
-            spec_min = max(0, idx_list[0] - padding_size)
-            spec_max = min(len(spec_rect), idx_list[-1] + padding_size + 1)
+        query_points = jnp.stack([spat_pix_rect.ravel(), spec_pix_rect.ravel()], axis=-1)
 
-            flag_ = flag[:, spec_min:spec_max]
-            points_ = points[:, spec_min:spec_max][flag_]
-            flux_ = flux[:, spec_min:spec_max][flag_]
-            ivar_ = ivar[:, spec_min:spec_max][flag_]
-            query_points_ = jnp.stack([spat_pix_rect[:, idx_list].ravel(), spec_pix_rect[:, idx_list].ravel()], axis=-1)
+        scales = (self.spat_resln / 2.355, self.spec_resln / 2.355)
 
-            if interp_method == "rbf":
-                interp2d = Interp2D_RBF(
-                    kernel="gaussian",
-                    n_neighbors=(2 * 2 + 1) ** 2 - 1,
-                    min_neighbors=(2 * 2 + 1) ** 2 - 3,  # (2 * 2 + 1) * (2 + 1) - 1,
-                    scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
-                )
-                interp2d_ivar = Interp2D_RBF(
-                    kernel="gaussian",
-                    n_neighbors=(2 * 2 + 1) ** 2 - 1,
-                    min_neighbors=(2 * 2 + 1) ** 2 - 3,  # (2 * 2 + 1) * (2 + 1) - 1,
-                    scales=(self.spat_resln / 2.355, self.spec_resln / 2.355),
-                )
+        if interp_method == "rbf":
+            interp2d = Interp2D_RBF(kernel="gaussian", scales=scales)
+            interp2d_ivar = Interp2D_RBF(kernel="gaussian", scales=scales)
 
-            elif interp_method == "nearest":
-                interp2d = Interp2D_Nearest(scales=(self.spat_resln, self.spec_resln))
-                interp2d_ivar = Interp2D_Nearest(scales=(self.spat_resln, self.spec_resln))
+        elif interp_method == "linear":
+            interp2d = Interp2D_Linear(scales=scales)
+            interp2d_ivar = Interp2D_Linear(scales=scales)
 
-            interp2d.fit(points=points_, values=flux_)
-            flux_rect[:, idx_list] = interp2d.predict(query_points=query_points_).reshape(flux_rect[:, idx_list].shape)
-            interp2d_ivar.fit(points=points_, values=ivar_)
-            flux_ivar_rect[:, idx_list] = interp2d_ivar.predict(query_points=query_points_).reshape(
-                flux_ivar_rect[:, idx_list].shape
-            )
-
-            print(
-                f"Interpolating {points_[:, 1].min():.2f} - {points_[:, 1].max():.2f} Ang ({idx_list[0]} - {idx_list[-1]})"
-            )
+        interp2d.fit(points=points, values=flux)
+        flux_rect = interp2d.predict(query_points=query_points).reshape(flux_rect.shape)
+        interp2d_ivar.fit(points=points, values=ivar)
+        flux_ivar_rect = interp2d_ivar.predict(query_points=query_points).reshape(flux_ivar_rect.shape)
 
         return flux_rect, flux_ivar_rect
 
     @show_and_save
-    def get_offset(
-        self, points: ArrayLike, flux: ArrayLike, slit_len: float = None, mask_wid: float = 2.0
-    ) -> float:
+    def get_offset(self, points: ArrayLike, flux: ArrayLike, slit_len: float = None, mask_wid: float = 2.0) -> float:
         """
         Center the trace of the science object.
         """
@@ -678,7 +636,7 @@ class SpecData:
         offset_list = np.arange(-1, 1 + self.pixel_scale / 10, self.pixel_scale / 10)
         ccf = jax.vmap(corr_coef)(offset_list)
 
-        # F_obs(x_spat) = F_prior(x_spat - offset_opt) 
+        # F_obs(x_spat) = F_prior(x_spat - offset_opt)
         # => F_obs(offset_opt) = F_prior(0) = Location of the SN
         # => Subtract offset_opt from the spatial coordinates of the 2D spectrum
         offset_opt = offset_list[np.argmax(ccf)]

@@ -70,7 +70,7 @@ class HostSub(ScriptBase):
         # Loop over science files
         sci_idx = np.argwhere(hostsubFile.data["frametype"] == "science").ravel()
         spec_data_list = []
-        spec_rect = None  # For all the science files, use the same points for interpolation
+        spat_rect, spec_rect = None, None  # For all the science files, use the same points for interpolation
         base_file_list = []
         for i in sci_idx:
             sci_file_1d = hostsubFile.filenames[i]
@@ -103,17 +103,19 @@ class HostSub(ScriptBase):
                     raw_dir=raw_dir,
                     std_file=std_file,
                     obj_id=objid,
+                    spat_rect=spat_rect,
                     spec_rect=spec_rect,
                     **spec_data_cfg,
                 )
                 spec_rect = spec_data.spec_rect
+                spat_rect = spec_data.spat_rect
             else:
                 # Load the rectified file
-                spec_data = SpecData.from_fits(sci_rect_file)
+                spec_data = SpecData.from_fits(sci_rect_file, slit_len=spec_data_cfg["slit_len"])
             spec_data_list.append(spec_data)
 
         if args.coadd2d:
-            spec_data_coadd2d = SpecData.coadd2d(spec_data_list)
+            spec_data_coadd2d = SpecData.coadd2d(spec_data_list, slit_len=spec_data_cfg["slit_len"])
             HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
