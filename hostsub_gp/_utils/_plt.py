@@ -26,6 +26,7 @@ plt.rcParams.update(
 def show_and_save(f: Callable) -> Callable:
     """
     A decorator that adds common plotting options (show and save) to any plotting function.
+    By default, the plot is not shown or saved.
 
     Parameters
     ----------
@@ -41,7 +42,7 @@ def show_and_save(f: Callable) -> Callable:
     from ._msgs import msgs
 
     @wraps(f)
-    def wrapper(*args, show: bool = True, save: Optional[str] = None, **kwargs):
+    def wrapper(*args, show: bool = False, save: Optional[str] = None, **kwargs):
         # Call the original plotting function
         result = f(*args, **kwargs)
 

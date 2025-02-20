@@ -6,7 +6,7 @@ import numpy as np
 import os
 import argparse
 
-from hostsub_gp import SpecData
+from hostsub_gp import SpecData, SpecModel
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput, Digitize
 from .._utils import msgs
@@ -128,6 +128,33 @@ class HostSub(ScriptBase):
                 HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
 
     @staticmethod
+    def _match_seeing(args: argparse.Namespace, spec_model: SpecModel, par_hostsub: dict):
+        """
+        Match the seeing of the host and science spectra.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            Arguments parsed by argparse.
+        spec_model : SpecModel
+            SpecModel object.
+        par_hostsub : dict
+            Parameters for host subtraction.
+        """
+        
+
+        # Match the seeing of the host and science spectra
+        dseeing_opt = spec_model._match_seeing(max_dseeing=1.5)
+
+        # Update the SpecModel object
+        spec_model.update_seeing(dseeing_opt)
+
+        # Update the SpecWrapper objects
+        dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.75)
+
+        return dseeing_opt
+
+    @staticmethod
     def _model_host_subtraction(
         args: argparse.Namespace, spec_data: SpecData, par_hostsub: dict, output_suffix: str = None
     ):
@@ -175,24 +202,37 @@ class HostSub(ScriptBase):
         host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
         host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
 
+        # Parameters for matching the seeing of the host and science spectra
+        par_seeing_match = par_hostsub.get("seeing_match", {})
+        seeing_match_cfg = {}
+        seeing_match_cfg["max_dseeing"] = Float(par_seeing_match.get("max_dseeing", 1.0))
+        seeing_match_cfg["min_dseeing"] = Float(par_seeing_match.get("min_dseeing", 0.0))
+        seeing_match_cfg["step_dseeing"] = Float(par_seeing_match.get("step_dseeing", 0.01))
+        seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
+
         spec_model = spec_data.to_SpecModel(**spec_model_cfg)
+
+        # Model the host prior
+        spec_model.build_host_prior(
+            filters=par_hostsub.get("filters", "ugrizy"),
+            save=f"QA/{output_suffix}_host_prior.pdf",
+        )
 
         spec_model.construct_spec_wrapper(
             f_obs=spec_model.f_obs,
             host_emission_cfg=host_emission_cfg,
             **spec_wrapper_cfg,
-            save=f"QA/{output_suffix}_raw.pdf" if args.skip_seeing_match else None, # Save the raw spectrum if not skipping the seeing match
-        )
-
-        # Model the host prior
-        spec_model.model_host_prior(
-            filters=par_hostsub.get("filters", "ugrizy"),
-            save=f"QA/{output_suffix}_host_prior.pdf",
+            save=f"QA/{output_suffix}_conv.pdf",
         )
 
         if not args.skip_seeing_match:
-            # Match the seeing of the host and science spectra
-            dseeing_opt = spec_model._match_seeing(max_dseeing=1.0, show=False)
+            dseeing = seeing_match_cfg.pop("dseeing", None)
+            if dseeing is None:
+                # Match the seeing of the host and science spectra
+                dseeing_opt = spec_model._match_seeing(**seeing_match_cfg)
+            else:
+                msgs.info(f"Using the seeing difference of {dseeing} provided by the user.")
+                dseeing_opt = dseeing
 
             # Update the SpecModel object
             spec_model.update_seeing(dseeing_opt)
@@ -203,13 +243,7 @@ class HostSub(ScriptBase):
                 f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),
                 host_emission_cfg=host_emission_cfg,
                 **spec_wrapper_cfg,
-                save=f"QA/{output_suffix}_raw.pdf",
-            )
-
-            # Model the host prior
-            spec_model.model_host_prior(
-                filters=par_hostsub.get("filters", "ugrizy"),
-                save=f"QA/{output_suffix}_host_prior.pdf",
+                save=f"QA/{output_suffix}_conv.pdf",
             )
 
         # Skip the subsequent modeling if requested

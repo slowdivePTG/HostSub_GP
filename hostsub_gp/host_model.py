@@ -375,7 +375,7 @@ class HostProfile:
             )
             host_prior = lambda x: gp_host_prior.predict(X_test=x, return_var=True)
 
-        self._plot_host_profile(host_prior, show=False)
+        self._plot_host_profile(host_prior, **kwargs)
 
         return host_prior
 

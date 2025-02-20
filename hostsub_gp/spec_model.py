@@ -19,6 +19,7 @@ from .gp import GP
 from .host_model import HostProfile
 from .spec_wrapper import SpecWrapper
 
+from typing import Callable
 from jax._src.typing import ArrayLike, Array
 from matplotlib.axes import Axes
 
@@ -275,6 +276,32 @@ class SpecModel:
         self.f_host_batch_2d = self.f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
         msgs.info(f"Batched 2D galaxy spectrum: {self.f_host_batch_2d.shape}")
 
+        # Construct the prior of the host galaxy from images
+        self.host_prior = self._get_host_prior()
+        # The entire 2D data
+        prior, prior_std = self.host_prior(self.f_obs.X)
+        self.f_prior = SpecWrapper(
+            points=(self.f_obs.spat, self.f_obs.spec),
+            values=prior.reshape(self.f_obs.shape),
+            values_err=prior_std.reshape(self.f_obs.shape),
+        )
+        # Within the host region
+        self.f_host_prior = self.f_prior.apply_spatial_filter(self.spat_filter["host"])
+        # The batched 2D data
+        prior_batch, prior_batch_std = self.host_prior(self.f_batch_2d.X)
+        self.f_batch_prior = SpecWrapper(
+            points=(self.f_batch_2d.spat, self.f_batch_2d.spec),
+            values=prior_batch.reshape(self.f_batch_2d.shape),
+            # values_err=prior_batch_std.reshape(self.f_batch_2d.shape),
+        )
+        # Batched 2D data (host region)
+        prior_host_batch, prior_host_batch_std = self.host_prior(self.f_host_batch_2d.X)
+        self.f_host_batch_prior = SpecWrapper(
+            points=(self.f_host_batch_2d.spat, self.f_host_batch_2d.spec),
+            values=prior_host_batch.reshape(self.f_host_batch_2d.shape),
+            # values_err=prior_host_batch_std.reshape(self.f_host_batch_2d.shape),
+        )
+
         self._plot_raw(show=show, save=save)
 
     def model_host(
@@ -296,7 +323,7 @@ class SpecModel:
         """
 
         # Make sure the host flux prior is built
-        if not hasattr(self, "host_flux_prior"):
+        if not hasattr(self, "host_prior"):
             raise ValueError("Please build the host flux prior first.")
 
         # Calculate the distance relative to the prior
@@ -340,7 +367,7 @@ class SpecModel:
         X_obs = self.f_obs.X.reshape(self.f_obs.shape[0], self.f_obs.shape[1], -1)
         self._f_1d_pred, self._f_2d_pred, self._f_pred = self._get_pred(self._gp_1d, self._gp_2d, X=X_obs)
 
-    def model_host_prior(
+    def build_host_prior(
         self,
         filters="ugrizy",
         from_archival: bool = True,
@@ -353,6 +380,7 @@ class SpecModel:
         """
         Build the prior of the host galaxy using Gaussian Process regression.
         """
+        msgs.info("Building the host flux prior")
         if from_archival:
             # Load the archival photometric data (PS1, SDSS)
             host_prof = HostProfile.from_archival(spec_model=self, filters=filters)
@@ -368,46 +396,26 @@ class SpecModel:
                 counts_slit=counts_slit,
                 counts_err_slit=counts_err_slit,
             )
-        host_flux_prior = host_prof.model_host_profile_prior(return_var=True, **kwargs)
+        self.host_prior_gp = host_prof.model_host_profile_prior(**kwargs)
+
+    def _get_host_prior(self) -> Callable[[Array], tuple[Array, Array]]:
+        """
+        Get the host flux prior model.
+        """
 
         _f_host = self.f_obs.apply_spatial_filter(self.spat_filter["host"])
 
         # Scale the host flux prior to the observed data
         # All pixels on the host region summed along the spatial axis = 1
         scale = lambda X: jnp.interp(
-            X[..., 1].ravel(), self.spec, jnp.sum(host_flux_prior(_f_host.X)[0].reshape(_f_host.shape), axis=0)
+            X[..., 1].ravel(), self.spec, jnp.sum(self.host_prior_gp(_f_host.X)[0].reshape(_f_host.shape), axis=0)
         )
 
         def predict(X: Array) -> tuple[Array, Array]:
-            prior = host_flux_prior(X)
+            prior = self.host_prior_gp(X)
             return prior[0] / scale(X), prior[1] ** 0.5 / scale(X)
 
-        self.host_flux_prior = predict
-
-        msgs.info("Building the host flux prior")
-        # The entire 2D data
-        prior, prior_std = self.host_flux_prior(self.f_obs.X)
-        self.f_prior = SpecWrapper(
-            points=(self.f_obs.spat, self.f_obs.spec),
-            values=prior.reshape(self.f_obs.shape),
-            values_err=prior_std.reshape(self.f_obs.shape),
-        )
-        # Within the host region
-        self.f_host_prior = self.f_prior.apply_spatial_filter(self.spat_filter["host"])
-        # The batched 2D data
-        prior_batch, prior_batch_std = self.host_flux_prior(self.f_batch_2d.X)
-        self.f_batch_prior = SpecWrapper(
-            points=(self.f_batch_2d.spat, self.f_batch_2d.spec),
-            values=prior_batch.reshape(self.f_batch_2d.shape),
-            # values_err=prior_batch_std.reshape(self.f_batch_2d.shape),
-        )
-        # Batched 2D data (host region)
-        prior_host_batch, prior_host_batch_std = self.host_flux_prior(self.f_host_batch_2d.X)
-        self.f_host_batch_prior = SpecWrapper(
-            points=(self.f_host_batch_2d.spat, self.f_host_batch_2d.spec),
-            values=prior_host_batch.reshape(self.f_host_batch_2d.shape),
-            # values_err=prior_host_batch_std.reshape(self.f_host_batch_2d.shape),
-        )
+        return predict
 
     @msgs.timer
     @show_and_save
@@ -417,7 +425,7 @@ class SpecModel:
         """
         # Version 0.1: assuming the seeing of the archival images is worse than the spectra
         # Make sure the host flux prior is built
-        if not hasattr(self, "host_flux_prior"):
+        if not hasattr(self, "host_prior"):
             raise ValueError("Please build the host flux prior first.")
 
         _spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
@@ -426,7 +434,7 @@ class SpecModel:
         chi2 = []
 
         # If the seeing of the archival images is worse than the spectra
-        _f_obs_raw = self.f_obs  # .sigma_clip().fill_nan()
+        _f_obs_raw = self.f_obs.fill_nan()
         dseeing_lst = np.arange(min_dseeing, max_dseeing, step=step_dseeing) + step_dseeing
 
         def _chi2(dseeing: float) -> Array:
@@ -447,7 +455,7 @@ class SpecModel:
             _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
 
             # Get the prior
-            prior_host_batch, _ = self.host_flux_prior(_f_host_batch_2d.X)
+            prior_host_batch, _ = self.host_prior(_f_host_batch_2d.X)
             _f_host_batch_prior = SpecWrapper(
                 points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
                 values=prior_host_batch.reshape(_f_host_batch_2d.shape),
@@ -460,37 +468,6 @@ class SpecModel:
             return jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
         chi2 = jax.vmap(_chi2)(jnp.array(dseeing_lst))
-
-        # for k, dseeing in enumerate(dseeing_lst):
-        #     # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.75)
-        #     dseeing_spec = dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-1 / 2.75)
-        #     _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
-
-        #     # Sky subtraction
-        #     _f_sky = _f_obs.apply_spatial_filter(self.spat_filter["sky"])
-        #     _f_sky_sub = _f_obs.subtract(_f_sky.marginalize(margin_type="mean"))
-        #     _f_host = _f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
-        #     _f_host_1d = _f_host.marginalize(margin_type="sum")
-
-        #     # Batch the 2D spectrum
-        #     _f_batch_2d = self.get_normalized_batch_spec(
-        #         _spat_batch_2d_idx, _spec_batch_2d_idx, f_2d=_f_sky_sub, f_1d_norm=_f_host_1d
-        #     )
-        #     _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
-
-        #     # Get the prior
-        #     if k == 0:
-        #         prior_host_batch, _ = self.host_flux_prior(_f_host_batch_2d.X)
-        #         _f_host_batch_prior = SpecWrapper(
-        #             points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
-        #             values=prior_host_batch.reshape(_f_host_batch_2d.shape),
-        #         )
-
-        #     # Calculate the distance relative to the prior
-        #     _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
-
-        #     # Calculate the chi2
-        #     chi2.append(jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2))
 
         # Find the best seeing
         plt.figure(figsize=(6, 4), constrained_layout=True)
@@ -530,9 +507,7 @@ class SpecModel:
         self.f_mask_pred = SpecWrapper(
             points=(self.f_mask.spat, self.f_mask.spec),
             values=f_mask_pred.reshape(self.f_mask.shape),
-            # values_err=jnp.zeros(self.f_mask.shape),
             values_err=f_mask_pred_err.reshape(self.f_mask.shape),
-            # TODO: add reasonable errors
         )
         self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
 
@@ -555,6 +530,11 @@ class SpecModel:
         ax.axhline(0, color="k", ls="--")
         ax.set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
         ax.set_ylabel(r"$\mathrm{Counts}$")
+        ylim = ax.get_ylim()
+        ax.set_ylim(
+            max(np.nanpercentile(self.f_sci_pred_1d.y, 1) - np.nanstd(self.f_sci_pred_1d.y), ylim[0]),
+            min(np.nanpercentile(self.f_sci_pred_1d.y, 99) + np.nanstd(self.f_sci_pred_1d.y), ylim[1]),
+        )
 
         return ax
 
@@ -935,7 +915,7 @@ class SpecModel:
         X_2d = X.reshape(-1, 2)
 
         # Obtain the mean and standard deviation of the mean function
-        prior, prior_std = self.host_flux_prior(X_2d)
+        prior, prior_std = self.host_prior(X_2d)
 
         if return_var:
             y_1d, y_1d_var = [jnp.tile(y, reps=X.shape[0]) for y in gp_1d.predict(X_test=X_1d, return_var=True)]
@@ -1026,7 +1006,9 @@ class SpecModel:
 
                 # Step 3: Bin along the spectral axis
                 values_batch_2d = values_batch_2d.at[x, y].set(jnp.nanmedian(Y_2d_1d))
-                values_err_batch_2d = values_err_batch_2d.at[x, y].set(jnp.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5)
+                values_err_batch_2d = values_err_batch_2d.at[x, y].set(
+                    jnp.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5
+                )
 
         return SpecWrapper(
             points=(spat_batch_2d, spec_batch_2d),
@@ -1541,7 +1523,7 @@ class SpecModel:
 
     @show_and_save
     def _plot_host_profile_prior(self) -> Axes:
-        if not hasattr(self, "host_flux_prior"):
+        if not hasattr(self, "host_prior"):
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 2), constrained_layout=True, sharex=True)
 
