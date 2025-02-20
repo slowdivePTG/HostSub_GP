@@ -222,25 +222,18 @@ def model_host_prior(
 def plot_QA(spec_model: "SpecModel", targetid: str):
     """Plot the QA figures."""
     # Prior and posterior of the host profiles
-    spec_model._plot_host_profile_prior()
-    plt.savefig(f"{args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
-    plt.close()
+    spec_model._plot_host_profile_prior(save=f"{args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
     msgs.info(f"Saving the prior of the host profiles to {args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
 
-    spec_model._plot_host_profile_pred()
-    plt.savefig(f"{args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
-    plt.close()
+    spec_model._plot_host_profile_pred(save=f"{args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
     msgs.info(f"Saving the posterior of the host profiles to {args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
 
     # Raw, model, and residual
-    spec_model._plot_pred()
-    plt.savefig(f"{args.galaxy}/{args.galaxy}/QA/{targetid}_pred.pdf")
-    plt.close()
+    spec_model._plot_pred(save=f"{args.galaxy}/QA/{targetid}_pred.pdf")
     msgs.info(f"Saving the raw, model, and residual to {args.galaxy}/QA/{targetid}_pred.pdf")
 
     # Extract the science spectrum
     spec_model.extract_sci()
-    plt.close()
     local_sky_left = (spec_model.spat < -spec_model.mask_wid / 2 + spec_model.mask_offset) & (
         spec_model.spat > -spec_model.mask_wid * 2 / 2 + spec_model.mask_offset
     )
@@ -405,6 +398,7 @@ if __name__ == "__main__":
         )
         params_limit_2d["mean"] = params_limit_2d.get("mean", np.array([-1e-1, 1e-1]).T)
         params_limit_2d["log_amp_line"] = params_limit_2d.get("log_amp_line", np.array([0, 5]).T)
+        params_limit_2d["scale_line"] = params_limit_2d.get("scale_line", np.array([2.7 / 2.355, 2.7 * 2]).T)
         params_limit = [params_limit_1d, params_limit_2d]
 
         # Model the host
