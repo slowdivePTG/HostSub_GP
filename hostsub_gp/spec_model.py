@@ -428,7 +428,8 @@ class SpecModel:
         # If the seeing of the archival images is worse than the spectra
         _f_obs_raw = self.f_obs  # .sigma_clip().fill_nan()
         dseeing_lst = np.arange(min_dseeing, max_dseeing, step=step_dseeing) + step_dseeing
-        for k, dseeing in enumerate(dseeing_lst):
+
+        def _chi2(dseeing: float) -> Array:
             # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.75)
             dseeing_spec = dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-1 / 2.75)
             _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
@@ -446,18 +447,50 @@ class SpecModel:
             _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
 
             # Get the prior
-            if k == 0:
-                prior_host_batch, _ = self.host_flux_prior(_f_host_batch_2d.X)
-                _f_host_batch_prior = SpecWrapper(
-                    points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
-                    values=prior_host_batch.reshape(_f_host_batch_2d.shape),
-                )
+            prior_host_batch, _ = self.host_flux_prior(_f_host_batch_2d.X)
+            _f_host_batch_prior = SpecWrapper(
+                points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
+                values=prior_host_batch.reshape(_f_host_batch_2d.shape),
+            )
 
             # Calculate the distance relative to the prior
             _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
             # Calculate the chi2
-            chi2.append(jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2))
+            return jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+
+        chi2 = jax.vmap(_chi2)(jnp.array(dseeing_lst))
+
+        # for k, dseeing in enumerate(dseeing_lst):
+        #     # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.75)
+        #     dseeing_spec = dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-1 / 2.75)
+        #     _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
+
+        #     # Sky subtraction
+        #     _f_sky = _f_obs.apply_spatial_filter(self.spat_filter["sky"])
+        #     _f_sky_sub = _f_obs.subtract(_f_sky.marginalize(margin_type="mean"))
+        #     _f_host = _f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
+        #     _f_host_1d = _f_host.marginalize(margin_type="sum")
+
+        #     # Batch the 2D spectrum
+        #     _f_batch_2d = self.get_normalized_batch_spec(
+        #         _spat_batch_2d_idx, _spec_batch_2d_idx, f_2d=_f_sky_sub, f_1d_norm=_f_host_1d
+        #     )
+        #     _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
+
+        #     # Get the prior
+        #     if k == 0:
+        #         prior_host_batch, _ = self.host_flux_prior(_f_host_batch_2d.X)
+        #         _f_host_batch_prior = SpecWrapper(
+        #             points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
+        #             values=prior_host_batch.reshape(_f_host_batch_2d.shape),
+        #         )
+
+        #     # Calculate the distance relative to the prior
+        #     _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
+
+        #     # Calculate the chi2
+        #     chi2.append(jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2))
 
         # Find the best seeing
         plt.figure(figsize=(6, 4), constrained_layout=True)
@@ -942,7 +975,7 @@ class SpecModel:
     ###############################################################################
 
     def get_normalized_batch_spec(
-        self, spat_batch_idx: list, spec_batch_idx: list, f_2d: SpecWrapper, f_1d_norm: SpecWrapper
+        self, spat_batch_idx: ArrayLike, spec_batch_idx: ArrayLike, f_2d: SpecWrapper, f_1d_norm: SpecWrapper
     ) -> SpecWrapper:
         """
         Get the batched 2D spectrum normalized by a 1D spectrum.
@@ -953,9 +986,9 @@ class SpecModel:
             Batch indices for the spatial axis.
         spec_batch_idx : ArrayLike
             Batch indices for the spectral axis.
-        f_2d : SpecWrapper, optional
+        f_2d : SpecWrapper
             The 2D spectrum to be batched.
-        f_1d_norm : SpecWrapper, optional
+        f_1d_norm : SpecWrapper
             The 1D spectrum to normalize the 2D spectrum.
 
         Returns
@@ -966,12 +999,12 @@ class SpecModel:
 
         # New coordinates: mean of the batch
         shape_batch_2d = (len(spat_batch_idx), len(spec_batch_idx))
-        spat_batch_2d = np.asarray([self.spat[idx].mean() for idx in spat_batch_idx])
-        spec_batch_2d = np.asarray([self.spec[idx].mean() for idx in spec_batch_idx])
+        spat_batch_2d = jnp.array([jnp.mean(jnp.array(self.spat)[idx]) for idx in spat_batch_idx])
+        spec_batch_2d = jnp.array([jnp.mean(jnp.array(self.spec)[idx]) for idx in spec_batch_idx])
 
         # New values: mean of the batch
-        values_batch_2d = np.empty(shape_batch_2d)
-        values_err_batch_2d = np.empty(shape_batch_2d)
+        values_batch_2d = jnp.empty(shape_batch_2d)
+        values_err_batch_2d = jnp.empty(shape_batch_2d)
 
         for y, idx_spec in enumerate(spec_batch_idx):
             # Get the 1D spectrum within the spectral batch
@@ -984,16 +1017,16 @@ class SpecModel:
             for x, idx_spat in enumerate(spat_batch_idx):
                 # Step 1: Bin along the spatial axis
                 n_spat = len(idx_spat)
-                Y_2d = np.nanmean(Y_2d_spec[idx_spat], axis=0)
-                Y_err_2d = (np.nanmean(Y_err_2d_spec[idx_spat] ** 2, axis=0) / n_spat) ** 0.5
+                Y_2d = jnp.nanmean(Y_2d_spec[idx_spat], axis=0)
+                Y_err_2d = (jnp.nanmean(Y_err_2d_spec[idx_spat] ** 2, axis=0) / n_spat) ** 0.5
 
                 # Step 2: Estimate the flux ratios (normalized profiles)
                 Y_2d_1d = Y_2d / Y_1d
                 Y_err_2d_1d = Y_2d_1d * ((Y_err_2d / Y_2d) ** 2 + (Y_err_1d / Y_1d) ** 2) ** 0.5
 
                 # Step 3: Bin along the spectral axis
-                values_batch_2d[x, y] = np.nanmedian(Y_2d_1d)
-                values_err_batch_2d[x, y] = np.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5
+                values_batch_2d = values_batch_2d.at[x, y].set(jnp.nanmedian(Y_2d_1d))
+                values_err_batch_2d = values_err_batch_2d.at[x, y].set(jnp.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5)
 
         return SpecWrapper(
             points=(spat_batch_2d, spec_batch_2d),
@@ -1155,7 +1188,7 @@ class SpecModel:
         prof_diff = jnp.nanmean(((prof - prof_med) / prof_err) ** 2, axis=0) * prof.shape[0]
 
         # Find the emission lines
-        ## Flux significantly higher than the continuum (5-sigma)
+        ## Flux significantly higher than the continuum (3-sigma)
         ## Spatial profile significantly different from the median profile (chi^2 test)
         distinct_prof, _ = find_peaks(prof_diff, height=chi2.ppf(1 - p_value, prof.shape[0]), distance=kernel_wid)
         host_lines = jnp.argwhere(f_lines > mad_std(f_lines) * 5).ravel()

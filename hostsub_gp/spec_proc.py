@@ -80,7 +80,7 @@ class SpecData:
             self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
 
             self.flux_rect, self.flux_ivar_rect = self.rectify(
-                points=self._points, f_values=(flux, flux_ivar), interp_method="rbf"
+                points=self._points, f_values=(flux, flux_ivar), interp_method="scipy"
             )
 
             # Save the 2D spectra to cache files
@@ -252,12 +252,14 @@ class SpecData:
 
         if spat_rect is None:
             # Spatial coordinates: within the range of the slit
-            spat_rect = jnp.arange(dist[0].max() // pixel_scale, dist[-1].min() // pixel_scale + 1) * pixel_scale
+            # Remove the first and last spatial pixels to avoid the edge effects
+            spat_rect = jnp.arange(dist[0].max() // pixel_scale, dist[-1].min() // pixel_scale + 1)[1:-1] * pixel_scale
             msgs.info(f"Distance from the trace: {spat_rect[0]:.2f} - {spat_rect[-1]:.2f} arcsec")
-        
+
         if spec_rect is None:
             # Spectral coordinates: at the location of the trace
-            spec_rect = trace_spec
+            # Remove the first and last spectral pixels to avoid the edge effects
+            spec_rect = trace_spec[1:-1]
             msgs.info(f"Wavelength range: {spec_rect[0]:.2f} - {spec_rect[-1]:.2f} Angstrom")
 
         return cls(
@@ -492,6 +494,7 @@ class SpecData:
         self,
         points: ArrayLike,
         f_values: tuple[ArrayLike, ArrayLike, ArrayLike],
+        batch_size: int = 1024,
         interp_method: str = "rbf",
     ) -> tuple[ArrayLike, ArrayLike]:
         """
@@ -503,34 +506,35 @@ class SpecData:
             The spatial and spectral pixel coordinates.
         f_values : tuple[ArrayLike, ArrayLike, ArrayLike]
             The flux, ivar, and flag values.
-        batch_size : int, optional (default: 8, in pixels)
+        batch_size : int, optional (default: 1024, in pixels)
             The batch size for interpolation.
-        padding_size : int, optional (default: 1, in pixels)
-            The padding size for interpolation.
+        interp_method : str, optional (default: "rbf")
+            The interpolation method.
         """
 
-        from .interp import Interp2D_RBF, Interp2D_Linear
+        from .interp import Interp2D_RBF, Interp2D_Linear, Interp2D_Scipy
 
         if ~jnp.all(jnp.isfinite(points)):
             raise ValueError("Some points are NaN.")
 
-        if interp_method not in ["rbf", "linear"]:
+        if interp_method not in ["rbf", "linear", "scipy"]:
             raise ValueError("Invalid interpolation method.")
         elif interp_method == "rbf":
             msgs.info("Interpolating the flux with RBF...")
         elif interp_method == "linear":
             msgs.info("Interpolating the flux with linear method...")
+        else:
+            msgs.info("Interpolating the flux with scipy.interpolate.griddata...")
 
         # Initialize the flux and ivar arrays on a semi-rectified grid
         # The spatial/spectral coordinate monitonically increases in each row/column
         flux, ivar = f_values
 
         spec_pix_rect, spat_pix_rect = jnp.meshgrid(self.spec_rect, self.spat_rect)
+        spec_batch_idx = jnp.array_split(jnp.arange(len(self.spec_rect)), len(self.spec_rect) // batch_size + 1)
 
         flux_rect = np.zeros((len(self.spat_rect), len(self.spec_rect)))
         flux_ivar_rect = np.zeros((len(self.spat_rect), len(self.spec_rect)))
-
-        query_points = jnp.stack([spat_pix_rect.ravel(), spec_pix_rect.ravel()], axis=-1)
 
         scales = (self.spat_resln / 2.355, self.spec_resln / 2.355)
 
@@ -542,10 +546,33 @@ class SpecData:
             interp2d = Interp2D_Linear(scales=scales)
             interp2d_ivar = Interp2D_Linear(scales=scales)
 
-        interp2d.fit(points=points, values=flux)
-        flux_rect = interp2d.predict(query_points=query_points).reshape(flux_rect.shape)
-        interp2d_ivar.fit(points=points, values=ivar)
-        flux_ivar_rect = interp2d_ivar.predict(query_points=query_points).reshape(flux_ivar_rect.shape)
+        elif interp_method == "scipy":
+            interp2d = Interp2D_Scipy(method="linear", scales=scales)
+            interp2d_ivar = Interp2D_Scipy(method="linear", scales=scales)
+
+        # Interpolate the flux in batches
+        for idx_list in spec_batch_idx:
+            msgs.info(
+                f"Interpolating the flux in the spectral range {self.spec_rect[idx_list[0]]:.2f} - {self.spec_rect[idx_list[-1]]:.2f} Ang..."
+            )
+            # The range of the spectrum to interpolate
+            spec_min = idx_list[0]
+            spec_max = idx_list[-1] + 1
+            # Initialize the interpolators (with padding)
+            fit_min = max(spec_min - 1, 0)
+            fit_max = min(spec_max + 1, points.shape[1])
+            interp2d.fit(points=points[:, fit_min:fit_max], values=flux[:, fit_min:fit_max])
+            interp2d_ivar.fit(points=points[:, fit_min:fit_max], values=ivar[:, fit_min:fit_max])
+            # Query points
+            query_points = jnp.stack(
+                [spat_pix_rect[:, spec_min:spec_max].ravel(), spec_pix_rect[:, spec_min:spec_max].ravel()], axis=-1
+            )
+            flux_rect[:, spec_min:spec_max] = interp2d.predict(query_points=query_points).reshape(
+                flux_rect[:, spec_min:spec_max].shape
+            )
+            flux_ivar_rect[:, spec_min:spec_max] = interp2d_ivar.predict(query_points=query_points).reshape(
+                flux_ivar_rect[:, spec_min:spec_max].shape
+            )
 
         return flux_rect, flux_ivar_rect
 

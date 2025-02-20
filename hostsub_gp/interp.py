@@ -8,6 +8,8 @@ from typing import Callable
 from jax._src.typing import ArrayLike, Array
 from typing import Optional
 
+from ._utils import msgs
+
 # jax.config.update("jax_enable_x64", True)
 
 ###################################################################################################
@@ -97,7 +99,7 @@ class Interp2D_base(ABC):
         self.x_grid = self.points[..., 0]
         self.y_grid = self.points[..., 1]
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def _find_nearest_cell(self, query_point: Array) -> tuple[Array, Array]:
         """
         Find the cell in the semi-uniform grid containing or nearest to the query point
@@ -115,6 +117,18 @@ class Interp2D_base(ABC):
         """
         qx, qy = query_point
 
+        # def _searchsorted_vector(x, q):
+        #     return jax.vmap(lambda x: jnp.searchsorted(x, q))(x)
+
+        # breakpoint()
+        # # Find the first i index in each row where x[i] > qx
+        # i_index = _searchsorted_vector(self.x_grid, qx) - 1
+        # i_index = jnp.clip(i_index, 0, self.shape[0] - 2)
+
+        # # Find the first j indice in the array consisting of y values of the found i row where y[j] > qy
+        # j_index = jnp.searchsorted(jnp.array([self.y_grid[i_index[idx], idx] for idx in range(self.shape[1])]), qy) - 1
+        # j_index = jnp.clip(j_index, 0, self.shape[1] - 2)
+
         # First search for x position in middle column
         mid_row = self.shape[1] // 2
         i_mid = jnp.searchsorted(self.x_grid[:, mid_row], qx) - 1
@@ -131,15 +145,17 @@ class Interp2D_base(ABC):
 
         return i_index, j_index
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _get_cell_points_and_values(self, i: int, j: int) -> tuple[Array, Array]:
+    # @partial(jax.jit, static_argnums=(0, 3, 4))
+    def _get_cell_points_and_values(self, i: int, j: int, di: int = 4, dj: int = 2) -> tuple[Array, Array]:
         """
-        Get the four corners of a grid cell and their values.
+        Get the neighboring cells of a grid cell and their values.
 
         Parameters
         ----------
         i, j : int
             Indices of the lower-left corner of the cell
+        di, dj : int, optional
+            Number of cells to include in each direction, default is 2
 
         Returns
         -------
@@ -147,23 +163,17 @@ class Interp2D_base(ABC):
             points: Array of shape (4, 2) containing corner coordinates
             values: Array of shape (4,) containing corner values
         """
-        points = jnp.stack(
-            [
-                self.points[i, j],  # lower-left
-                self.points[i, j + 1],  # lower-right
-                self.points[i + 1, j],  # upper-left
-                self.points[i + 1, j + 1],  # upper-right
-            ]
-        )
+        i_idx = jnp.arange(-di // 2, di // 2)
+        j_idx = jnp.arange(-dj // 2, dj // 2)
+        i_idx = jnp.clip(i + i_idx, 0, self.shape[0] - 1)
+        j_idx = jnp.clip(j + j_idx, 0, self.shape[1] - 1)
 
-        values = jnp.stack(
-            [
-                self.values[i, j],
-                self.values[i, j + 1],
-                self.values[i + 1, j],
-                self.values[i + 1, j + 1],
-            ]
-        )
+        # Stacking all di x dj points (with meshgrid)
+        i_grid, j_grid = jnp.meshgrid(i_idx, j_idx, indexing="ij")
+        i_grid = i_grid.ravel()
+        j_grid = j_grid.ravel()
+        points = jnp.stack([self.x_grid[i_grid, j_grid], self.y_grid[i_grid, j_grid]], axis=1)
+        values = self.values[i_grid, j_grid]
 
         return points, values
 
@@ -189,7 +199,7 @@ class Interp2D_base(ABC):
         """
         raise NotImplementedError
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def _interpolate_single(self, query_point: Array) -> Array:
         """
         Interpolate value at a single query point with NaN handling
@@ -314,10 +324,73 @@ class Interp2D_RBF(Interp2D_base):
             weights = jnp.linalg.solve(kernel_matrix, cell_values)
             return self.kernel(distances) @ weights
         except:
-            # Fallback to simpler weighting if matrix is singular
-            # if jnp.any(distances < 1e-10):
-            #     return jnp.where(distances == 0, 1.0, 0.0)
-            # return 1.0 / distances
+            msgs.warning("Singular matrix in RBF interpolation")
             return jax.lax.cond(
                 jnp.any(distances < 1e-10), lambda: jnp.where(distances == 0, 1.0, 0.0), lambda: 1.0 / distances
             )
+
+class Interp2D_Scipy(Interp2D_base):
+    """
+    2D interpolation using scipy's griddata.
+    """
+
+    def __init__(
+        self,
+        method: str = "linear",
+        scales: tuple | ArrayLike = (1, 1),
+    ):
+        """
+        Initialize Scipy interpolator
+
+        Parameters
+        ----------
+        method : str
+            Type of interpolation method ('linear', 'nearest', 'cubic')
+        scales : tuple or ArrayLike
+            Scales for each dimension
+        """
+        super().__init__(scales)
+        self.method = method
+
+    def _compute_weights(self, 
+                        cell_points: Array, 
+                        query_point: Array,
+                        dx: float,
+                        dy: float) -> Array:
+        """
+        Compute weights using scipy's griddata. This is a dummy implementation.
+        Actual interpolation is done in the predict method.
+        """
+        return jnp.ones(4)  # This is not used in this class
+
+    def predict(self, query_points: ArrayLike) -> Array:
+        """
+        Make predictions at new points with scipy's griddata
+
+        Parameters
+        ----------
+        query_points : ArrayLike
+            Array of shape (n_queries, 2) containing points to interpolate
+
+        Returns
+        -------
+        Array
+            Array of interpolated values at query_points
+        """
+        from scipy.interpolate import griddata
+        
+        query_points = jnp.asarray(query_points) / self.scales
+
+        # Flatten the grid points and values
+        flat_points = self.points.reshape(-1, 2)
+        flat_values = self.values.ravel()
+
+        # Use scipy's griddata for interpolation
+        interpolated_values = griddata(
+            flat_points,
+            flat_values,
+            query_points,
+            method=self.method
+        )
+
+        return jnp.asarray(interpolated_values)

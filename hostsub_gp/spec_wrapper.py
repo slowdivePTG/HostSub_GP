@@ -1,5 +1,5 @@
 # hostsub_gp/spec_wrapper.py
-import numpy as np
+# import numpy as np
 
 import jax
 import jax.numpy as jnp
@@ -42,9 +42,9 @@ class SpecWrapper:
                 raise ValueError("Invalid shape of the input coordinates.")
             self.spec = self.spec_img = jnp.array(points)
             self.X = self.spec[:, None]
-        
+
         self.shape = self.spec_img.shape
-        
+
         # Loading the values and errors
         if values is None:
             # No values are provided, only coordinates are loaded
@@ -62,8 +62,8 @@ class SpecWrapper:
                 # msgs.warning("No error is provided. Assuming the errors are zeros.")
             else:
                 Yerr = jnp.array(values_err)
-            self.Y = jnp.where(jnp.isfinite(Yerr), Y, np.nan)
-            self.Yerr = jnp.where(jnp.isfinite(Yerr), Yerr, np.nan)
+            self.Y = jnp.where(jnp.isfinite(Yerr), Y, jnp.nan)
+            self.Yerr = jnp.where(jnp.isfinite(Yerr), Yerr, jnp.nan)
 
             # Flatten the values and errors for GP
             if self.Y.ndim == 1:
@@ -105,48 +105,49 @@ class SpecWrapper:
             """
             from astropy.stats import mad_std
 
-            Y_meds = np.nanmedian(Y)
-            Y_stds = mad_std(Y[np.isfinite(Y)])
+            Y_meds = jnp.nanmedian(Y)
+            Y_stds = mad_std(Y[jnp.isfinite(Y)])
 
             if clip_cr:  # Only remove positive outliers
                 sigma_mask = (Y - Y_meds) <= (sigma * Y_stds)
             else:  # Remove both positive and negative outliers
-                sigma_mask = (np.abs(Y - Y_meds) <= (sigma * Y_stds)) & np.isfinite(Y)
+                sigma_mask = (jnp.abs(Y - Y_meds) <= (sigma * Y_stds)) & jnp.isfinite(Y)
 
-            Y_clipped = np.where(sigma_mask, Y, jnp.nan)
-            Yerr_clipped = np.where(sigma_mask, Yerr, jnp.nan)
+            Y_clipped = jnp.where(sigma_mask, Y, jnp.nan)
+            Yerr_clipped = jnp.where(sigma_mask, Yerr, jnp.nan)
             return Y_clipped, Yerr_clipped
 
-        Y_target = np.array(self.Y)
-        masked_init = ~np.isfinite(self.Y)
-        Yerr_target = np.array(self.Yerr)
+        Y_target = jnp.array(self.Y)
+        masked_init = ~jnp.isfinite(self.Y)
+        Yerr_target = jnp.array(self.Yerr)
 
         if batch_idx is None:
             if self.Y.ndim == 1:
                 # Calculate the means and standard deviations over the entire spectrum
-                batch_idx = ([np.arange(self.shape[0])],)
+                batch_idx = ([jnp.arange(self.shape[0])],)
             else:
                 # Calculate the means and standard deviations at each wavelength (for all spatial pixels)
-                batch_idx = ([np.arange(self.shape[0])], [np.array(i) for i in np.arange(self.shape[1])])
+                batch_idx = ([jnp.arange(self.shape[0])], [jnp.array(i) for i in jnp.arange(self.shape[1])])
 
         if self.Y.ndim == 1:
             for spec_idx in batch_idx[0]:
-                Y_target[spec_idx], Yerr_target[spec_idx] = clip(self.Y[spec_idx], self.Yerr[spec_idx])
+                Y_target = Y_target.at[spec_idx].set(clip(self.Y[spec_idx], self.Yerr[spec_idx])[0])
+                Yerr_target = Yerr_target.at[spec_idx].set(clip(self.Y[spec_idx], self.Yerr[spec_idx])[1])
         else:
             for spat_idx in batch_idx[0]:
                 for spec_idx in batch_idx[1]:
                     if (spat_idx.ndim == 1) & (spec_idx.ndim == 1):
                         # Both spat_idx and spec_idx are lists
-                        Y_target[np.ix_(spat_idx, spec_idx)], Yerr_target[np.ix_(spat_idx, spec_idx)] = clip(
-                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx]
-                        )
+                        Y_clip, Yerr_clip = clip(self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx])
+                        Y_target = Y_target.at[jnp.ix_(spat_idx, spec_idx)].set(Y_clip)
+                        Yerr_target = Yerr_target.at[jnp.ix_(spat_idx, spec_idx)].set(Yerr_clip)
                     else:
                         # Either spat_idx or spec_idx is a scalar
-                        Y_target[spat_idx, spec_idx], Yerr_target[spat_idx, spec_idx] = clip(
-                            self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx]
-                        )
+                        Y_clip, Yerr_clip = clip(self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx])
+                        Y_target = Y_target.at[(spat_idx, spec_idx)].set(Y_clip)
+                        Yerr_target = Yerr_target.at[(spat_idx, spec_idx)].set(Yerr_clip)
 
-        masked_final = ~np.isfinite(Y_target)
+        masked_final = ~jnp.isfinite(Y_target)
         msgs.info(f"Sigma clipped {masked_final.sum() - masked_init.sum()} pixels")
 
         return SpecWrapper(points=(self.spat, self.spec), values=Y_target, values_err=Yerr_target)
@@ -160,16 +161,19 @@ class SpecWrapper:
         if self.Y is None:
             raise ValueError("Filling NaN requires non-empty spectra.")
 
-        Y_masked = np.ma.masked_invalid(self.Y)
-        Y_err_masked = np.ma.masked_invalid(self.Yerr)
-        valid = ~Y_masked.mask
+        Y = jnp.array(self.Y)
+        Yerr = jnp.array(self.Yerr)
+        valid = ~jnp.isnan(Y)
 
-        x, y = np.indices(self.shape)
+        x, y = jnp.indices(self.shape)
 
         # Interpolate
-        Y_filled = griddata((x[valid], y[valid]), Y_masked[valid], (x, y), method="linear")
-        Y_err_filled = griddata((x[valid], y[valid]), Y_err_masked[valid], (x, y), method="linear")
-        msgs.info(f"Filled {np.sum(~valid)} NaN pixels")
+        Y_filled = griddata((x[valid], y[valid]), Y[valid], (x, y), method="linear")
+        Y_err_filled = griddata((x[valid], y[valid]), Yerr[valid], (x, y), method="linear")
+        filled_count = jnp.sum(~valid)
+
+        # Ideally use a logging mechanism here
+        msgs.info(f"Filled {filled_count} NaN pixels")
 
         return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
 
@@ -218,25 +222,25 @@ class SpecWrapper:
             raise ValueError("Invalid weights.")
 
         # Calculate the overall means and standard deviations
-        Y_meds = np.nanmedian(self.Y, axis=0)
-        Y_stds = np.nanstd(self.Y, axis=0, ddof=1)
+        Y_meds = jnp.nanmedian(self.Y, axis=0)
+        Y_stds = jnp.nanstd(self.Y, axis=0, ddof=1)
 
         # Create the mask for sigma clipping
         # Broadcasting to compare each column with its own mean and std
-        deviations = np.abs(self.Y - Y_meds[None, :])
+        deviations = jnp.abs(self.Y - Y_meds[None, :])
         sigma_masks = deviations <= (sigma_clip * Y_stds[None, :])
-        valid_masks = np.isfinite(self.Y)
+        valid_masks = jnp.isfinite(self.Y)
         combined_mask = sigma_masks & valid_masks
 
         # Calculate weighted means
-        weights = np.where(combined_mask, w, 0)
-        weighted_values = np.where(combined_mask, self.Y * weights, 0)
+        weights = jnp.where(combined_mask, w, 0)
+        weighted_values = jnp.where(combined_mask, self.Y * weights, 0)
 
-        mean_value = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
+        mean_value = jnp.sum(weighted_values, axis=0) / jnp.sum(weights, axis=0)
 
         # Calculate errors
-        weighted_errors = np.where(combined_mask, (self.Yerr * weights) ** 2, 0)
-        mean_value_err = np.sqrt(np.sum(weighted_errors, axis=0) / np.sum(weights, axis=0) ** 2)
+        weighted_errors = jnp.where(combined_mask, (self.Yerr * weights) ** 2, 0)
+        mean_value_err = jnp.sqrt(jnp.sum(weighted_errors, axis=0) / jnp.sum(weights, axis=0) ** 2)
 
         if margin_type == "mean":
             return SpecWrapper(points=self.spec, values=mean_value, values_err=mean_value_err)
@@ -313,8 +317,9 @@ class SpecWrapper:
             """
             Vectorized 1D Gaussian filter
             """
+
             @partial(jax.jit, static_argnums=(2,))
-            def jax_gaussian_filter1d(y: Array, sigma: float, max_kernel_size = 30) -> Array:
+            def jax_gaussian_filter1d(y: Array, sigma: float, max_kernel_size=30) -> Array:
                 """
                 JAX implementation of 1D Gaussian filter
                 """
@@ -323,7 +328,7 @@ class SpecWrapper:
                 x = jnp.arange(-radius, radius + 1)
                 kernel = jnp.exp(-0.5 * (x / sigma) ** 2)
                 kernel = kernel / jnp.sum(kernel)
-                
+
                 # Pad and convolve
                 pad_width = len(kernel) // 2
                 y_padded = jnp.pad(y, (pad_width, pad_width), mode="constant")

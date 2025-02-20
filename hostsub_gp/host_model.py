@@ -18,6 +18,7 @@ from .gp import GP
 from .host_image import PS1Image, SDSSImage
 from .interp import Interp2D_Grid
 from ._utils import plt, msgs
+from ._utils._plt import show_and_save
 
 from typing import Callable
 from jax._src.typing import Array, ArrayLike
@@ -374,18 +375,15 @@ class HostProfile:
             )
             host_prior = lambda x: gp_host_prior.predict(X_test=x, return_var=True)
 
-        self._plot_host_profile(host_prior, **kwargs)
+        self._plot_host_profile(host_prior, show=False)
 
         return host_prior
 
-    def _plot_host_profile(self, host_prior, **kwargs) -> Callable[[Array], Array]:
+    @show_and_save
+    def _plot_host_profile(self, host_prior) -> Callable[[Array], Array]:
         """
         Plot the host galaxy spatial profile.
         """
-        # Whether to plot the host profile
-        show = kwargs.get("show", False)
-        # Whether to save the plot
-        save = kwargs.get("save", None)
 
         _, ax = plt.subplots(
             len(self.filters), 1, figsize=(6, 2 * len(self.filters)), sharex=True, sharey=True, constrained_layout=True
@@ -413,11 +411,6 @@ class HostProfile:
                 0.05, 0.8, f"{self.filters[k]}: {self.wv_eff[k]:.0f} Ang", color=cmap(norm(k)), transform=ax[k].transAxes
             )
         ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
-        if save is not None:
-            plt.savefig(save, bbox_inches="tight")
-        if show:
-            plt.show()
-        plt.close()
 
 
 def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float32:

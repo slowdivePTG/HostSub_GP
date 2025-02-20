@@ -181,6 +181,7 @@ class HostSub(ScriptBase):
             f_obs=spec_model.f_obs,
             host_emission_cfg=host_emission_cfg,
             **spec_wrapper_cfg,
+            save=f"QA/{output_suffix}_raw.pdf" if args.skip_seeing_match else None, # Save the raw spectrum if not skipping the seeing match
         )
 
         # Model the host prior
@@ -191,7 +192,7 @@ class HostSub(ScriptBase):
 
         if not args.skip_seeing_match:
             # Match the seeing of the host and science spectra
-            dseeing_opt = spec_model._match_seeing(max_dseeing=1.2, show=False)
+            dseeing_opt = spec_model._match_seeing(max_dseeing=1.0, show=False)
 
             # Update the SpecModel object
             spec_model.update_seeing(dseeing_opt)
