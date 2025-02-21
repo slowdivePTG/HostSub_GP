@@ -128,33 +128,6 @@ class HostSub(ScriptBase):
                 HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
 
     @staticmethod
-    def _match_seeing(args: argparse.Namespace, spec_model: SpecModel, par_hostsub: dict):
-        """
-        Match the seeing of the host and science spectra.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            Arguments parsed by argparse.
-        spec_model : SpecModel
-            SpecModel object.
-        par_hostsub : dict
-            Parameters for host subtraction.
-        """
-        
-
-        # Match the seeing of the host and science spectra
-        dseeing_opt = spec_model._match_seeing(max_dseeing=1.5)
-
-        # Update the SpecModel object
-        spec_model.update_seeing(dseeing_opt)
-
-        # Update the SpecWrapper objects
-        dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.75)
-
-        return dseeing_opt
-
-    @staticmethod
     def _model_host_subtraction(
         args: argparse.Namespace, spec_data: SpecData, par_hostsub: dict, output_suffix: str = None
     ):
@@ -222,7 +195,7 @@ class HostSub(ScriptBase):
             f_obs=spec_model.f_obs,
             host_emission_cfg=host_emission_cfg,
             **spec_wrapper_cfg,
-            save=f"QA/{output_suffix}_conv.pdf",
+            save=f"QA/{output_suffix}_raw.pdf",
         )
 
         if not args.skip_seeing_match:
@@ -238,7 +211,7 @@ class HostSub(ScriptBase):
             spec_model.update_seeing(dseeing_opt)
 
             # Update the SpecWrapper objects
-            dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.75)
+            dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
             spec_model.construct_spec_wrapper(
                 f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),
                 host_emission_cfg=host_emission_cfg,
@@ -273,6 +246,9 @@ class HostSub(ScriptBase):
 
         params_limit = [params_limit_1d, params_limit_2d]
 
+        # Prior of the host profiles
+        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
+
         # Model the host
         spec_model.model_host(
             params_init=params_init,
@@ -285,8 +261,7 @@ class HostSub(ScriptBase):
         # Raw, model, and residual
         spec_model._plot_pred(show=False, save=f"QA/{output_suffix}_pred.pdf")
 
-        # Prior and posterior of the host profiles
-        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
+        # Posterior of the host profiles
         spec_model._plot_host_profile_pred(show=False, save=f"QA/{output_suffix}_host_profile_pred.pdf")
 
         # Extract the science spectrum

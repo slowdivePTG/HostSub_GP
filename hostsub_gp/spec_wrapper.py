@@ -165,6 +165,9 @@ class SpecWrapper:
         Yerr = jnp.array(self.Yerr)
         valid = ~jnp.isnan(Y)
 
+        if jnp.all(valid):
+            return self
+
         x, y = jnp.indices(self.shape)
 
         # Interpolate

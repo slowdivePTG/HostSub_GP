@@ -74,16 +74,18 @@ class HostProfile:
 
         for k in range(len(self.filters)):
             if spec_model is not None:
-                host_left = (
-                    -spec_model.host_wid / 2 + spec_model.mask_offset,
-                    -spec_model.mask_wid / 2 + spec_model.mask_offset,
+                host_left = (spec_model.spat_edges["host"][0], spec_model.spat_edges["mask"][0])
+                host_right = (spec_model.spat_edges["mask"][1], spec_model.spat_edges["host"][1])
+
+                sky_left = (
+                    spec_model.spat_edges["slit"][0],
+                    max(spec_model.spat_edges["sky"][0], spec_model.spat_edges["slit"][0]),
                 )
-                host_right = (
-                    spec_model.mask_wid / 2 + spec_model.mask_offset,
-                    spec_model.host_wid / 2 + spec_model.mask_offset,
+                sky_right = (
+                    min(spec_model.spat_edges["sky"][1], spec_model.spat_edges["slit"][1]),
+                    spec_model.spat_edges["slit"][1],
                 )
-                sky_left = (-spec_model.slit_len / 2, max(spec_model.sky_region[0], -spec_model.slit_len / 2))
-                sky_right = (min(spec_model.slit_len / 2, spec_model.sky_region[1]), spec_model.slit_len / 2)
+
                 xi = counts_slit[k]
                 xi_err = counts_err_slit[k]
                 xi_sky_mean = (
@@ -95,11 +97,16 @@ class HostProfile:
                 prof_slit.append(
                     (xi - xi_sky_mean)
                     / (xi_host_mean - xi_sky_mean)
-                    / (spec_model.host_wid - spec_model.mask_wid)
+                    # / (spec_model.host_wid - spec_model.mask_wid)
+                    / ((host_left[1] - host_left[0]) + (host_right[1] - host_right[0]))
                     * pixel_scale
                 )
                 prof_err_slit.append(
-                    xi_err / (xi_host_mean - xi_sky_mean) / (spec_model.host_wid - spec_model.mask_wid) * pixel_scale
+                    xi_err
+                    / (xi_host_mean - xi_sky_mean)
+                    # /(spec_model.host_wid - spec_model.mask_wid)
+                    / ((host_left[1] - host_left[0]) + (host_right[1] - host_right[0]))
+                    * pixel_scale
                 )
 
             else:  # No mask
@@ -346,9 +353,7 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = jax.jit(
-                lambda x: gp_host_prior.predict(y=self.prof, X_test=x[:, :1], return_var=True)
-            )
+            host_prior = jax.jit(lambda x: gp_host_prior.predict(y=self.prof, X_test=x[:, :1], return_var=True))
         # Multiple bands
         else:
             params = dict(
@@ -408,7 +413,11 @@ class HostProfile:
             )
             ax[k].set_ylabel(r"$\mathrm{Profile}$")
             ax[k].text(
-                0.05, 0.8, f"{self.filters[k]}: {self.wv_eff[k]:.0f} Ang", color=cmap(norm(k)), transform=ax[k].transAxes
+                0.05,
+                0.8,
+                f"{self.filters[k]}: {self.wv_eff[k]:.0f} Ang",
+                color=cmap(norm(k)),
+                transform=ax[k].transAxes,
             )
         ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
 

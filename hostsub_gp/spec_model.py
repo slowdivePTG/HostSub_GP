@@ -87,6 +87,11 @@ class SpecModel:
     spat_filter : dict[str, ArrayLike]
         Spatial filters
         - mask: mask the source trace
+        - host, host_left, host_right: mask the host galaxy region
+        - sky, sky_left, sky_right: mask the sky region
+    spat_edges : dict[str, tuple]
+        The edges of each spatial region
+        - mask: mask the source trace
         - host: mask the host galaxy region
         - sky: mask the sky region
 
@@ -142,17 +147,21 @@ class SpecModel:
         self.mask_offset = mask_offset
         self.sky_region = sky_region
         self.host_wid = host_wid
-        self.spat_filter = self._get_spat_filter()
+        self.spat_filter, self.spat_edges = self._get_spat_filter()
 
         # Load the the raw data
         self.f_obs = SpecWrapper(points=(spat, spec), values=dat, values_err=dat_err)
         msgs.info(f"Loading the 2D spectrum with the shape: {self.f_obs.shape}")
 
-    def _get_spat_filter(self) -> dict:
+    def _get_spat_filter(self) -> tuple[dict, dict]:
         """
-        Setup the spatial filters for the host galaxy modeling.
+        Setup the spatial filters/edges for the host galaxy modeling.
         """
-        spat_filter = {"mask": None, "host": None, "sky": None}
+        spat_filter = {}
+        spat_edges = {}
+
+        # The slit edges
+        spat_edges["slit"] = (self.spat[0] - 0.5 * self.pixel_scale, self.spat[-1] + 0.5 * self.pixel_scale)
 
         # The sky region
         # Adjust the sky edges to the nearest integer multiple of the pixel scale
@@ -173,10 +182,12 @@ class SpecModel:
             msgs.info(
                 f"Sky region (right): {sky_region_right:.2f} arcsec = {sky_region_right / self.pixel_scale:.0f} pixels"
             )
-        self.sky_region = (sky_region_left, sky_region_right)
+        spat_edges["sky"] = (sky_region_left, sky_region_right)
 
-        sky_left = self.spat < self.sky_region[0]
-        sky_right = self.spat > self.sky_region[1]
+        sky_left = self.spat < spat_edges["sky"][0]
+        sky_right = self.spat > spat_edges["sky"][1]
+        spat_filter["sky_left"] = sky_left
+        spat_filter["sky_right"] = sky_right
         spat_filter["sky"] = sky_left | sky_right
         if np.nansum(spat_filter["sky"]) / spat_filter["sky"].ravel().size < 0.1:
             msgs.warning(r"Sky region is < 10% of the overall pixels.")
@@ -188,28 +199,28 @@ class SpecModel:
             raise ValueError("sky_region boundary is inside the aperture mask")
         # Adjust the mask width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the mask boundary is at the edge of the pixel
-        self.mask_wid = (jnp.round(self.mask_wid / 2 / self.pixel_scale) * 2 + 1) * self.pixel_scale
-        self.mask_offset = jnp.round(self.mask_offset / self.pixel_scale) * self.pixel_scale
-        spat_filter["mask"] = (self.spat >= -self.mask_wid / 2 + self.mask_offset) & (
-            self.spat <= self.mask_wid / 2 + self.mask_offset
-        )
+        mask_wid = (jnp.ceil(self.mask_wid / 2 / self.pixel_scale) * 2 + 1) * self.pixel_scale
+        mask_offset = jnp.ceil(self.mask_offset / self.pixel_scale) * self.pixel_scale
+        spat_edges["mask"] = (-mask_wid / 2 + mask_offset, mask_wid / 2 + mask_offset)
+        spat_filter["mask"] = (self.spat >= spat_edges["mask"][0]) & (self.spat <= spat_edges["mask"][1])
         msgs.info(
-            f"Masking the source trace with the width: {self.mask_wid:.2f} arcsec = {self.mask_wid / self.pixel_scale:.0f} pixels"
+            f"Masking the source trace with the width: {mask_wid:.2f} arcsec = {mask_wid / self.pixel_scale:.0f} pixels"
         )
 
         # Define the host galaxy pixels (outside the mask)
         # Adjust the mask width to the nearest integer multiple of the pixel scale
         # Add 0.5 so the mask boundary is at the edge of the pixel
-        self.host_wid = (jnp.round(self.host_wid / 2 / self.pixel_scale) * 2 + 1) * self.pixel_scale
-        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (
-            self.spat > -self.host_wid / 2 + self.mask_offset
-        )
-        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (
-            self.spat < self.host_wid / 2 + self.mask_offset
-        )
+        host_wid = (jnp.ceil(self.host_wid / 2 / self.pixel_scale) * 2 + 1) * self.pixel_scale
+        spat_edges["host"] = (-host_wid / 2 + mask_offset, host_wid / 2 + mask_offset)
+        host_left = (self.spat < spat_edges["mask"][0]) & (self.spat > spat_edges["host"][0])
+        host_right = (self.spat > spat_edges["mask"][1]) & (self.spat < spat_edges["host"][1])
+        # host_left = (self.spat < -mask_wid / 2 + mask_offset) & (self.spat > -host_wid / 2 + mask_offset)
+        # host_right = (self.spat > mask_wid / 2 + mask_offset) & (self.spat < host_wid / 2 + mask_offset)
+        spat_filter["host_left"] = host_left
+        spat_filter["host_right"] = host_right
         spat_filter["host"] = host_left | host_right
 
-        return spat_filter
+        return spat_filter, spat_edges
 
     def construct_spec_wrapper(
         self,
@@ -438,8 +449,8 @@ class SpecModel:
         dseeing_lst = np.arange(min_dseeing, max_dseeing, step=step_dseeing) + step_dseeing
 
         def _chi2(dseeing: float) -> Array:
-            # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.75)
-            dseeing_spec = dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-1 / 2.75)
+            # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.5)
+            dseeing_spec = dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-1 / 2.5)
             _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
 
             # Sky subtraction
@@ -491,7 +502,7 @@ class SpecModel:
 
         # Update the mask, sky, and host regions
         self.mask_wid = self.mask_wid * self.spat_resln / spat_resln_0
-        self.spat_filter = self._get_spat_filter()
+        self.spat_filter, self.spat_edges = self._get_spat_filter()
 
     @show_and_save
     def extract_sci(self, method="boxcar") -> Axes:  # TODO: adopt the extraction method of pypeit
@@ -516,8 +527,8 @@ class SpecModel:
 
         if method == "boxcar":
             extract_weights = None
-        elif method == "optimal":
-            extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
+        # elif method == "optimal":
+        #     extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
         else:
             raise ValueError("Invalid extraction method.")
 
@@ -1027,12 +1038,8 @@ class SpecModel:
         Array
             Indicating which batches are within the host galaxy (i.e., outside the mask)
         """
-        host_left = (self.spat < -self.mask_wid / 2 + self.mask_offset) & (
-            self.spat > -self.host_wid / 2 + self.mask_offset
-        )
-        host_right = (self.spat > self.mask_wid / 2 + self.mask_offset) & (
-            self.spat < self.host_wid / 2 + self.mask_offset
-        )
+        host_left = self.spat_filter["host_left"]
+        host_right = self.spat_filter["host_right"]
 
         batch_2d = self.batch_2d
         mask = self.spat_filter["mask"]
@@ -1475,12 +1482,12 @@ class SpecModel:
             ax_.set_xlim(self.spec[0], self.spec[-1])
             ax_.set_xticks([])
         for ax_ in ax[:-2]:
-            ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
-            ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
-            ax_.axhline(-self.host_wid / 2 + self.mask_offset, color="crimson", linestyle="-.", lw=3)
-            ax_.axhline(self.host_wid / 2 + self.mask_offset, color="crimson", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_region[0], color="darkgreen", linestyle="-.", lw=3)
-            ax_.axhline(self.sky_region[1], color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["mask"][0], color="w", linestyle="--", lw=3)
+            ax_.axhline(self.spat_edges["mask"][1], color="w", linestyle="--", lw=3)
+            ax_.axhline(self.spat_edges["mask"][0], color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["mask"][1], color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["sky"][0], color="darkgreen", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["sky"][1], color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylim(self.spat[0], self.spat[-1])
 
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
@@ -1507,8 +1514,8 @@ class SpecModel:
         # Mask the SN trace in the 2D spectrum
         ax[2].fill_between(
             ax[2].get_xlim(),
-            -self.mask_wid / 2 + self.mask_offset,
-            self.mask_wid / 2 + self.mask_offset,
+            self.spat_edges["mask"][0],
+            self.spat_edges["mask"][1],
             color="w",
             zorder=100,
         )
@@ -1559,8 +1566,8 @@ class SpecModel:
         ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
-            x1=-self.mask_wid / 2 + self.mask_offset,
-            x2=self.mask_wid / 2 + self.mask_offset,
+            x1=self.spat_edges["mask"][0],
+            x2=self.spat_edges["mask"][1],
             color="w",
             zorder=100,
             alpha=0.75,
@@ -1575,8 +1582,8 @@ class SpecModel:
             raise ValueError("Please model the host galaxy first.")
         _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 2), constrained_layout=True, sharex=True)
 
-        raw = self.dist_host_batch_2d.Y
-        raw_err = self.dist_host_batch_2d.Yerr
+        raw = self.dist_batch_2d.Y
+        raw_err = self.dist_batch_2d.Yerr
         pred, pred_err = [
             p.reshape(self.dist_batch_2d.shape)
             for p in self._gp_2d.predict(X_test=self.dist_batch_2d.X, return_var=True)
@@ -1585,12 +1592,9 @@ class SpecModel:
         offset = max((np.percentile(pred, 95) - np.percentile(pred, 5)), np.nanmedian(raw_err) * 2)
 
         for k, (r, err, p, perr) in enumerate(zip(raw.T, raw_err.T, pred.T, pred_err.T)):
-            # c_raw = cmap(norm(k))
             c_raw = "k"
-            ax.plot(self.dist_host_batch_2d.spat, r - offset * k, "--x", color=c_raw, alpha=0.5)
-            ax.fill_between(
-                self.dist_host_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5
-            )
+            ax.plot(self.dist_batch_2d.spat, r - offset * k, "--x", color=c_raw, alpha=0.5)
+            ax.fill_between(self.dist_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5)
             ax.errorbar(self.dist_batch_2d.spat, p - offset * k, yerr=perr, fmt="-o", capsize=3, color=c_raw)
             ax.text(
                 self.mask_offset,
@@ -1608,8 +1612,8 @@ class SpecModel:
         ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
-            x1=-self.mask_wid / 2 + self.mask_offset,
-            x2=self.mask_wid / 2 + self.mask_offset,
+            x1=self.spat_edges["mask"][0],
+            x2=self.spat_edges["mask"][1],
             color="w",
             zorder=100,
             alpha=0.75,
@@ -1672,10 +1676,8 @@ class SpecModel:
         )
         ax[-1].imshow(f_res_Y, **residual_params)
         for ax_ in ax:
-            ax_.axhline(-self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
-            ax_.axhline(self.mask_wid / 2 + self.mask_offset, color="w", linestyle="--", lw=3)
-            # ax_.axhline(-self.host_wid / 2, color="crimson", linestyle="-.", lw=3)
-            # ax_.axhline(self.host_wid / 2, color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["mask"][0], color="w", linestyle="--", lw=3)
+            ax_.axhline(self.spat_edges["mask"][1], color="w", linestyle="--", lw=3)
             ax_.set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[0].set_title(r"$\mathrm{Source}$")
         ax[1].set_title(r"$\mathrm{Model\ (1D)}$")
@@ -1683,6 +1685,6 @@ class SpecModel:
         ax[3].set_title(r"$\mathrm{Model}$")
         ax[-1].set_title(r"$\mathrm{Residual} = \mathrm{Source} - \mathrm{Model}$")
         ax[-1].set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
-        ax[-1].set_ylim(-self.host_wid / 2 + self.mask_offset, self.host_wid / 2 + self.mask_offset)
+        ax[-1].set_ylim(self.spat_edges["host"])
 
         return ax
