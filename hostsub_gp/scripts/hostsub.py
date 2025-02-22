@@ -6,7 +6,7 @@ import numpy as np
 import os
 import argparse
 
-from hostsub_gp import SpecData, SpecModel
+from hostsub_gp import SpecData
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput, Digitize
 from .._utils import msgs
@@ -183,32 +183,39 @@ class HostSub(ScriptBase):
         seeing_match_cfg["step_dseeing"] = Float(par_seeing_match.get("step_dseeing", 0.01))
         seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
 
+        # Parameters for modeling the host prior
+        par_host_prior = par_hostsub.get("host_prior", {})
+        host_prior_cfg = {}
+        host_prior_cfg["filters"] = par_host_prior.get("filters", "grizy")
+        host_prior_cfg["spat_resln"] = Float(par_host_prior.get("spat_resln", 1.0))
+        host_prior_cfg["noise_smooth_kernel"] = Int(par_host_prior.get("noise_smooth_kernel", None))
+
+        # Initialize the SpecModel object
         spec_model = spec_data.to_SpecModel(**spec_model_cfg)
 
         # Model the host prior
         spec_model.build_host_prior(
-            filters=par_hostsub.get("filters", "ugrizy"),
+            from_archival=True,
+            **host_prior_cfg,
             save=f"QA/{output_suffix}_host_prior.pdf",
-        )
-
-        spec_model.construct_spec_wrapper(
-            f_obs=spec_model.f_obs,
-            host_emission_cfg=host_emission_cfg,
-            **spec_wrapper_cfg,
-            save=f"QA/{output_suffix}_raw.pdf",
         )
 
         if not args.skip_seeing_match:
             dseeing = seeing_match_cfg.pop("dseeing", None)
             if dseeing is None:
-                # Match the seeing of the host and science spectra
-                dseeing_opt = spec_model._match_seeing(**seeing_match_cfg)
+                # Initialize the raw spectra
+                spec_model.construct_spec_wrapper(
+                    f_obs=spec_model.f_obs,
+                    host_emission_cfg=host_emission_cfg,
+                    **spec_wrapper_cfg,
+                    save=f"QA/{output_suffix}_raw.pdf",
+                )
             else:
                 msgs.info(f"Using the seeing difference of {dseeing} provided by the user.")
                 dseeing_opt = dseeing
 
             # Update the SpecModel object
-            spec_model.update_seeing(dseeing_opt)
+            spec_model.update_seeing(dseeing_opt, **seeing_match_cfg)
 
             # Update the SpecWrapper objects
             dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
@@ -223,28 +230,7 @@ class HostSub(ScriptBase):
         if args.skip_model:
             return
 
-        # Get the initial parameters
-        params_init_1d = par_hostsub.get("params_init_1d", None)
-        params_init_2d = par_hostsub.get("params_init_2d", None)
-        # Convert the initial parameters to the correct data type
-        for params in [params_init_1d, params_init_2d]:
-            if params is not None:
-                for key, value in params.items():
-                    params[key] = Float(value)
-        params_init = [params_init_1d, params_init_2d]
-
-        # Get limits for the parameters
-        # Reset the key names
-        def _set_params_limit(params_limit_dict):
-            """Integrate upper and lower limits of each parameter."""
-            upper = {k.replace("_upper", ""): Float(v) for k, v in params_limit_dict.items() if "upper" in k}
-            lower = {k.replace("_lower", ""): Float(v) for k, v in params_limit_dict.items() if "lower" in k}
-            return {k: (lower[k], upper[k]) for k in lower}
-
-        params_limit_1d = _set_params_limit(par_hostsub.get("params_limit_1d", {}))
-        params_limit_2d = _set_params_limit(par_hostsub.get("params_limit_2d", {}))
-
-        params_limit = [params_limit_1d, params_limit_2d]
+        params_init, params_limit = HostSub._load_gp_params(par_hostsub)
 
         # Prior of the host profiles
         spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
@@ -272,3 +258,25 @@ class HostSub(ScriptBase):
             fmt="%.4f %.6e %.6e",
         )
         msgs.info(f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt")
+
+    @staticmethod
+    def _load_gp_params(par: dict) -> tuple[dict[str, float], list[dict[str, tuple[float, float]]]]:
+        # Convert the initial parameters to the correct data type
+        params_init_1d = {k: Float(v) for k, v in par.get("params_init_1d", {}).items()}
+        params_init_2d = {k: Float(v) for k, v in par.get("params_init_2d", {}).items()}
+        params_init = [params_init_1d, params_init_2d]
+
+        # Get limits for the parameters
+        # Reset the key names
+        def _set_params_limit(params_limit_dict):
+            """Integrate upper and lower limits of each parameter."""
+            upper = {k.replace("_upper", ""): Float(v) for k, v in params_limit_dict.items() if "upper" in k}
+            lower = {k.replace("_lower", ""): Float(v) for k, v in params_limit_dict.items() if "lower" in k}
+            return {k: (lower[k], upper[k]) for k in lower}
+
+        params_limit_1d = _set_params_limit(par.get("params_limit_1d", {}))
+        params_limit_2d = _set_params_limit(par.get("params_limit_2d", {}))
+
+        params_limit = [params_limit_1d, params_limit_2d]
+
+        return params_init, params_limit

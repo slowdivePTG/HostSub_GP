@@ -1,13 +1,8 @@
-# hostsub_gp/host_profile.py
+# hostsub_gp/host_model.py
 
 __all__ = ["HostProfile"]
 
 import numpy as np
-
-from astropy.wcs import WCS
-from astropy.wcs.utils import proj_plane_pixel_scales
-from astropy.coordinates import SkyCoord
-import astropy.units as u
 
 import jax
 import jax.numpy as jnp
@@ -20,8 +15,9 @@ from .interp import Interp2D_Grid
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
 
-from typing import Callable
+from typing import Callable, Optional
 from jax._src.typing import Array, ArrayLike
+from .spec_base import SpecModelP
 
 
 class HostProfile:
@@ -32,9 +28,9 @@ class HostProfile:
         spat_slit: list[ArrayLike],
         counts_slit: list[ArrayLike],
         counts_err_slit: list[ArrayLike],
-        spec_model: any = None,
-        slit_len: float = None,
-        pixel_scale: float = None,
+        spec_model: Optional[SpecModelP] = None,
+        slit_len: Optional[float] = None,
+        pixel_scale: Optional[float] = None,
     ):
         """
         Estimate the host galaxy spatial profile from the 2D spectrum.
@@ -51,7 +47,7 @@ class HostProfile:
             Counts along the slit.
         counts_err_slit : list[ArrayLike]
             Errors of the counts along the slit.
-        spec_model : any, optional
+        spec_model : SpecModelP, optional
             SpecModel object.
         slit_len : float, optional
             Slit length in arcsec.
@@ -64,7 +60,7 @@ class HostProfile:
         prof_slit, prof_err_slit = [], []
 
         if spec_model is not None:
-            slit_len = spec_model.slit_len
+            slit_len = spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
             pixel_scale = spec_model.pixel_scale
             mask_offset = spec_model.mask_offset
         elif slit_len is None or pixel_scale is None:
@@ -117,7 +113,7 @@ class HostProfile:
 
         # trim the slit
         if spec_model is not None:
-            self.host_wid = spec_model.host_wid  # Host width in pixels
+            self.host_wid = spec_model.spat_edges["host"][1] - spec_model.spat_edges["host"][0]  # Host width in pixels
         else:
             self.host_wid = slit_len  # Host width in pixels - if not specified, using the slit length
 
@@ -156,13 +152,14 @@ class HostProfile:
     @_suppress_fitsfixed_warning
     def from_archival(
         cls,
-        spec_model: any = None,
+        spec_model: Optional[SpecModelP] = None,
         center_ra: float = None,
         center_dec: float = None,
         slit_len: float = None,
         slit_wid: float = 1.0,
         position_angle: float = None,
         filters: str | list = None,
+        noise_smooth_kernel: int = None,
     ):
         """
         Load archival images from PS1 and SDSS and estimate the host galaxy spatial profile.
@@ -183,12 +180,18 @@ class HostProfile:
             Position angle of the slit.
         filters : str or list, optional
             Filters to load the images.
+        noise_smooth_kernel : int, optional
+            Kernel size for smoothing the noise.
         """
+        from astropy.wcs import WCS
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
 
         if spec_model is not None:
             center_ra = spec_model.center_ra
             center_dec = spec_model.center_dec
-            slit_len = spec_model.slit_len
+            slit_len = spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
             slit_wid = spec_model.slit_wid
             position_angle = spec_model.position_angle
         else:
@@ -309,7 +312,8 @@ class HostProfile:
             # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
             err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
             # Smooth the error: convolution with a boxcar filter
-            err = (np.convolve(err**2, np.ones(3) / 3, mode="same")) ** 0.5
+            if noise_smooth_kernel is not None:
+                err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
             counts_err_slit.append(err)
 
         return cls(
@@ -324,26 +328,33 @@ class HostProfile:
         )
 
     @msgs.timer
-    def model_host_profile_prior(self, **kwargs) -> Callable[[Array], tuple[Array, Array]]:
+    def model_host_profile_prior(self, spat_resln: float = 1.0, **kwargs) -> Callable[[Array], tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
+
+        Parameters
+        ----------
+        spat_resln : float, optional
+            Spatial resolution (seeing) in arcsec.
 
         Returns
         -------
         host_prior : Callable[[Array], tuple[Array, Array]]
             A function that returns the mean and variance of the host profile.
         """
+        large_scale = 1e10
+
         # No prior photometric data
         if len(self.filters) == 0:
             host_prior = lambda _: (jnp.float32(1 / self.host_wid), jnp.float32(0))  # constant, variance = 0
-        # Single band
+        # Single band - no wavelength dependence
         elif len(self.filters) == 1:
             params = dict(
                 log_amp=np.float64(-3),
-                log_scale=np.float64(-0.5),
+                log_scale=np.log10(spat_resln),
                 mean=np.float64(1 / self.host_wid),
             )
-            params_limit = dict(log_scale=np.log10([1.1 / 2.355, 1.5 / 2.355]))
+            params_limit = dict(log_scale=np.log10([spat_resln / 2.355, large_scale]))
             gp_host_prior = GP(
                 kernel_type="HostProfie",
                 X=self.X[:, :1],  # Spatial coordinate only
@@ -354,18 +365,18 @@ class HostProfile:
                 optimization=True,
             )
             host_prior = jax.jit(lambda x: gp_host_prior.predict(y=self.prof, X_test=x[:, :1], return_var=True))
-        # Multiple bands
+        # Multiple bands - wavelength dependence
         else:
             params = dict(
                 log_amp=np.ones((2, 2)) * -2,
-                log_scale=np.log10([[1, 1 / 2.355], [1e3, 1e1]]),
+                log_scale=np.log10([[spat_resln, spat_resln], [1e3, 1e2]]),
                 mean=np.float64(1 / self.host_wid),
             )
             params_limit = dict(
                 log_scale=np.log10(
                     [
-                        [[1.1 / 2.355, 0.8 / 2.355], [1e2, 1e0]],  # lower bound
-                        [[10, 1.5 / 2.355], [1e4, 1e2]],  # upper bound
+                        [[spat_resln / 2.355, spat_resln / 2.355], [1e0, 1e0]],  # lower bound
+                        [[large_scale, spat_resln * 2], [large_scale, large_scale]],  # upper bound
                     ]
                 )
             )

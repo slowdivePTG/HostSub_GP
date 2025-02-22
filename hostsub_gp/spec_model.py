@@ -19,7 +19,7 @@ from .gp import GP
 from .host_model import HostProfile
 from .spec_wrapper import SpecWrapper
 
-from typing import Callable
+from typing import Callable, Optional
 from jax._src.typing import ArrayLike, Array
 from matplotlib.axes import Axes
 
@@ -123,17 +123,12 @@ class SpecModel:
         host_wid: float = 10.0,  # in arcsec, host region used for the fitting
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
         mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
-        sky_region: tuple = (-5.0, 5.0),  # in arcsec, sky region
+        sky_region: tuple[float, float] = (-5.0, 5.0),  # in arcsec, sky region
     ):
         # Load spectral configuration
         self.pixel_scale = pixel_scale
         self.center_ra = center_ra
         self.center_dec = center_dec
-        self.slit_wid = slit_wid
-        if slit_len is None:
-            self.slit_len = spat[-1] - spat[0] + spat[2] - spat[1]
-        else:
-            self.slit_len = slit_len
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
@@ -142,92 +137,114 @@ class SpecModel:
         self.spat, self.spec = spat, spec
         self.shape = (len(spat), len(spec))
 
-        # Define the mask, sky, and host regions
-        self.mask_wid = mask_wid * self.spat_resln
-        self.mask_offset = mask_offset
-        self.sky_region = sky_region
-        self.host_wid = host_wid
-        self.spat_filter, self.spat_edges = self._get_spat_filter()
-
         # Load the the raw data
+        msgs.info(f"Loading the 2D spectrum with the shape: {self.shape}")
         self.f_obs = SpecWrapper(points=(spat, spec), values=dat, values_err=dat_err)
-        msgs.info(f"Loading the 2D spectrum with the shape: {self.f_obs.shape}")
 
-    def _get_spat_filter(self) -> tuple[dict, dict]:
+        # Define the mask, sky, and host regions
+        # Constant attributes
+        self.slit_wid = slit_wid
+        # Attributes to be tweaked to match the pixel edges
+        self._slit_len = slit_len
+        self._host_wid = host_wid
+        self._mask_wid = mask_wid * self.spat_resln
+        self._mask_offset = mask_offset
+        self._sky_region = sky_region
+        self._build_spat_filter()
+
+    def _build_spat_filter(self) -> None:
         """
         Setup the spatial filters/edges for the host galaxy modeling.
+
+        The spatial filters include:
+        - mask: mask the source trace
+        - host: the host galaxy region
+        - sky: the sky region
+
+        The edges of each regions are tweaked to the nearest edge of a pixel: (integer + 0.5) * pixel_scale.
         """
         spat_filter = {}
         spat_edges = {}
 
         # The slit edges
-        spat_edges["slit"] = (self.spat[0] - 0.5 * self.pixel_scale, self.spat[-1] + 0.5 * self.pixel_scale)
+        if self._slit_len is None:
+            spat_edges["slit"] = (self.spat[0] - 0.5 * self.pixel_scale, self.spat[-1] + 0.5 * self.pixel_scale)
+        else:
+            spat_edges["slit"] = (
+                (jnp.ceil(-self._slit_len / 2 / self.pixel_scale) - 0.5) * self.pixel_scale,
+                (jnp.ceil(self._slit_len / 2 / self.pixel_scale) + 0.5) * self.pixel_scale,
+            )
+        slit_len = spat_edges["slit"][1] - spat_edges["slit"][0]
+        msgs.info(f"Slit length = {slit_len:.2f} arcsec = {slit_len / self.pixel_scale:.0f} pixels")
 
         # The sky region
-        # Adjust the sky edges to the nearest integer multiple of the pixel scale
-        # Add 0.5 so the mask boundary is at the edge of the pixel
-        if self.sky_region[0] is None:
-            sky_region_left = -jnp.inf
+        if self._sky_region[0] is None:
+            spat_edges_sky_left = spat_edges["slit"][0]
             msgs.info(f"Excluding the left sky region")
         else:
-            sky_region_left = jnp.ceil(self.sky_region[0] / self.pixel_scale - 0.5) * self.pixel_scale
+            spat_edges_sky_left = (jnp.ceil(self._sky_region[0] / self.pixel_scale) - 0.5) * self.pixel_scale
             msgs.info(
-                f"Sky region (left): {sky_region_left:.2f} arcsec = {sky_region_left / self.pixel_scale:.0f} pixels"
+                f"Sky edge (left): {spat_edges_sky_left:.2f} arcsec = {spat_edges_sky_left / self.pixel_scale:.0f} pixels"
             )
-        if self.sky_region[1] is None:
-            sky_region_right = jnp.inf
+        if self._sky_region[1] is None:
+            spat_edges_sky_right = spat_edges["slit"][1]
             msgs.info(f"Excluding the right sky region")
         else:
-            sky_region_right = jnp.ceil(self.sky_region[1] / self.pixel_scale + 0.5) * self.pixel_scale
+            spat_edges_sky_right = (jnp.ceil(self._sky_region[1] / self.pixel_scale) + 0.5) * self.pixel_scale
             msgs.info(
-                f"Sky region (right): {sky_region_right:.2f} arcsec = {sky_region_right / self.pixel_scale:.0f} pixels"
+                f"Sky edge (right): {spat_edges_sky_right:.2f} arcsec = {spat_edges_sky_right / self.pixel_scale:.0f} pixels"
             )
-        spat_edges["sky"] = (sky_region_left, sky_region_right)
+        spat_edges["sky"] = (spat_edges_sky_left, spat_edges_sky_right)
 
         sky_left = self.spat < spat_edges["sky"][0]
         sky_right = self.spat > spat_edges["sky"][1]
         spat_filter["sky_left"] = sky_left
         spat_filter["sky_right"] = sky_right
         spat_filter["sky"] = sky_left | sky_right
-        if np.nansum(spat_filter["sky"]) / spat_filter["sky"].ravel().size < 0.1:
+        if np.nansum(spat_filter["sky"]) / np.ravel(spat_filter["sky"]).size < 0.1:
             msgs.warning(r"Sky region is < 10% of the overall pixels.")
         if np.nansum(spat_filter["sky"]) == 0:
-            raise ValueError("No sky region is defined.")
+            raise ValueError("No valid pixels in the sky region.")
+
+        # Shift the center of the mask
+        mask_offset = jnp.ceil(self._mask_offset / self.pixel_scale) * self.pixel_scale
 
         # Mask the trace from the source (|spat| < mask_wid / 2)
-        if min(np.abs(self.sky_region)) <= self.mask_wid:
+        spat_edges["mask"] = (
+            (jnp.ceil(-self._mask_wid / 2 / self.pixel_scale) - 0.5) * self.pixel_scale + mask_offset,
+            (jnp.ceil(self._mask_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale + mask_offset,
+        )
+        if spat_edges["sky"][0] > spat_edges["mask"][0] or spat_edges["sky"][1] < spat_edges["mask"][1]:
             raise ValueError("sky_region boundary is inside the aperture mask")
-        # Adjust the mask width to the nearest integer multiple of the pixel scale
-        # Add 0.5 so the mask boundary is at the edge of the pixel
-        mask_wid = (jnp.ceil(self.mask_wid / 2 / self.pixel_scale) * 2 + 1) * self.pixel_scale
-        mask_offset = jnp.ceil(self.mask_offset / self.pixel_scale) * self.pixel_scale
-        spat_edges["mask"] = (-mask_wid / 2 + mask_offset, mask_wid / 2 + mask_offset)
+        mask_wid = spat_edges["mask"][1] - spat_edges["mask"][0]
         spat_filter["mask"] = (self.spat >= spat_edges["mask"][0]) & (self.spat <= spat_edges["mask"][1])
         msgs.info(
             f"Masking the source trace with the width: {mask_wid:.2f} arcsec = {mask_wid / self.pixel_scale:.0f} pixels"
         )
 
         # Define the host galaxy pixels (outside the mask)
-        # Adjust the mask width to the nearest integer multiple of the pixel scale
-        # Add 0.5 so the mask boundary is at the edge of the pixel
-        host_wid = (jnp.ceil(self.host_wid / 2 / self.pixel_scale) * 2 + 1) * self.pixel_scale
-        spat_edges["host"] = (-host_wid / 2 + mask_offset, host_wid / 2 + mask_offset)
+        spat_edges["host"] = (
+            (jnp.ceil(-self._host_wid / 2 / self.pixel_scale) - 0.5) * self.pixel_scale + mask_offset,
+            (jnp.ceil(self._host_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale + mask_offset,
+        )
+        host_wid = spat_edges["host"][1] - spat_edges["host"][0]
         host_left = (self.spat < spat_edges["mask"][0]) & (self.spat > spat_edges["host"][0])
         host_right = (self.spat > spat_edges["mask"][1]) & (self.spat < spat_edges["host"][1])
-        # host_left = (self.spat < -mask_wid / 2 + mask_offset) & (self.spat > -host_wid / 2 + mask_offset)
-        # host_right = (self.spat > mask_wid / 2 + mask_offset) & (self.spat < host_wid / 2 + mask_offset)
         spat_filter["host_left"] = host_left
         spat_filter["host_right"] = host_right
         spat_filter["host"] = host_left | host_right
+        msgs.info(f"Host galaxy region: {host_wid:.2f} arcsec = {host_wid / self.pixel_scale:.0f} pixels")
 
-        return spat_filter, spat_edges
+        self.spat_filter = spat_filter
+        self.spat_edges = spat_edges
+        self.mask_offset = mask_offset
 
     def construct_spec_wrapper(
         self,
         f_obs: SpecWrapper,
-        batch_2d: tuple[int, int] = (2, 64),  # batch size for modeling slowing varying host profiles
-        host_emission_cfg: dict = None,  # parameters for identifying host emission lines
-        sigma_clip: float = 5.0,  # sigma clipping threshold
+        batch_2d: tuple[int, int] = (2, 64),
+        host_emission_cfg: dict = None,
+        sigma_clip: float = 5.0,
         show: bool = False,
         save: str = None,
     ):
@@ -288,6 +305,7 @@ class SpecModel:
         msgs.info(f"Batched 2D galaxy spectrum: {self.f_host_batch_2d.shape}")
 
         # Construct the prior of the host galaxy from images
+        msgs.info("Building the host flux prior")
         self.host_prior = self._get_host_prior()
         # The entire 2D data
         prior, prior_std = self.host_prior(self.f_obs.X)
@@ -313,6 +331,11 @@ class SpecModel:
             # values_err=prior_host_batch_std.reshape(self.f_host_batch_2d.shape),
         )
 
+        # Calculate the distance relative to the prior
+        msgs.info("Calculating the distance relative to the prior")
+        self.dist_batch_2d = self.f_batch_2d.subtract(self.f_batch_prior)
+        self.dist_host_batch_2d = self.f_host_batch_2d.subtract(self.f_host_batch_prior)
+
         self._plot_raw(show=show, save=save)
 
     def model_host(
@@ -332,16 +355,6 @@ class SpecModel:
         optimization : bool, optional (default: False)
             Whether to optimize the model with the jaxopt.ScipyMinimize solver.
         """
-
-        # Make sure the host flux prior is built
-        if not hasattr(self, "host_prior"):
-            raise ValueError("Please build the host flux prior first.")
-
-        # Calculate the distance relative to the prior
-        msgs.info("Calculating the distance relative to the prior")
-        self.dist_batch_2d = self.f_batch_2d.subtract(self.f_batch_prior)
-        self.dist_host_batch_2d = self.f_host_batch_2d.subtract(self.f_host_batch_prior)
-
         # Initialize the parameters
         params_init_1d = self._set_params_init(params_init[0], ndim=1)
         params_init_2d = self._set_params_init(params_init[1], ndim=2)
@@ -380,7 +393,9 @@ class SpecModel:
 
     def build_host_prior(
         self,
-        filters="ugrizy",
+        filters: str | list[str] = "grizy",
+        spat_resln: float = 1.0,
+        noise_smooth_kernel: float = None,
         from_archival: bool = True,
         wv_eff: ArrayLike = None,
         spat_slit: ArrayLike = None,
@@ -394,7 +409,9 @@ class SpecModel:
         msgs.info("Building the host flux prior")
         if from_archival:
             # Load the archival photometric data (PS1, SDSS)
-            host_prof = HostProfile.from_archival(spec_model=self, filters=filters)
+            host_prof = HostProfile.from_archival(
+                spec_model=self, filters=filters, noise_smooth_kernel=noise_smooth_kernel
+            )
         elif (wv_eff is None) or (spat_slit is None) or (counts_slit is None) or (counts_err_slit is None):
             raise ValueError("Please provide the photometric data for modeling the host prior.")
         else:
@@ -407,7 +424,7 @@ class SpecModel:
                 counts_slit=counts_slit,
                 counts_err_slit=counts_err_slit,
             )
-        self.host_prior_gp = host_prof.model_host_profile_prior(**kwargs)
+        self.host_prior_gp = host_prof.model_host_profile_prior(spat_resln=spat_resln, **kwargs)
 
     def _get_host_prior(self) -> Callable[[Array], tuple[Array, Array]]:
         """
@@ -490,19 +507,22 @@ class SpecModel:
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
         return best_dseeing
 
-    def update_seeing(self, dseeing: ArrayLike) -> None:
+    def update_seeing(self, dseeing: ArrayLike = None, **kwargs) -> None:
         """
         Update the seeing of the host galaxy profile with the instrumental seeing.
         """
+        if dseeing is None:
+            dseeing = self._match_seeing(**kwargs)
         # Update the spatial resolution
         spat_resln_0 = self.spat_resln
         msgs.info(f"Original spatial resolution: {spat_resln_0:.2f} arcsec")
         self.spat_resln = (spat_resln_0**2 + dseeing**2) ** 0.5
         msgs.info(f"Updated spatial resolution: {self.spat_resln:.2f} arcsec")
 
+        # Update the input mask width
+        self._mask_wid = self._mask_wid * self.spat_resln / spat_resln_0
         # Update the mask, sky, and host regions
-        self.mask_wid = self.mask_wid * self.spat_resln / spat_resln_0
-        self.spat_filter, self.spat_edges = self._get_spat_filter()
+        self._build_spat_filter()
 
     @show_and_save
     def extract_sci(self, method="boxcar") -> Axes:  # TODO: adopt the extraction method of pypeit
