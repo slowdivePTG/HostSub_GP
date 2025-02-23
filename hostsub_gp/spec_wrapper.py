@@ -181,7 +181,7 @@ class SpecWrapper:
         return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
 
     def marginalize(
-        self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 5.0
+        self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 5.0, nan_threshold: float = 0.1
     ) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
@@ -197,6 +197,8 @@ class SpecWrapper:
             snr: signal-to-noise ratio squared
         sigma_clip : float, optional
             Sigma clipping threshold for the marginalization. Default is 5.
+        nan_threshold : float, optional
+            Threshold for the fraction of NaN values in a column. Columns with NaN fraction > nan_threshold will be masked. Default is 0.1.
 
         Returns
         -------
@@ -244,6 +246,11 @@ class SpecWrapper:
         # Calculate errors
         weighted_errors = jnp.where(combined_mask, (self.Yerr * weights) ** 2, 0)
         mean_value_err = jnp.sqrt(jnp.sum(weighted_errors, axis=0) / jnp.sum(weights, axis=0) ** 2)
+
+        # Mask columns with NaN fraction > nan_threshold
+        nan_fraction = jnp.sum(~jnp.isfinite(self.Y), axis=0) / self.shape[0]
+        mean_value = jnp.where(nan_fraction > nan_threshold, jnp.nan, mean_value)
+        mean_value_err = jnp.where(nan_fraction > nan_threshold, jnp.nan, mean_value_err)
 
         if margin_type == "mean":
             return SpecWrapper(points=self.spec, values=mean_value, values_err=mean_value_err)

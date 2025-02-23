@@ -44,14 +44,18 @@ class SpecModel:
         The declination of science object.
     slit_wid : float
         The width of the slit (arcsec).
-    slit_len : float
-        The length of the slit (arcsec).
     position_angle : float
         The position angle of the slit (degree).
     spat_resln : float
         The spatial resolution (FWHM/seeing) of the 2D spectrum (arcsec).
     spec_resln : float
         The spectral resolution of the 2D spectrum (angstrom).
+    slit_len : float
+        The length of the slit (arcsec).
+    slit_trim : tuple[int, int]
+        The trimming edges of the slit (pixels).
+    spec_range : tuple[float, float]
+        The spectral range of the 2D spectrum (angstrom).
     host_wid : float
         The width of the host galaxy region used for the fitting (in arcsec).
     mask_wid : float
@@ -116,10 +120,12 @@ class SpecModel:
         center_ra: float = None,  # RA of the center
         center_dec: float = None,  # DEC of the center
         slit_wid: float = 1.0,  # arcsec
-        slit_len: float = None,  # arcsec
         position_angle: float = None,  # degree
         spat_resln: float = 1.0,  # arcsec, FWHM/seeing
         spec_resln: float = 7.5,  # LRIS, 1'' slit
+        slit_len: float = None,  # arcsec
+        slit_trim: tuple[int, int] = (1, 1),  # pixels
+        spec_range: tuple[float, float] = None,  # Angstrom
         host_wid: float = 10.0,  # in arcsec, host region used for the fitting
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
         mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
@@ -134,12 +140,27 @@ class SpecModel:
         self.spec_resln = spec_resln
 
         # Load the grid
-        self.spat, self.spec = spat, spec
-        self.shape = (len(spat), len(spec))
+        _spat = spat[slit_trim[0] : -slit_trim[1]]
+        if slit_len is None:
+            inslit_spat = jnp.ones_like(_spat, dtype=bool)
+        else:
+            inslit_spat = jnp.abs(_spat) < slit_len / 2
+        self.spat = _spat[inslit_spat]
+
+        _inslit_spec = (spec >= spec_range[0]) & (spec <= spec_range[1])
+        self.spec = spec[_inslit_spec]
+        msgs.info(f"Spatial range: {self.spat[0]:.2f} - {self.spat[-1]:.2f} arcsec")
+        msgs.info(f"Spectral range: {self.spec[0]:.2f} - {self.spec[-1]:.2f} Angstrom")
 
         # Load the the raw data
-        msgs.info(f"Loading the 2D spectrum with the shape: {self.shape}")
-        self.f_obs = SpecWrapper(points=(spat, spec), values=dat, values_err=dat_err)
+        msgs.info(f"Loading the 2D spectrum with the shape: {self.spat.size} x {self.spec.size}")
+        self.f_obs = SpecWrapper(
+            points=(self.spat, self.spec),
+            values=dat[slit_trim[0] : -slit_trim[1]][inslit_spat, :][:, _inslit_spec],
+            values_err=dat_err[slit_trim[0] : -slit_trim[1]][inslit_spat, :][:, _inslit_spec],
+        )
+
+        self.shape = self.f_obs.shape
 
         # Define the mask, sky, and host regions
         # Constant attributes
@@ -268,7 +289,9 @@ class SpecModel:
         """
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
         msgs.info(f"Estimating the global sky background")
-        self.f_sky = f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip(sigma=sigma_clip).fill_nan()
+        self.f_sky = (
+            f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip(sigma=sigma_clip, clip_cr=True).fill_nan()
+        )
         self.f_sky_1d = self.f_sky.marginalize(margin_type="mean")
         # The 2D sky-subtracted, spectrum (to be sigma clipped)
         self.f_sky_sub = f_obs.subtract(self.f_sky_1d)
@@ -288,7 +311,11 @@ class SpecModel:
         )
         # The 2D sky-subtracted, sigma-clipped spectrum
         self.f_sky_sub = self.f_sky_sub.sigma_clip(
-            sigma=sigma_clip, batch_idx=(self._spat_batch_2d_idx, self._spec_batch_2d_idx)
+            sigma=sigma_clip,
+            batch_idx=(
+                jnp.array_split(jnp.arange(self.shape[0]), self.shape[0] // (self.spat_resln / self.pixel_scale)),
+                self._spec_batch_2d_idx,
+            ),
         )
         # The 2D spectrum in the host galaxy region: outside the mask
         self.f_host = self.f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
@@ -296,7 +323,7 @@ class SpecModel:
         # Sigma clip the 2D spectrum in each batch
         # Central wavelength in each row: spec
         # Total flux in each row: weighted sum of the flux in each row
-        self.f_host_1d = self.f_host.fill_nan().marginalize(margin_type="sum")
+        self.f_host_1d = self.f_host.marginalize(margin_type="sum")
 
         self.f_batch_2d = self.get_normalized_batch_spec(
             self._spat_batch_2d_idx, self._spec_batch_2d_idx, f_2d=self.f_sky_sub, f_1d_norm=self.f_host_1d
@@ -507,7 +534,7 @@ class SpecModel:
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
         return best_dseeing
 
-    def update_seeing(self, dseeing: ArrayLike = None, **kwargs) -> None:
+    def update_seeing(self, dseeing: ArrayLike = None, **kwargs) -> float:
         """
         Update the seeing of the host galaxy profile with the instrumental seeing.
         """
@@ -523,6 +550,7 @@ class SpecModel:
         self._mask_wid = self._mask_wid * self.spat_resln / spat_resln_0
         # Update the mask, sky, and host regions
         self._build_spat_filter()
+        return dseeing
 
     @show_and_save
     def extract_sci(self, method="boxcar") -> Axes:  # TODO: adopt the extraction method of pypeit
@@ -986,7 +1014,12 @@ class SpecModel:
     ###############################################################################
 
     def get_normalized_batch_spec(
-        self, spat_batch_idx: ArrayLike, spec_batch_idx: ArrayLike, f_2d: SpecWrapper, f_1d_norm: SpecWrapper
+        self,
+        spat_batch_idx: ArrayLike,
+        spec_batch_idx: ArrayLike,
+        f_2d: SpecWrapper,
+        f_1d_norm: SpecWrapper,
+        nan_threshold: float = 0.1,
     ) -> SpecWrapper:
         """
         Get the batched 2D spectrum normalized by a 1D spectrum.
@@ -1001,6 +1034,8 @@ class SpecModel:
             The 2D spectrum to be batched.
         f_1d_norm : SpecWrapper
             The 1D spectrum to normalize the 2D spectrum.
+        nan_threshold : float, optional
+            The threshold for the fraction of NaN values in the batch.
 
         Returns
         -------
@@ -1018,6 +1053,7 @@ class SpecModel:
         values_err_batch_2d = jnp.empty(shape_batch_2d)
 
         for y, idx_spec in enumerate(spec_batch_idx):
+            n_spec = len(idx_spec)
             # Get the 1D spectrum within the spectral batch
             Y_1d = f_1d_norm.Y[idx_spec]
             Y_err_1d = f_1d_norm.Yerr[idx_spec]
@@ -1026,8 +1062,10 @@ class SpecModel:
             Y_err_2d_spec = f_2d.Yerr[:, idx_spec]
 
             for x, idx_spat in enumerate(spat_batch_idx):
-                # Step 1: Bin along the spatial axis
+                # Step 0: Calculate NaN fraction
                 n_spat = len(idx_spat)
+                nan_fraction = jnp.sum(~jnp.isfinite(Y_2d_spec[idx_spat])) / (n_spat * n_spec)
+                # Step 1: Bin along the spatial axis
                 Y_2d = jnp.nanmean(Y_2d_spec[idx_spat], axis=0)
                 Y_err_2d = (jnp.nanmean(Y_err_2d_spec[idx_spat] ** 2, axis=0) / n_spat) ** 0.5
 
@@ -1038,7 +1076,11 @@ class SpecModel:
                 # Step 3: Bin along the spectral axis
                 values_batch_2d = values_batch_2d.at[x, y].set(jnp.nanmedian(Y_2d_1d))
                 values_err_batch_2d = values_err_batch_2d.at[x, y].set(
-                    jnp.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5
+                    jnp.where(
+                        nan_fraction > nan_threshold,
+                        jnp.nan,
+                        jnp.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5,
+                    )
                 )
 
         return SpecWrapper(
@@ -1504,8 +1546,8 @@ class SpecModel:
         for ax_ in ax[:-2]:
             ax_.axhline(self.spat_edges["mask"][0], color="w", linestyle="--", lw=3)
             ax_.axhline(self.spat_edges["mask"][1], color="w", linestyle="--", lw=3)
-            ax_.axhline(self.spat_edges["mask"][0], color="crimson", linestyle="-.", lw=3)
-            ax_.axhline(self.spat_edges["mask"][1], color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["host"][0], color="crimson", linestyle="-.", lw=3)
+            ax_.axhline(self.spat_edges["host"][1], color="crimson", linestyle="-.", lw=3)
             ax_.axhline(self.spat_edges["sky"][0], color="darkgreen", linestyle="-.", lw=3)
             ax_.axhline(self.spat_edges["sky"][1], color="darkgreen", linestyle="-.", lw=3)
             ax_.set_ylim(self.spat[0], self.spat[-1])

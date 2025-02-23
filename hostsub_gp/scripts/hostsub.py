@@ -96,7 +96,6 @@ class HostSub(ScriptBase):
             par_hostsub = par.get("hostsub", {})
             raw_dir = par_hostsub.get("raw_dir", None)
             spec_data_cfg = {}
-            spec_data_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
             spec_data_cfg["ra"] = Float(par_hostsub.get("ra", None))
             spec_data_cfg["dec"] = Float(par_hostsub.get("dec", None))
             spec_data_cfg["sky_offset"] = Float(par_hostsub.get("sky_offset", None))
@@ -117,11 +116,11 @@ class HostSub(ScriptBase):
                 spat_rect = spec_data.spat_rect
             else:
                 # Load the rectified file
-                spec_data = SpecData.from_fits(sci_rect_file, slit_len=spec_data_cfg["slit_len"])
+                spec_data = SpecData.from_fits(sci_rect_file)
             spec_data_list.append(spec_data)
 
         if args.coadd2d:
-            spec_data_coadd2d = SpecData.coadd2d(spec_data_list, slit_len=spec_data_cfg["slit_len"])
+            spec_data_coadd2d = SpecData.coadd2d(spec_data_list)
             HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
@@ -147,8 +146,9 @@ class HostSub(ScriptBase):
         # Convert the 2D spectrum to a SpecModel object
         # Parameters for defining the SpecModel object
         spec_model_cfg = {}
-        spec_model_cfg["slit_len"] = Float(par_hostsub.get("slit_len", 20.0))
-        spec_model_cfg["spec_range"] = None if "spec_range" not in par_hostsub else Float(par_hostsub["spec_range"])
+        spec_model_cfg["slit_len"] = Float(par_hostsub.get("slit_len", None))
+        spec_model_cfg["slit_trim"] = Int(par_hostsub.get("slit_trim", [5, 5]))
+        spec_model_cfg["spec_range"] = Float(par_hostsub.get("spec_range", None))
         spec_model_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
         spec_model_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
         spec_model_cfg["sky_region"] = Float(par_hostsub.get("sky_region", [-5.0, 5.0]))
@@ -212,10 +212,9 @@ class HostSub(ScriptBase):
                 )
             else:
                 msgs.info(f"Using the seeing difference of {dseeing} provided by the user.")
-                dseeing_opt = dseeing
 
             # Update the SpecModel object
-            spec_model.update_seeing(dseeing_opt, **seeing_match_cfg)
+            dseeing_opt = spec_model.update_seeing(dseeing, **seeing_match_cfg)
 
             # Update the SpecWrapper objects
             dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)

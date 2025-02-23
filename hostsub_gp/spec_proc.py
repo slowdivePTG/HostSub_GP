@@ -32,7 +32,6 @@ class SpecData:
         center_ra: float,
         center_dec: float,
         slit_wid: float,
-        slit_len: float,
         position_angle: float,
         spat_resln: float,
         spec_resln: float,
@@ -54,7 +53,6 @@ class SpecData:
         self.center_ra = center_ra
         self.center_dec = center_dec
         self.slit_wid = slit_wid
-        self.slit_len = slit_len
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
@@ -70,11 +68,7 @@ class SpecData:
 
             if sky_offset is None:
                 sky_offset = self.get_offset(
-                    points=jnp.stack([dist, waveimg], axis=-1),
-                    flux=flux,
-                    show=True,
-                    mask_wid=2.5,
-                    slit_len=spat_rect.max() - spat_rect.min(),
+                    points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True, mask_wid=2.5
                 )
 
             self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
@@ -120,8 +114,10 @@ class SpecData:
             If not provided, the RA and DEC in the header will be used.
         spat_resln : float, optional (default: None)
             The spatial resolution (seeing) of the science frame.
-        slit_len : float, optional (default: 20.0, in arcsec)
-            The length of the slit in the spatial direction.
+        spat_rect : ArrayLike, optional (default: None)
+            The spatial coordinates of the rectified 2D spectrum.
+        spec_rect : ArrayLike, optional (default: None)
+            The spectral coordinates of the rectified 2D spectrum.
         """
         from pypeit import spec2dobj, specobjs
 
@@ -151,10 +147,10 @@ class SpecData:
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
             binning = int(pypeit_header["BINNING"].split(",")[1])  # in the spatial direction
             pixel_scale = 0.135 * binning
-            if "blue" in pypeit_header["PYP_SPEC"]:
-                det = "DET02"
-            else:
+            if "red_mark4" in pypeit_header["PYP_SPEC"]:
                 det = "DET01"
+            else:
+                det = "DET02"
             slit_wid = float(pypeit_header["SLITNAME"].split("_")[-1])
             spec_resln = 7.5  # TODO: get the spectral resolution from the header
 
@@ -443,8 +439,8 @@ class SpecData:
 
     def to_SpecModel(
         self,
-        slit_len: float = None,
-        spec_range: tuple[float, float] | list[float] = None,
+        # slit_len: float = None,
+        # spec_range: tuple[float, float] | list[float] = None,
         **kwargs,
     ) -> SpecModel:
         """
@@ -455,15 +451,15 @@ class SpecData:
         spec_range : tuple or list, optional (default: None)
             The range of the spectral pixels to include.
         """
-        if slit_len is None:
-            spat_mask = jnp.ones_like(self.spat_rect, dtype=bool)
-        else:
-            spat_mask = (self.spat_rect >= -slit_len / 2) & (self.spat_rect <= slit_len / 2)
+        # if slit_len is None:
+        #     spat_mask = jnp.ones_like(self.spat_rect, dtype=bool)
+        # else:
+        #     spat_mask = (self.spat_rect >= -slit_len / 2) & (self.spat_rect <= slit_len / 2)
 
-        if spec_range is None:
-            spec_mask = jnp.ones_like(self.spec_rect, dtype=bool)
-        else:
-            spec_mask = (self.spec_rect >= spec_range[0]) & (self.spec_rect <= spec_range[1])
+        # if spec_range is None:
+        #     spec_mask = jnp.ones_like(self.spec_rect, dtype=bool)
+        # else:
+        #     spec_mask = (self.spec_rect >= spec_range[0]) & (self.spec_rect <= spec_range[1])
 
         # Update the spectral and spatial resolutions if specified in the config file
         spec_resln_cfg = kwargs.pop("spec_resln", None)
@@ -476,10 +472,10 @@ class SpecData:
             msgs.info(f"Spatial resolution specified in the config file: setting it to {self.spat_resln:.2f} arcsec.")
 
         return SpecModel(
-            dat=self.flux_rect[spat_mask, :][:, spec_mask],
-            dat_err=self.flux_ivar_rect[spat_mask, :][:, spec_mask] ** -0.5,
-            spat=self.spat_rect[spat_mask],
-            spec=self.spec_rect[spec_mask],
+            dat=self.flux_rect,
+            dat_err=self.flux_ivar_rect ** -0.5,
+            spat=self.spat_rect,
+            spec=self.spec_rect,
             pixel_scale=self.pixel_scale,
             center_ra=self.center_ra,
             center_dec=self.center_dec,
@@ -577,7 +573,7 @@ class SpecData:
         return flux_rect, flux_ivar_rect
 
     @show_and_save
-    def get_offset(self, points: ArrayLike, flux: ArrayLike, slit_len: float = None, mask_wid: float = 2.0) -> float:
+    def get_offset(self, points: ArrayLike, flux: ArrayLike, mask_wid: float = 2.0) -> float:
         """
         Center the trace of the science object.
         """
@@ -619,15 +615,9 @@ class SpecData:
 
             return obs
 
-        if slit_len is None:
-            spat = self.spat_rect
-            slit_len = self.spat_rect.max() - self.spat_rect.min()
-        else:
-            spat = jnp.linspace(
-                -slit_len / 2,
-                slit_len / 2,
-                int(len(self.spat_rect) * jnp.round(slit_len / (self.spat_rect.max() - self.spat_rect.min())) // 2),
-            )
+        slit_len_max = min(-self.spat_rect[0], self.spat_rect[-1]) * 2
+        spat = self.spat_rect[np.abs(self.spat_rect) <= slit_len_max / 2]
+        slit_len = self.spat_rect.max() - self.spat_rect.min() + self.pixel_scale
 
         host_prior = HostProfile.from_archival(
             center_ra=self.center_ra,

@@ -196,10 +196,7 @@ class _build_gp:
 
     def __call__(self, kernel_type: str, **kwargs) -> GaussianProcess:
         kernel = self._build_kernel(kernel_type, **kwargs)
-        try:
-            return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
-        except:
-            breakpoint()
+        return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
 
     def _build_kernel(self, kernel_type: str, **kwargs) -> kernels.Kernel:
         """
