@@ -16,22 +16,6 @@ from hostsub_gp.spec_wrapper import SpecWrapper
 
 from numpy.typing import ArrayLike, NDArray
 
-import argparse
-
-parser = argparse.ArgumentParser(description="Test the HostSub_GP package on MUSE data cube.")
-parser.add_argument("galaxy", type=str, help="Name of the galaxy (used as the directory name).")
-parser.add_argument("-z", type=float, default=0.0, help="Redshift of the galaxy.")
-parser.add_argument("--overwrite", "-o", default=False, action="store_true", help="Overwrite the output files.")
-parser.add_argument(
-    "--row_range", type=str, default="180:220", help="Range of possible row (RA) indices for the slit center."
-)
-parser.add_argument(
-    "--col_range", type=str, default="180:220", help="Range of possible column (Dec) indices for the slit center."
-)
-parser.add_argument("--mask_offset_range", type=str, default="0:0", help="Range of offsets from the slit center.")
-parser.add_argument("--n_trials", type=int, default=1, help="Number of trials to run.")
-args = parser.parse_args()
-
 
 def pack_2d_spectrum(
     dat: NDArray,
@@ -44,7 +28,6 @@ def pack_2d_spectrum(
     mask_offset_pix: int,
     slit_len: float,
     pixel_scale: float,
-    z: float,
     sky_region: tuple[float, float],
     targetid: str,
 ) -> "SpecModel":
@@ -53,7 +36,6 @@ def pack_2d_spectrum(
     center_ra = ra[col]
     center_dec = dec[row]
     ra_offset = (ra - center_ra) * 3600
-
 
     flux_rect = np.nanmean(
         dat[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape((dat.shape[0]) // 2, 2, 5, -1),
@@ -87,11 +69,6 @@ def pack_2d_spectrum(
         mask_wid=1.2,
         mask_offset=mask_offset,
         sky_region=sky_region,
-        batch_2d=(2, 128),
-        host_emission_cfg={"find_host_emission": True, "z": z, "z_err": 0.001, "p_value": 0.05},
-        sigma_clip=100, # Essentially no clipping
-        show=False,
-        save=f"{args.galaxy}/QA/{targetid}.pdf",
     )
 
     spec_model.ra_offset = ra_offset
@@ -126,7 +103,7 @@ def pack_2d_spectrum(
     # Plot the mock 2D spectrum
     ## Slit width = 5 pixels = 1 arcsec
     ax[1].imshow(
-        np.mean(dat[:, row - 2 : row + 3, :].reshape(dat.shape[0] // 2, 2, 5, -1), axis=(1, 2)).T,
+        np.mean(dat[:, row - 2 : row + 3, :].reshape(dat.shape[0], 5, -1), axis=1).T,
         origin="lower",
         cmap="grey",
         vmin=np.nanpercentile(dat[:, row, :], 1),
@@ -170,50 +147,14 @@ def model_host_prior(
         )
         spat_slit.append(spec_model.ra_offset[on_slit][::-1])
 
-    host_prof = HostProfile(
-        flts=flts,
-        wv_eff=[wv_eff_dict["r"], wv_eff_dict["i"], wv_eff_dict["z"]],
+    spec_model.build_host_prior(
+        filters=flts,
+        wv_eff=[wv_eff_dict[flt] for flt in flts],
         spat_slit=spat_slit,
         counts_slit=counts_slit,
         counts_err_slit=counts_err_slit,
-        spec_model=spec_model,
-    )
-
-    host_flux_prior = host_prof.model_host_profile_prior(show=False, save=f"{args.galaxy}/QA/{targetid}_host_prior.pdf")
-    scale = lambda X: jnp.interp(
-        X[:, 1],
-        spec_model.spec,
-        jnp.sum(host_flux_prior(spec_model.f_host.X)[0].reshape(spec_model.f_host.shape), axis=0),
-    )
-
-    def predict(X):
-        prior, prior_var = host_flux_prior(X)
-        return prior / scale(X), prior_var**0.5 / scale(X)
-
-    spec_model.host_flux_prior = predict
-
-    # The orignal 2D data in the host region
-    prior_host, prior_host_std = spec_model.host_flux_prior(spec_model.f_host.X)
-    spec_model.f_host_prior = SpecWrapper(
-        points=(spec_model.f_host.spat, spec_model.f_host.spec),
-        values=prior_host.reshape(spec_model.f_host.shape),
-        values_err=prior_host_std.reshape(spec_model.f_host.shape),
-    )
-
-    # The batched 2D data
-    prior_batch, prior_batch_std = spec_model.host_flux_prior(spec_model.f_batch_2d.X)
-    spec_model.f_batch_prior = SpecWrapper(
-        points=(spec_model.f_batch_2d.spat, spec_model.f_batch_2d.spec),
-        values=prior_batch.reshape(spec_model.f_batch_2d.shape),
-        values_err=prior_batch_std.reshape(spec_model.f_batch_2d.shape),
-    )
-
-    # Batched 2D data (host region)
-    prior_host_batch, prior_host_batch_std = spec_model.host_flux_prior(spec_model.f_host_batch_2d.X)
-    spec_model.f_host_batch_prior = SpecWrapper(
-        points=(spec_model.f_host_batch_2d.spat, spec_model.f_host_batch_2d.spec),
-        values=prior_host_batch.reshape(spec_model.f_host_batch_2d.shape),
-        values_err=prior_host_batch_std.reshape(spec_model.f_host_batch_2d.shape),
+        from_archival=False,
+        save=f"{args.galaxy}/QA/{targetid}_host_prior.pdf",
     )
 
     return spec_model
@@ -234,16 +175,19 @@ def plot_QA(spec_model: "SpecModel", targetid: str):
 
     # Extract the science spectrum
     spec_model.extract_sci()
-    local_sky_left = (spec_model.spat < -spec_model.mask_wid / 2 + spec_model.mask_offset) & (
-        spec_model.spat > -spec_model.mask_wid * 2 / 2 + spec_model.mask_offset
+    local_sky_left = (spec_model.spat < -spec_model._mask_wid / 2 + spec_model.mask_offset) & (
+        spec_model.spat > -spec_model._mask_wid * 2 / 2 + spec_model.mask_offset
     )
-    local_sky_right = (spec_model.spat > spec_model.mask_wid / 2 + spec_model.mask_offset) & (
-        spec_model.spat < spec_model.mask_wid * 2 / 2 + spec_model.mask_offset
+    local_sky_right = (spec_model.spat > spec_model._mask_wid / 2 + spec_model.mask_offset) & (
+        spec_model.spat < spec_model._mask_wid * 2 / 2 + spec_model.mask_offset
     )
     local_sky = local_sky_left | local_sky_right
 
-    classic_pred = np.mean((spec_model.f_sky_sub.Y - np.mean(spec_model.f_sky_sub.Y[local_sky], axis=0))[spec_model.spat_filter["mask"]], axis=0)
-    classic_pred_err = np.std(spec_model.f_sky_sub.Y[local_sky], axis=0) / np.sum(local_sky)**0.5
+    classic_pred = np.mean(
+        (spec_model.f_sky_sub.Y - np.mean(spec_model.f_sky_sub.Y[local_sky], axis=0))[spec_model.spat_filter["mask"]],
+        axis=0,
+    )
+    classic_pred_err = np.std(spec_model.f_sky_sub.Y[local_sky], axis=0) / np.sum(local_sky) ** 0.5
 
     plt.figure(figsize=(10, 5))
     plt.plot(spec_model.spec, spec_model.f_sci_pred_1d.y, label=r"$\mathrm{GP}$", zorder=2, color="#8c96c6")
@@ -259,8 +203,11 @@ def plot_QA(spec_model: "SpecModel", targetid: str):
     msgs.info(f"Saving the science spectrum to {args.galaxy}/QA/{targetid}_sci.pdf")
 
     # Save the 1D spectra
-    dat = np.array([spec_model.spec, spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr, classic_pred, classic_pred_err]).T
+    dat = np.array(
+        [spec_model.spec, spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr, classic_pred, classic_pred_err]
+    ).T
     np.savetxt(f"{args.galaxy}/QA/{targetid}_sci.dat", dat)
+
 
 def range_to_random_ints(range_str: str, n: int) -> ArrayLike:
     """Convert a range string to a list of random integers."""
@@ -274,6 +221,23 @@ def range_to_random_ints(range_str: str, n: int) -> ArrayLike:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Test the HostSub_GP package on MUSE data cube.")
+    parser.add_argument("galaxy", type=str, help="Name of the galaxy (used as the directory name).")
+    parser.add_argument("-z", type=float, default=0.0, help="Redshift of the galaxy.")
+    parser.add_argument("--overwrite", "-o", default=False, action="store_true", help="Overwrite the output files.")
+    parser.add_argument(
+        "--row_range", type=str, default="180:220", help="Range of possible row (RA) indices for the slit center."
+    )
+    parser.add_argument(
+        "--col_range", type=str, default="180:220", help="Range of possible column (Dec) indices for the slit center."
+    )
+    parser.add_argument("--mask_offset_range", type=str, default="0:0", help="Range of offsets from the slit center.")
+    parser.add_argument("--n_trials", type=int, default=1, help="Number of trials to run.")
+    parser.add_argument("--match_seeing", default=False, action="store_true", help="Match the seeing.")
+    args = parser.parse_args()
+
     # Load the MUSE data cube
     data_cube_file = glob.glob(f"{args.galaxy}/*.fits")
     if len(data_cube_file) == 0:
@@ -329,6 +293,8 @@ if __name__ == "__main__":
     row = range_to_random_ints(args.row_range, args.n_trials)
     mask_offset_pix = range_to_random_ints(args.mask_offset_range, args.n_trials)
 
+    dseeing_opt_list = []
+
     for i in range(args.n_trials):
         targetid = f"row_{row[i]}_col_{col[i]}_offset_{mask_offset_pix[i]}"
         msgs.info(f"Running trial {i + 1}/{args.n_trials}...")
@@ -345,20 +311,48 @@ if __name__ == "__main__":
             mask_offset_pix=mask_offset_pix[i],
             slit_len=60,
             pixel_scale=pixel_scale,
-            z=args.z,
             sky_region=(-15, None),
             targetid=targetid,
         )
 
         # Model the host prior
         spec_model = model_host_prior(
-            spec_model, row=row[i], col=col[i], mask_offset_pix=mask_offset_pix[i], syn_flux=syn_flux, slit_len=60, targetid=targetid
+            spec_model,
+            row=row[i],
+            col=col[i],
+            mask_offset_pix=mask_offset_pix[i],
+            syn_flux=syn_flux,
+            slit_len=60,
+            targetid=targetid,
         )
+
+        spec_model.construct_spec_wrapper(
+            f_obs=spec_model.f_obs,
+            batch_2d=(2, 256),
+            host_emission_cfg={"find_host_emission": True, "z": args.z, "z_err": 0.001, "p_value": 0.05},
+            sigma_clip=None,
+            save=f"{args.galaxy}/QA/{targetid}_raw.pdf",
+        )
+
+        if args.match_seeing:
+            dseeing_opt = spec_model.update_seeing(dseeing=None, max_dseeing=1.5)
+            dseeing_opt_list.append(dseeing_opt)
+
+            dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+            spec_model.construct_spec_wrapper(
+                f_obs=spec_model.f_obs.convolve(dseeing_wv),
+                batch_2d=(2, 128),
+                host_emission_cfg={"find_host_emission": True, "z": args.z, "z_err": 0.001, "p_value": 0.05},
+                sigma_clip=None,
+                save=f"{args.galaxy}/QA/{targetid}_conv.pdf",
+            )
 
         # Get the initial parameters
         params_init_1d = None
         params_init_2d = {}
-        params_init_2d["log_scale"] = np.log10([0.5, 5e3])
+        params_init_2d["mean"] = np.array([0.0])
+        params_init_2d["log_amp"] = np.array([-3.0])
+        params_init_2d["log_scale"] = np.log10([0.5, 1e3])
         params_init = [params_init_1d, params_init_2d]
 
         # Get limits for the parameters
@@ -379,7 +373,7 @@ if __name__ == "__main__":
                     [1, 4],
                     # log range of the fast varying component
                     # typical scale = spectral resolution
-                    np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 10]),
+                    np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 1e4]),
                 ]
             ).T,
         )
@@ -389,10 +383,10 @@ if __name__ == "__main__":
                 [
                     # log range of the spatial component
                     # typical scale = spatial resolution
-                    np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln]),
+                    np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln * 1e4]),
                     # log range of the spectral component
                     # typical scale = spectral resolution
-                    np.log10([1e3, 1e5]),
+                    np.log10([1e2, 1e5]),
                 ]
             ).T,
         )
@@ -411,4 +405,3 @@ if __name__ == "__main__":
 
         # QA plots
         plot_QA(spec_model, targetid)
-

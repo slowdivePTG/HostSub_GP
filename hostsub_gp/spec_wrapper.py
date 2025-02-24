@@ -76,7 +76,7 @@ class SpecWrapper:
                 raise ValueError("Y shape error")
 
     def sigma_clip(
-        self, sigma: float = 5.0, clip_cr: bool = False, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None
+        self, sigma: float = None, clip_cr: bool = False, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None
     ) -> "SpecWrapper":
         """
         Sigma clipping for the spectrum.
@@ -95,6 +95,9 @@ class SpecWrapper:
         SpecWrapper
             The clipped spectrum.
         """
+
+        if sigma is None:
+            return self
 
         if self.Y is None:
             raise ValueError("sigma_clip requires non-empty spectra.")
@@ -157,6 +160,9 @@ class SpecWrapper:
         Fill the NaN values in the spectrum by interpolation.
         """
         from scipy.interpolate import griddata
+
+        if jnp.all(jnp.isfinite(self.Y)):
+            return self
 
         if self.Y is None:
             raise ValueError("Filling NaN requires non-empty spectra.")

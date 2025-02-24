@@ -369,13 +369,13 @@ class HostProfile:
         else:
             params = dict(
                 log_amp=np.ones((2, 2)) * -2,
-                log_scale=np.log10([[spat_resln, spat_resln], [1e3, 1e2]]),
+                log_scale=np.log10([[spat_resln, spat_resln], [1e5, 1e4]]),
                 mean=np.float64(1 / self.host_wid),
             )
             params_limit = dict(
                 log_scale=np.log10(
                     [
-                        [[spat_resln / 2.355, spat_resln / 2.355], [1e0, 1e0]],  # lower bound
+                        [[spat_resln / 2.355, spat_resln / 2.355], [1e3, 1e3]],  # lower bound
                         [[large_scale, spat_resln * 2], [large_scale, large_scale]],  # upper bound
                     ]
                 )

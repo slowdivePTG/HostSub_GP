@@ -193,7 +193,7 @@ class SpecModel:
         else:
             spat_edges["slit"] = (
                 (jnp.ceil(-self._slit_len / 2 / self.pixel_scale) - 0.5) * self.pixel_scale,
-                (jnp.ceil(self._slit_len / 2 / self.pixel_scale) + 0.5) * self.pixel_scale,
+                (jnp.floor(self._slit_len / 2 / self.pixel_scale) + 0.5) * self.pixel_scale,
             )
         slit_len = spat_edges["slit"][1] - spat_edges["slit"][0]
         msgs.info(f"Slit length = {slit_len:.2f} arcsec = {slit_len / self.pixel_scale:.0f} pixels")
@@ -233,7 +233,7 @@ class SpecModel:
         # Mask the trace from the source (|spat| < mask_wid / 2)
         spat_edges["mask"] = (
             (jnp.ceil(-self._mask_wid / 2 / self.pixel_scale) - 0.5) * self.pixel_scale + mask_offset,
-            (jnp.ceil(self._mask_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale + mask_offset,
+            (jnp.floor(self._mask_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale + mask_offset,
         )
         if spat_edges["sky"][0] > spat_edges["mask"][0] or spat_edges["sky"][1] < spat_edges["mask"][1]:
             raise ValueError("sky_region boundary is inside the aperture mask")
@@ -246,7 +246,7 @@ class SpecModel:
         # Define the host galaxy pixels (outside the mask)
         spat_edges["host"] = (
             (jnp.ceil(-self._host_wid / 2 / self.pixel_scale) - 0.5) * self.pixel_scale + mask_offset,
-            (jnp.ceil(self._host_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale + mask_offset,
+            (jnp.floor(self._host_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale + mask_offset,
         )
         host_wid = spat_edges["host"][1] - spat_edges["host"][0]
         host_left = (self.spat < spat_edges["mask"][0]) & (self.spat > spat_edges["host"][0])
