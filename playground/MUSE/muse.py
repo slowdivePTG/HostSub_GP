@@ -348,12 +348,12 @@ if __name__ == "__main__":
             )
 
         # Get the initial parameters
-        params_init_1d = None
-        params_init_2d = {}
-        params_init_2d["mean"] = np.array([0.0])
-        params_init_2d["log_amp"] = np.array([-3.0])
-        params_init_2d["log_scale"] = np.log10([0.5, 1e3])
-        params_init = [params_init_1d, params_init_2d]
+        # params_init_1d = None
+        # params_init_2d = {}
+        # params_init_2d["mean"] = np.array([0.0])
+        # params_init_2d["log_amp"] = np.array([-3.0])
+        # params_init_2d["log_scale"] = np.log10([spec_model.spat_resln, 1e3])
+        params_init = [None, None]
 
         # Get limits for the parameters
         def _set_params_limit(params_limit_dict):
@@ -405,3 +405,7 @@ if __name__ == "__main__":
 
         # QA plots
         plot_QA(spec_model, targetid)
+
+    if args.match_seeing:
+        dseeing_opt_list = np.array(dseeing_opt_list)
+        np.savetxt(f"{args.galaxy}/QA/dseeing_opt.dat", dseeing_opt_list)
