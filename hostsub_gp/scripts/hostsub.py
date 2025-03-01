@@ -200,17 +200,20 @@ class HostSub(ScriptBase):
             save=f"QA/{output_suffix}_host_prior.pdf",
         )
 
+        # Initialize the raw spectra
+        spec_model.construct_spec_wrapper(
+            f_obs=spec_model.f_obs,
+            host_emission_cfg=host_emission_cfg,
+            **spec_wrapper_cfg,
+            save=f"QA/{output_suffix}_raw.pdf",
+        )
+
+        # Prior of the host profiles
+        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
+
         if not args.skip_seeing_match:
             dseeing = seeing_match_cfg.pop("dseeing", None)
-            if dseeing is None:
-                # Initialize the raw spectra
-                spec_model.construct_spec_wrapper(
-                    f_obs=spec_model.f_obs,
-                    host_emission_cfg=host_emission_cfg,
-                    **spec_wrapper_cfg,
-                    save=f"QA/{output_suffix}_raw.pdf",
-                )
-            else:
+            if dseeing is not None:
                 msgs.info(f"Using the seeing difference of {dseeing} provided by the user.")
 
             # Update the SpecModel object
@@ -231,9 +234,6 @@ class HostSub(ScriptBase):
 
         params_init, params_limit = HostSub._load_gp_params(par_hostsub)
 
-        # Prior of the host profiles
-        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
-
         # Model the host
         spec_model.model_host(
             params_init=params_init,
@@ -253,8 +253,16 @@ class HostSub(ScriptBase):
         spec_model.extract_sci(show=False, save=f"QA/{output_suffix}_sci.pdf")
         np.savetxt(
             f"QA/{output_suffix}_sci.txt",
-            np.array([spec_model.f_sci_pred_1d.X.ravel(), spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr]).T,
-            fmt="%.4f %.6e %.6e",
+            np.array(
+                [
+                    spec_model.f_sci_pred_1d.X.ravel(),
+                    spec_model.f_sci_pred_1d.y,
+                    spec_model.f_sci_pred_1d.yerr,
+                    spec_model.f_sci_classic_1d.y,
+                    spec_model.f_sci_classic_1d.yerr,
+                ]
+            ).T,
+            fmt="%.4f %.6e %.6e %.6e %.6e",
         )
         msgs.info(f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt")
 

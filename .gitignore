@@ -170,9 +170,10 @@ cython_debug/
 # temporarily ignored
 *.ipynb
 *.ipynb_checkpoints
-playground/SN2022jli/
+playground/SN*/
 playground/mock/
 playground/MUSE/NGC0628*/*
 *.out
 *.sh
 test/
+*cutout*

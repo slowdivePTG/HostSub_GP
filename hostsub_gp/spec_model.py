@@ -147,6 +147,8 @@ class SpecModel:
             inslit_spat = jnp.abs(_spat) < slit_len / 2
         self.spat = _spat[inslit_spat]
 
+        if spec_range is None:
+            spec_range = (spec[0], spec[-1])
         _inslit_spec = (spec >= spec_range[0]) & (spec <= spec_range[1])
         self.spec = spec[_inslit_spec]
         msgs.info(f"Spatial range: {self.spat[0]:.2f} - {self.spat[-1]:.2f} arcsec")
@@ -306,6 +308,8 @@ class SpecModel:
         # Spatial batch (only for the host galaxy pixels outside the mask)
         self._spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
         # Spectral batch
+        if host_emission_cfg is None:
+            host_emission_cfg = {"find_host_emission": False}
         self._spec_batch_2d_idx = self._get_spec_batches(
             **host_emission_cfg, show=show, save=None if save is None else save.replace(".pdf", "_host_emission.pdf")
         )
@@ -562,6 +566,8 @@ class SpecModel:
 
         self.f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
         X_mask = self.f_mask.X.reshape(self.f_mask.shape[0], self.f_mask.shape[1], -1)
+
+        # Evaluate the background with the Gaussian Process model
         _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(self._gp_1d, self._gp_2d, X_mask, return_var=True)
         self.f_mask_pred = SpecWrapper(
             points=(self.f_mask.spat, self.f_mask.spec),
@@ -570,8 +576,8 @@ class SpecModel:
         )
         self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
 
-        def gauss(x, mu, sigma):
-            return jnp.exp(-0.5 * (x - mu) ** 2 / sigma**2) * (2 * jnp.pi * sigma**2) ** -0.5
+        # def gauss(x, mu, sigma):
+        #     return jnp.exp(-0.5 * (x - mu) ** 2 / sigma**2) * (2 * jnp.pi * sigma**2) ** -0.5
 
         if method == "boxcar":
             extract_weights = None
@@ -582,12 +588,26 @@ class SpecModel:
 
         self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type="mean", weights=extract_weights)
 
+        # Evaluate the background with the classic method
+        local_sky_left = (self.spat < -self._mask_wid / 2 + self.mask_offset) & (
+            self.spat > -self._mask_wid * 2 / 2 + self.mask_offset
+        )
+        local_sky_right = (self.spat > self._mask_wid / 2 + self.mask_offset) & (
+            self.spat < self._mask_wid * 2 / 2 + self.mask_offset
+        )
+        local_sky = local_sky_left | local_sky_right
+
+        f_mask_1d = self.f_mask.marginalize(margin_type="mean", weights=extract_weights)
+        f_classic_sky_1d = self.f_sky_sub.apply_spatial_filter(local_sky).marginalize(margin_type="mean")
+        self.f_sci_classic_1d = f_mask_1d.subtract(f_classic_sky_1d)
+
         if not hasattr(self, "_f_pred"):
             raise AttributeError("Please model the host galaxy first.")
         _, ax = plt.subplots(1, 1, figsize=(10, 4))
-        ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="tab:blue")
+        ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#8c96c6")
+        ax.plot(self.f_sci_classic_1d.X, self.f_sci_classic_1d.y, color="grey", alpha=0.5, zorder=-1)
         ax.axhline(0, color="k", ls="--")
-        ax.set_xlabel(r"$\mathrm{Spec\ [\AA]}$")
+        ax.set_xlabel(r"$\mathrm{Wavelength\,[\r{A}]}$")
         ax.set_ylabel(r"$\mathrm{Counts}$")
         ylim = ax.get_ylim()
         ax.set_ylim(
@@ -1464,7 +1484,7 @@ class SpecModel:
         cmap_sci = plt.cm.gray
         cmap_sci.set_bad("red")
 
-        _, ax = plt.subplots(4, 1, figsize=(20, 10), constrained_layout=True)
+        _, ax = plt.subplots(4, 1, figsize=(15, 15), constrained_layout=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
             self.f_obs.Y,
@@ -1710,7 +1730,7 @@ class SpecModel:
             extent=[self.spec[0], self.spec[-1], self.spat[0], self.spat[-1]],
         )
 
-        _, ax = plt.subplots(5, 1, figsize=(20, 12.5), sharex=True, sharey=True, constrained_layout=True)
+        _, ax = plt.subplots(5, 1, figsize=(15, 16.7), sharex=True, sharey=True, constrained_layout=True)
         ax[0].imshow(
             self.f_sky_sub.Y,
             vmin=np.nanpercentile(self.f_sky_sub.y, 1),

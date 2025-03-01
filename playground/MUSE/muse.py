@@ -174,37 +174,12 @@ def plot_QA(spec_model: "SpecModel", targetid: str):
     msgs.info(f"Saving the raw, model, and residual to {args.galaxy}/QA/{targetid}_pred.pdf")
 
     # Extract the science spectrum
-    spec_model.extract_sci()
-    local_sky_left = (spec_model.spat < -spec_model._mask_wid / 2 + spec_model.mask_offset) & (
-        spec_model.spat > -spec_model._mask_wid * 2 / 2 + spec_model.mask_offset
-    )
-    local_sky_right = (spec_model.spat > spec_model._mask_wid / 2 + spec_model.mask_offset) & (
-        spec_model.spat < spec_model._mask_wid * 2 / 2 + spec_model.mask_offset
-    )
-    local_sky = local_sky_left | local_sky_right
-
-    classic_pred = np.mean(
-        (spec_model.f_sky_sub.Y - np.mean(spec_model.f_sky_sub.Y[local_sky], axis=0))[spec_model.spat_filter["mask"]],
-        axis=0,
-    )
-    classic_pred_err = np.std(spec_model.f_sky_sub.Y[local_sky], axis=0) / np.sum(local_sky) ** 0.5
-
-    plt.figure(figsize=(10, 5))
-    plt.plot(spec_model.spec, spec_model.f_sci_pred_1d.y, label=r"$\mathrm{GP}$", zorder=2, color="#8c96c6")
-    plt.plot(spec_model.spec, classic_pred, label=r"$\mathrm{classic}$", color="grey", zorder=1, lw=1)
-    plt.axhline(0, color="black", ls="--", zorder=3, lw=3)
-    plt.ylabel(r"$\mathrm{Prediction}$")
-    plt.ylim(-10, 15)
-    plt.xlabel(r"$\mathrm{Wavelength\,[\r{A}]}$")
-    plt.legend()
-
-    plt.savefig(f"{args.galaxy}/QA/{targetid}_sci.pdf")
-    plt.close()
+    spec_model.extract_sci(save=f"{args.galaxy}/QA/{targetid}_sci.pdf")
     msgs.info(f"Saving the science spectrum to {args.galaxy}/QA/{targetid}_sci.pdf")
 
     # Save the 1D spectra
     dat = np.array(
-        [spec_model.spec, spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr, classic_pred, classic_pred_err]
+        [spec_model.spec, spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr, spec_model.f_sci_classic_1d.y, spec_model.f_sci_classic_1d.yerr]
     ).T
     np.savetxt(f"{args.galaxy}/QA/{targetid}_sci.dat", dat)
 

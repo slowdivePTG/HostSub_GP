@@ -40,6 +40,7 @@ class SpecWrapper:
         else:
             if points.ndim != 1:
                 raise ValueError("Invalid shape of the input coordinates.")
+            self.spat = None # 1D spectrum, no spatial axis
             self.spec = self.spec_img = jnp.array(points)
             self.X = self.spec[:, None]
 
@@ -52,6 +53,7 @@ class SpecWrapper:
             self.y = self.yerr = None
         else:
             if not (((values.ndim == 1) | (values.ndim == 2)) & (values.shape == self.spec_img.shape)):
+                breakpoint()
                 raise ValueError("Invalid shape of the input values.")
             if values_err is not None:
                 if values.shape != values_err.shape:
@@ -287,7 +289,7 @@ class SpecWrapper:
         ):
             raise ValueError("Shape mismatch.")
         return SpecWrapper(
-            points=(self.spat, self.spec),
+            points=(self.spat, self.spec) if self.spat is not None else self.spec,
             values=self.Y - other.Y,
             values_err=(self.Yerr**2 + other.Yerr**2) ** 0.5,
         )
