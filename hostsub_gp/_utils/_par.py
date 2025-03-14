@@ -1,4 +1,4 @@
-# hostsub_gp/_gp.py
+# hostsub_gp/_utils/_gp.py
 
 __all__ = [
     "_transform_unbound_to_bound",

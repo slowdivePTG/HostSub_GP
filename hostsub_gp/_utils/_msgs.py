@@ -1,4 +1,4 @@
-# hostsub_gp/_msgs.py
+# hostsub_gp/_utils/_msgs.py
 
 from typing import Callable
 

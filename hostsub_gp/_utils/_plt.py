@@ -1,4 +1,4 @@
-# hostsub_gp/_plt_config.py
+# hostsub_gp/_plt.py
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
 from matplotlib.axes import Axes
