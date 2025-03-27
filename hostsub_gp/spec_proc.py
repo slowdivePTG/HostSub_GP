@@ -324,7 +324,8 @@ class SpecData:
         spec_data_list : list[SpecData]
             A list of SpecData objects to be coadded.
         """
-        from astropy.stats import sigma_clip
+
+        from astropy.stats import mad_std
 
         if len(spec_data_list) == 0:
             raise ValueError("No SpecData object provided.")
@@ -360,16 +361,21 @@ class SpecData:
         flux_err_rect_stack = flux_ivar_rect_stack**-0.5
 
         # Calculate weighted means
-        valid_mask = jnp.isfinite(flux_rect_stack) & jnp.isfinite(flux_err_rect_stack)
-        # sigma_clip_mask = sigma_clip(flux_err_rect_stack, axis=0, masked=True).mask
+        valid_mask = np.isfinite(flux_rect_stack) & np.isfinite(flux_err_rect_stack)
+        cr_mask = np.ones_like(flux_rect_stack, dtype=bool)
+        for i in range(len(spec_data_list)):
+            diff = flux_rect_stack[i] - jnp.nanmedian(flux_rect_stack, axis=0)
+            # Only mask the pixels with large positive deviations (cosmic rays)
+            cr_mask[i] = diff < 2.5 * mad_std(diff[np.isfinite(diff)])
+        
         w = flux_ivar_rect_stack
-        weights = np.where(valid_mask, w, 0)
-        weighted_values = np.where(valid_mask, flux_rect_stack * w, 0)
+        weights = np.where(valid_mask & cr_mask, w, 0)
+        weighted_values = np.where(valid_mask & cr_mask, flux_rect_stack * w, 0)
 
         flux_rect = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
 
         # Calculate errors
-        weighted_errors = np.where(valid_mask, (flux_err_rect_stack * w) ** 2, 0)
+        weighted_errors = np.where(valid_mask & cr_mask, (flux_err_rect_stack * w) ** 2, 0)
         flux_err_rect = np.sqrt(np.sum(weighted_errors, axis=0) / np.sum(weights, axis=0) ** 2)
         flux_ivar_rect = np.where(np.isfinite(flux_err_rect), flux_err_rect**-2, 0)
 
@@ -594,8 +600,9 @@ class SpecData:
             med_n_bin = np.median(n_bin)
             std_n_bin = mad_std(n_bin)
             for i in range(bins):
-                # Skip the bin if there are two few points
-                if n_bin[i] <= med_n_bin - 3 * std_n_bin:
+                # Skip the bin if there are too few points
+                # Sometimes std_n_bin can be zero, which means essentially all bins should be included
+                if n_bin[i] < med_n_bin - 3 * (std_n_bin + 1):
                     continue
                 # Get the indices of points in the current bin
                 bin_mask = bin_indices == i
@@ -607,8 +614,8 @@ class SpecData:
                 # Apply sigma clipping to the values in the bin
                 y_clipped = sigma_clip(y_in_bin, stdfunc="mad_std", **kwargs)
 
-                # Compute the statistic (e.g., mean) of the clipped values (requires at least 95% valid data)
-                if (~y_clipped.mask).sum() > 0.95 * len(y_clipped):
+                # Compute the statistic (e.g., mean) of the clipped values (requires at least 80% valid data)
+                if (~y_clipped.mask).sum() > 0.80 * len(y_clipped):
                     obs[i] = np.nanmean(y_clipped[~y_clipped.mask])
 
             obs[obs <= 0] = np.nan
@@ -650,7 +657,7 @@ class SpecData:
                 / (jnp.nanmax(obs[sci_obj_mask]) - jnp.nanmin(obs[sci_obj_mask])),
             )[0, 1]
 
-        offset_list = np.arange(-1, 1 + self.pixel_scale / 10, self.pixel_scale / 10)
+        offset_list = np.arange(-2, 2 + self.pixel_scale / 10, self.pixel_scale / 10)
         ccf = jax.vmap(corr_coef)(offset_list)
 
         # F_obs(x_spat) = F_prior(x_spat - offset_opt)

@@ -1645,7 +1645,6 @@ class SpecModel:
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{Counts + offset}$")
-        ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
             x1=self.spat_edges["mask"][0],

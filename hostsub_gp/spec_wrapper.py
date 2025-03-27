@@ -176,6 +176,10 @@ class SpecWrapper:
         if jnp.all(valid):
             return self
 
+        # If no values to interpolate, return the original spectrum
+        if jnp.sum(valid) == 0:
+            return self
+
         x, y = jnp.indices(self.shape)
 
         # Interpolate

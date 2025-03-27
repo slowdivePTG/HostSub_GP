@@ -182,6 +182,8 @@ class HostSub(ScriptBase):
         seeing_match_cfg["min_dseeing"] = Float(par_seeing_match.get("min_dseeing", 0.0))
         seeing_match_cfg["step_dseeing"] = Float(par_seeing_match.get("step_dseeing", 0.01))
         seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
+        if seeing_match_cfg["dseeing"] == 0:
+            seeing_match_cfg["dseeing"] = None
 
         # Parameters for modeling the host prior
         par_host_prior = par_hostsub.get("host_prior", {})
@@ -208,9 +210,6 @@ class HostSub(ScriptBase):
             save=f"QA/{output_suffix}_raw.pdf",
         )
 
-        # Prior of the host profiles
-        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
-
         if not args.skip_seeing_match:
             dseeing = seeing_match_cfg.pop("dseeing", None)
             if dseeing is not None:
@@ -227,6 +226,9 @@ class HostSub(ScriptBase):
                 **spec_wrapper_cfg,
                 save=f"QA/{output_suffix}_conv.pdf",
             )
+
+        # Prior of the host profiles
+        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
 
         # Skip the subsequent modeling if requested
         if args.skip_model:

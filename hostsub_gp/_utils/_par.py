@@ -154,7 +154,7 @@ def _transform_unbound_to_bound(
     elif isinstance(params, dict) and isinstance(params_limit, dict):
         return _transform(params, params_limit)
     else:
-        raise TypeError("Invalid type for params and params_limit")
+        raise TypeError(f"Invalid type for params ({type(params)}) and params_limit ({type(params_limit)})")
 
 
 def _transform_bound_to_unbound(
@@ -186,4 +186,4 @@ def _transform_bound_to_unbound(
     elif isinstance(params, dict) and isinstance(params_limit, dict):
         return _transform(params, params_limit)
     else:
-        raise TypeError("Invalid type for params and params_limit")
+        raise TypeError(f"Invalid type for params ({type(params)}) and params_limit ({type(params_limit)})")

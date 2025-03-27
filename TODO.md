@@ -1,24 +1,13 @@
 # To-do list
 
-## Step 1: Build a 2d GP model 
+## Incorporation into `PypeIt`
+- Take a `PypeIt` `Spec2D` data product as input
+- Update the global and local sky layers
+- Call the extraction function(s) in `PypeIt` to generate `Spec1D` data products
 
-### Host modeling aided with images
-- SN position known
-- Ground-based (PSF not known)
-- Galaxy profiles extracted from (multi-band) images
-    - Prior of host light - images
+## Seeing Matching
+- Optimize for the power-law index for the wavelength dependence of seeing
+- When the seeing of the archival images are better
 
-## Step 2: Test on Real Data
-- Tilts and distortion correction
-- Flux resampled on a pseudo-image
-- An adaptive batch for finer resolution near emission lines
-- Provide reasonable uncertainties within the aperture
-
-## Step 3: Test on a large MUSE (IFU) sample (?)
-
-## Step 4: Host modeling with a known PSF
-- SN position known
-- Space telescope (PSF known)
-- Galaxy profiles extracted from (multi-band) images
-    - Prior of host light - TBD
-- JWST (+?)
+## Global Sky Subtraction
+- Before rectification?
