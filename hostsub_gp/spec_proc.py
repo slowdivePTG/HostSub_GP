@@ -42,6 +42,7 @@ class SpecData:
         dist: ArrayLike = None,
         waveimg: ArrayLike = None,
         flux: ArrayLike = None,
+        flux_skysub: ArrayLike = None,
         flux_ivar: ArrayLike = None,
         sky_offset: float = None,
         to_caches: bool = False,
@@ -73,9 +74,15 @@ class SpecData:
 
             self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
 
-            self.flux_rect, self.flux_ivar_rect = self.rectify(
-                points=self._points, f_values=(flux, flux_ivar), interp_method="scipy"
-            )
+            # Rectify the 2D spectrum
+            if flux_skysub is not None:
+                self.flux_rect, self.flux_ivar_rect = self.rectify(
+                    points=self._points, f_values=(flux_skysub, flux_ivar), interp_method="scipy"
+                )
+            else:
+                self.flux_rect, self.flux_ivar_rect = self.rectify(
+                    points=self._points, f_values=(flux, flux_ivar), interp_method="scipy"
+                )
 
             # Save the 2D spectra to cache files
             self.cache_path = cache_path
@@ -120,6 +127,7 @@ class SpecData:
             The spectral coordinates of the rectified 2D spectrum.
         """
         from pypeit import spec2dobj, specobjs
+        from scipy import interpolate
 
         if "spec1d" in sci_file:
             spec1d_file = sci_file
@@ -246,6 +254,21 @@ class SpecData:
         flux = flux[valid_spat][valid_spec]
         ivar = ivar[valid_spat][valid_spec]
 
+        # Preliminary sky line removal - reduce the noise introduced in the rectification
+        wave_sky = np.nanmedian(np.where(waveimg > 0, waveimg, np.nan), axis=0)
+        flux_sky = np.nanmedian(np.where(waveimg > 0, flux, np.nan), axis=0)
+        flux_sky_pred = interpolate.interp1d(wave_sky, flux_sky, kind="cubic", fill_value="extrapolate")(waveimg)
+        flux_skysub = flux - flux_sky_pred
+
+        # fig, ax = plt.subplots(3, 1, figsize=(12, 8), constrained_layout=True, sharex=True, sharey=True)
+        # ax[0].imshow(flux, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(flux, 5), vmax=np.nanpercentile(flux, 95))
+        # ax[0].set_title("Flux")
+        # ax[1].imshow(flux_sky_pred, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(flux_sky_pred, 5), vmax=np.nanpercentile(flux_sky_pred, 95))
+        # ax[1].set_title("Sky Prediction")
+        # ax[2].imshow(flux_skysub, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(flux_skysub, 5), vmax=np.nanpercentile(flux_skysub, 95))
+        # ax[2].set_title("Sky Subtracted")
+        # plt.show()
+
         if spat_rect is None:
             # Spatial coordinates: within the range of the slit
             # Remove the first and last spatial pixels to avoid the edge effects
@@ -267,6 +290,7 @@ class SpecData:
             spat_resln=spat_resln,
             spec_resln=spec_resln,
             flux=flux,
+            flux_skysub=flux_skysub,
             flux_ivar=ivar,
             dist=dist,
             waveimg=waveimg,
@@ -315,6 +339,7 @@ class SpecData:
         return cls(**data, **kwargs)
 
     @classmethod
+    @show_and_save
     def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs):
         """
         Coadd multiple SpecData objects.
@@ -357,22 +382,55 @@ class SpecData:
 
         # Coadd the flux and ivar arrays
         flux_rect_stack = jnp.stack([spec_data.flux_rect for spec_data in spec_data_list], axis=0)
+        global_sky_stack = jnp.nanmean(flux_rect_stack, axis=1)
+        sky_sub_stack = flux_rect_stack - global_sky_stack[:, np.newaxis, :]
         flux_ivar_rect_stack = jnp.stack([spec_data.flux_ivar_rect for spec_data in spec_data_list], axis=0)
         flux_err_rect_stack = flux_ivar_rect_stack**-0.5
 
         # Calculate weighted means
         valid_mask = np.isfinite(flux_rect_stack) & np.isfinite(flux_err_rect_stack)
         cr_mask = np.ones_like(flux_rect_stack, dtype=bool)
-        for i in range(len(spec_data_list)):
-            diff = flux_rect_stack[i] - jnp.nanmedian(flux_rect_stack, axis=0)
-            # Only mask the pixels with large positive deviations (cosmic rays)
-            cr_mask[i] = diff < 2.5 * mad_std(diff[np.isfinite(diff)])
-        
+        if len(spec_data_list) > 1:
+            # Try identifying cosmic rays with image subtraction
+            for i in range(len(spec_data_list)):
+                sky_sub_rest = jnp.delete(sky_sub_stack, i, axis=0)
+                diff = (sky_sub_stack[i] - jnp.nanmedian(sky_sub_rest, axis=0)) / flux_err_rect_stack[i]
+                # Only mask the pixels with large positive deviations (cosmic rays)
+                cr_mask[i] = ~(diff > 3 * mad_std(diff[np.isfinite(diff)]))
+
         w = flux_ivar_rect_stack
         weights = np.where(valid_mask & cr_mask, w, 0)
-        weighted_values = np.where(valid_mask & cr_mask, flux_rect_stack * w, 0)
+        weighted_values = np.where(valid_mask & cr_mask, (flux_rect_stack - global_sky_stack[:, np.newaxis, :]) * w, 0)
 
         flux_rect = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
+
+        cmap = plt.get_cmap("gray")
+        cmap.set_bad("red", 1.0)
+        _, ax = plt.subplots(
+            3, 1, figsize=(12, 4 * (len(spec_data_list) + 1)), constrained_layout=True, sharex=True, sharey=True
+        )
+        for k in range(len(spec_data_list)):
+            ax[k].imshow(
+                flux_rect_stack[k] - global_sky_stack[k][np.newaxis, :],
+                cmap=cmap,
+                origin="lower",
+                aspect="auto",
+                vmin=np.nanpercentile(flux_rect, 5),
+                vmax=np.nanpercentile(flux_rect, 95),
+            )
+            ax[k].set_title(f"Object {k+1}")
+            ax[k].set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
+        ax[-1].imshow(
+            flux_rect,
+            cmap=cmap,
+            origin="lower",
+            aspect="auto",
+            vmin=np.nanpercentile(flux_rect, 5),
+            vmax=np.nanpercentile(flux_rect, 95),
+        )
+        ax[-1].set_xlabel(r"$\mathrm{Spec\ [pixel]}$")
+        ax[-1].set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
+        ax[-1].set_title("Coadded")
 
         # Calculate errors
         weighted_errors = np.where(valid_mask & cr_mask, (flux_err_rect_stack * w) ** 2, 0)
@@ -479,7 +537,7 @@ class SpecData:
 
         return SpecModel(
             dat=self.flux_rect,
-            dat_err=self.flux_ivar_rect ** -0.5,
+            dat_err=self.flux_ivar_rect**-0.5,
             spat=self.spat_rect,
             spec=self.spec_rect,
             pixel_scale=self.pixel_scale,

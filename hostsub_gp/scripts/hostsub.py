@@ -120,7 +120,7 @@ class HostSub(ScriptBase):
             spec_data_list.append(spec_data)
 
         if args.coadd2d:
-            spec_data_coadd2d = SpecData.coadd2d(spec_data_list)
+            spec_data_coadd2d = SpecData.coadd2d(spec_data_list, show=True)
             HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
