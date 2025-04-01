@@ -979,25 +979,34 @@ class SpecModel:
             The 2D Gaussian Process - the spatial profile of the host.
         X : Array
             The 2D grids to make the prediction.
-            Shape: (n_spat, n_spec, 2)
+            Shape: (n_spat, n_spec, 2) or (n_spat * n_spec, 2)
 
         Returns
         -------
         Array | tuple[Array, Array]
             The flattened, predicted host galaxy flux.
         """
-        if (X.ndim != 3) or (X.shape[-1] != 2):
-            raise ValueError("Invalid input grids: the shape of X must be (n_spat, n_spec, 2).")
-        # Input for the 1D GP: (n_spat, 1)
-        X_1d = X[0, :, 1:]
-        # Input for the 2D GP: (n_spat * n_spec, 2)
-        X_2d = X.reshape(-1, 2)
+        if X.shape[-1] != 2:
+            raise ValueError("Invalid input grids: the last dimension of X must be 2 (spat & spec coordinates).")
+        if (X.ndim == 3):
+            n_spat = X.shape[0]
+            # Input for the 1D GP: (n_spat, 1)
+            X_1d = X[0, :, 1:]
+            # Input for the 2D GP: (n_spat * n_spec, 2)
+            X_2d = X.reshape(-1, 2)
+        elif (X.ndim == 2):
+            n_spat = 1
+            # Already flattened
+            X_1d = X[:, 1:]
+            X_2d = X
+        else:
+            raise ValueError("Invalid input grids: the shape of X must be (n_spat, n_spec, 2) or (n_spat * n_spec, 2).")
 
         # Obtain the mean and standard deviation of the mean function
         prior, prior_std = self.host_prior(X_2d)
 
         if return_var:
-            y_1d, y_1d_var = [jnp.tile(y, reps=X.shape[0]) for y in gp_1d.predict(X_test=X_1d, return_var=True)]
+            y_1d, y_1d_var = [jnp.tile(y, reps=n_spat) for y in gp_1d.predict(X_test=X_1d, return_var=True)]
             y_2d, y_2d_var = gp_2d.predict(X_test=X_2d, return_var=True)
 
             y_2d += prior
@@ -1009,7 +1018,7 @@ class SpecModel:
             return (y_1d, y_1d_var**0.5), (y_2d, y_2d_var**0.5), (y, y_var**0.5)
 
         else:
-            y_1d = jnp.tile(gp_1d.predict(X_test=X_1d), reps=X.shape[0])
+            y_1d = jnp.tile(gp_1d.predict(X_test=X_1d), reps=n_spat)
             y_2d = gp_2d.predict(X_test=X_2d) + prior
             y = y_1d * y_2d
 
@@ -1675,7 +1684,6 @@ class SpecModel:
         for k, (r, err, p, perr) in enumerate(zip(raw.T, raw_err.T, pred.T, pred_err.T)):
             c_raw = "k"
             ax.plot(self.dist_batch_2d.spat, r - offset * k, "--x", color=c_raw, alpha=0.5)
-            ax.fill_between(self.dist_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5)
             ax.errorbar(self.dist_batch_2d.spat, p - offset * k, yerr=perr, fmt="-o", capsize=3, color=c_raw)
             ax.text(
                 self.mask_offset,
@@ -1688,9 +1696,11 @@ class SpecModel:
                 color=c_raw,
             )
             ax.axhline(-offset * k, color=c_raw, ls="--", lw=1, alpha=0.25)
+        ylim = ax.get_ylim()
+        for k, (r, err, p, perr) in enumerate(zip(raw.T, raw_err.T, pred.T, pred_err.T)):
+            ax.fill_between(self.dist_batch_2d.spat, r + err - offset * k, r - err - offset * k, color=c_raw, alpha=0.5)
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
-        ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] + offset, ylim[1] - offset],
             x1=self.spat_edges["mask"][0],

@@ -6,7 +6,7 @@ import numpy as np
 import os
 import argparse
 
-from hostsub_gp import SpecData
+from hostsub_gp import SpecData, SpecModel
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput, Digitize
 from .._utils import msgs
@@ -121,15 +121,20 @@ class HostSub(ScriptBase):
 
         if args.coadd2d:
             spec_data_coadd2d = SpecData.coadd2d(spec_data_list, show=True)
-            HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
+            spec_model = HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
-                HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
+                spec_model = HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
+   
+        # Update the skymodel frame in the original Spec2D object
+        for i in sci_idx:
+            sci_file_2d = hostsubFile.filenames[i].replace("spec1d", "spec2d")
+            spec_data.update_pypeit_skymodel(spec_model=spec_model, spec2d_file=sci_file_2d)
 
     @staticmethod
     def _model_host_subtraction(
         args: argparse.Namespace, spec_data: SpecData, par_hostsub: dict, output_suffix: str = None
-    ):
+    ) -> SpecModel:
         """
         Model the host galaxy and subtract it from the 1D spectrum.
 
@@ -141,6 +146,11 @@ class HostSub(ScriptBase):
             2D spectrum data.
         par_hostsub : dict
             Parameters for host subtraction.
+
+        Returns
+        -------
+        SpecModel
+            The SpecModel object with the host galaxy subtracted.
         """
 
         # Convert the 2D spectrum to a SpecModel object
@@ -267,6 +277,8 @@ class HostSub(ScriptBase):
             fmt="%.4f %.6e %.6e %.6e %.6e",
         )
         msgs.info(f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt")
+
+        return spec_model
 
     @staticmethod
     def _load_gp_params(par: dict) -> tuple[dict[str, float], list[dict[str, tuple[float, float]]]]:

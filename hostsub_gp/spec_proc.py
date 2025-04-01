@@ -9,6 +9,7 @@ import jax.numpy as jnp
 # jax.config.update("jax_enable_x64", True)
 
 from jax._src.typing import ArrayLike, Array
+from typing import Callable
 
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
@@ -42,7 +43,7 @@ class SpecData:
         dist: ArrayLike = None,
         waveimg: ArrayLike = None,
         flux: ArrayLike = None,
-        flux_skysub: ArrayLike = None,
+        flux_global_sky: ArrayLike = None,
         flux_ivar: ArrayLike = None,
         sky_offset: float = None,
         to_caches: bool = False,
@@ -57,6 +58,7 @@ class SpecData:
         self.position_angle = position_angle
         self.spat_resln = spat_resln
         self.spec_resln = spec_resln
+        self.sky_offset = sky_offset
 
         if (flux_rect is not None) and (flux_ivar_rect is not None):
             self.flux_rect = jnp.asarray(flux_rect)
@@ -67,20 +69,27 @@ class SpecData:
             if (flux is None) or (flux_ivar is None) or (waveimg is None):
                 raise ValueError("No flux, ivar, or wavelength solution provided.")
 
-            if sky_offset is None:
-                sky_offset = self.get_offset(
-                    points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True, mask_wid=2.5
-                )
+            if self.sky_offset is None:
+                host_prior = HostProfile.from_archival(
+                    center_ra=self.center_ra,
+                    center_dec=self.center_dec,
+                    slit_len=self.spat_rect.max() - self.spat_rect.min() + self.pixel_scale,
+                    slit_wid=self.slit_wid,
+                    position_angle=self.position_angle,
+                ).model_host_profile_prior()
 
-            self._points = jnp.stack([dist - sky_offset, waveimg], axis=-1)
+                self.sky_offset = self._get_offset(
+                    points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True, mask_wid=2.0, host_prior=host_prior
+                )
+            self._points = jnp.stack([dist - self.sky_offset, waveimg], axis=-1)
 
             # Rectify the 2D spectrum
-            if flux_skysub is not None:
-                self.flux_rect, self.flux_ivar_rect = self.rectify(
-                    points=self._points, f_values=(flux_skysub, flux_ivar), interp_method="scipy"
+            if flux_global_sky is not None:
+                self.flux_rect, self.flux_ivar_rect = self._rectify(
+                    points=self._points, f_values=(flux - flux_global_sky, flux_ivar), interp_method="scipy"
                 )
             else:
-                self.flux_rect, self.flux_ivar_rect = self.rectify(
+                self.flux_rect, self.flux_ivar_rect = self._rectify(
                     points=self._points, f_values=(flux, flux_ivar), interp_method="scipy"
                 )
 
@@ -127,7 +136,6 @@ class SpecData:
             The spectral coordinates of the rectified 2D spectrum.
         """
         from pypeit import spec2dobj, specobjs
-        from scipy import interpolate
 
         if "spec1d" in sci_file:
             spec1d_file = sci_file
@@ -160,7 +168,6 @@ class SpecData:
             else:
                 det = "DET02"
             slit_wid = float(pypeit_header["SLITNAME"].split("_")[-1])
-            spec_resln = 7.5  # TODO: get the spectral resolution from the header
 
         elif pypeit_header["PYP_SPEC"] == "mmt_binospec":
             if raw_dir is None:
@@ -180,7 +187,6 @@ class SpecData:
                 ra, dec = coord.ra.deg, coord.dec.deg
 
             slit_wid = float(raw_header["MASK"].split("Longslit")[-1])
-            spec_resln = 4.5  # TODO: get the spectral resolution from the header
 
         else:
             raise NotImplementedError("Only LRIS and Binospec are supported")
@@ -217,6 +223,9 @@ class SpecData:
 
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
 
+        # Spectral resolution: the FWHM of the arc lines
+        spec_resln = sci2d["wavesol"]["mesured_fwhm"].value[0]  # A typo in PypeIt
+
         flux = np.array(sci2d.sciimg.T)
         ivar = np.array(sci2d.ivarraw.T)
         waveimg = np.array(sci2d.waveimg.T)
@@ -244,6 +253,34 @@ class SpecData:
         dist_spec_pix = spec_pix - trace_spec_pix
         dist = np.sqrt(dist_spat_pix**2 + dist_spec_pix**2) * np.where(dist_spat_pix > 0, 1, -1) * pixel_scale
 
+        # Preliminary sky line removal - reduce the noise introduced in the rectification
+        wave_sky = np.nanmedian(np.where(waveimg > 0, waveimg, np.nan), axis=0)
+        flux_sky = np.nanmedian(np.where(waveimg > 0, flux, np.nan), axis=0)
+        global_sky = Interp1D_Grid(points=wave_sky, values=flux_sky, method="cubic")(waveimg)
+
+        # Save the 2D spectrum wavelength solution & distance from the trace to a fits file
+        primary_hdu = fits.PrimaryHDU()
+        hdr = primary_hdu.header
+        hdr["RAWFILE"] = spec2d_file
+        hdr["DET"] = det
+
+        # Save the distance array
+        hdu_dist = fits.ImageHDU(dist, name="DIST")
+        hdu_dist.header["UNIT"] = "arcsec"
+        hdu_dist.header["COMMENT"] = "Distance from the trace"
+
+        # Save the wavelength solution
+        hdu_waveimg = fits.ImageHDU(waveimg, name="WAVEIMG")
+        hdu_waveimg.header["UNIT"] = "Angstrom"
+        hdu_waveimg.header["COMMENT"] = "Wavelength solution"
+
+        # Save the global sky background
+        hdu_global_sky = fits.ImageHDU(global_sky, name="GLOBALSKY")
+        hdu_global_sky.header["COMMENT"] = "Global sky background (average across the slit)"
+
+        hdul = fits.HDUList([primary_hdu, hdu_dist, hdu_waveimg, hdu_global_sky])
+        hdul.writeto(spec2d_file.replace(".fits", "_preproc.fits"), overwrite=True)
+
         # Remove spatial pixels outside the slit (all spat values are NaN)
         valid_spat = jnp.any(np.isfinite(dist), axis=1)
         # Remove spectral pixels outside the wavelength range (some spec values are NaN)
@@ -253,19 +290,35 @@ class SpecData:
         waveimg = waveimg[valid_spat][valid_spec]
         flux = flux[valid_spat][valid_spec]
         ivar = ivar[valid_spat][valid_spec]
+        global_sky = global_sky[valid_spat][valid_spec]
 
-        # Preliminary sky line removal - reduce the noise introduced in the rectification
-        wave_sky = np.nanmedian(np.where(waveimg > 0, waveimg, np.nan), axis=0)
-        flux_sky = np.nanmedian(np.where(waveimg > 0, flux, np.nan), axis=0)
-        flux_sky_pred = interpolate.interp1d(wave_sky, flux_sky, kind="cubic", fill_value="extrapolate")(waveimg)
-        flux_skysub = flux - flux_sky_pred
-
-        # fig, ax = plt.subplots(3, 1, figsize=(12, 8), constrained_layout=True, sharex=True, sharey=True)
-        # ax[0].imshow(flux, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(flux, 5), vmax=np.nanpercentile(flux, 95))
+        # _, ax = plt.subplots(3, 1, figsize=(12, 8), constrained_layout=True, sharex=True, sharey=True)
+        # ax[0].imshow(
+        #     flux,
+        #     origin="lower",
+        #     aspect="auto",
+        #     cmap="gray",
+        #     vmin=np.nanpercentile(flux, 5),
+        #     vmax=np.nanpercentile(flux, 95),
+        # )
         # ax[0].set_title("Flux")
-        # ax[1].imshow(flux_sky_pred, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(flux_sky_pred, 5), vmax=np.nanpercentile(flux_sky_pred, 95))
+        # ax[1].imshow(
+        #     global_sky,
+        #     origin="lower",
+        #     aspect="auto",
+        #     cmap="gray",
+        #     vmin=np.nanpercentile(flux, 5),
+        #     vmax=np.nanpercentile(flux, 95),
+        # )
         # ax[1].set_title("Sky Prediction")
-        # ax[2].imshow(flux_skysub, origin="lower", aspect="auto", cmap="gray", vmin=np.nanpercentile(flux_skysub, 5), vmax=np.nanpercentile(flux_skysub, 95))
+        # ax[2].imshow(
+        #     flux - global_sky,
+        #     origin="lower",
+        #     aspect="auto",
+        #     cmap="gray",
+        #     vmin=np.nanpercentile(flux - global_sky, 5),
+        #     vmax=np.nanpercentile(flux - global_sky, 95),
+        # )
         # ax[2].set_title("Sky Subtracted")
         # plt.show()
 
@@ -290,7 +343,7 @@ class SpecData:
             spat_resln=spat_resln,
             spec_resln=spec_resln,
             flux=flux,
-            flux_skysub=flux_skysub,
+            flux_global_sky=global_sky,
             flux_ivar=ivar,
             dist=dist,
             waveimg=waveimg,
@@ -331,6 +384,7 @@ class SpecData:
                     spec_rect=np.array(f["SPEC"].data, dtype=np.float64),
                     flux_rect=np.array(f["FLUX"].data, dtype=np.float64),
                     flux_ivar_rect=np.array(f["IVAR"].data, dtype=np.float64),
+                    sky_offset=header["SKYOFFSET"],
                     cache_path=header["SPECFILE"],
                     to_caches=False,
                 )
@@ -382,43 +436,60 @@ class SpecData:
 
         # Coadd the flux and ivar arrays
         flux_rect_stack = jnp.stack([spec_data.flux_rect for spec_data in spec_data_list], axis=0)
-        global_sky_stack = jnp.nanmean(flux_rect_stack, axis=1)
-        sky_sub_stack = flux_rect_stack - global_sky_stack[:, np.newaxis, :]
         flux_ivar_rect_stack = jnp.stack([spec_data.flux_ivar_rect for spec_data in spec_data_list], axis=0)
         flux_err_rect_stack = flux_ivar_rect_stack**-0.5
 
         # Calculate weighted means
         valid_mask = np.isfinite(flux_rect_stack) & np.isfinite(flux_err_rect_stack)
         cr_mask = np.ones_like(flux_rect_stack, dtype=bool)
+        pos_outlier = np.ones_like(flux_rect_stack, dtype=bool)
+        neg_outlier = np.ones_like(flux_rect_stack, dtype=bool)
+        diff = np.zeros_like(flux_rect_stack)
         if len(spec_data_list) > 1:
             # Try identifying cosmic rays with image subtraction
             for i in range(len(spec_data_list)):
-                sky_sub_rest = jnp.delete(sky_sub_stack, i, axis=0)
-                diff = (sky_sub_stack[i] - jnp.nanmedian(sky_sub_rest, axis=0)) / flux_err_rect_stack[i]
-                # Only mask the pixels with large positive deviations (cosmic rays)
-                cr_mask[i] = ~(diff > 3 * mad_std(diff[np.isfinite(diff)]))
+                diff[i] = (flux_rect_stack[i] - jnp.nanmedian(flux_rect_stack, axis=0)) / flux_err_rect_stack[i]
+                pos_outlier[i] = diff[i] > 5 * mad_std(diff[i][np.isfinite(diff[i])])
+                neg_outlier[i] = diff[i] < -5 * mad_std(diff[i][np.isfinite(diff[i])])
+            
+            for i in range(len(spec_data_list)):
+                # Mask the pixels with large positive deviations (cosmic rays)
+                cr_mask[i] = ~pos_outlier[i]
+
+                for j in range(len(spec_data_list)):
+                    if i != j:
+                        # Mask the pixels with large negative deviations in other frames
+                        cr_mask[i] &= ~neg_outlier[j] | neg_outlier[i]
+                
 
         w = flux_ivar_rect_stack
         weights = np.where(valid_mask & cr_mask, w, 0)
-        weighted_values = np.where(valid_mask & cr_mask, (flux_rect_stack - global_sky_stack[:, np.newaxis, :]) * w, 0)
+        weighted_values = np.where(valid_mask & cr_mask, flux_rect_stack * w, 0)
 
         flux_rect = np.sum(weighted_values, axis=0) / np.sum(weights, axis=0)
 
         cmap = plt.get_cmap("gray")
         cmap.set_bad("red", 1.0)
         _, ax = plt.subplots(
-            3, 1, figsize=(12, 4 * (len(spec_data_list) + 1)), constrained_layout=True, sharex=True, sharey=True
+            len(spec_data_list) + 1,
+            1,
+            figsize=(12, 4 * (len(spec_data_list) + 1)),
+            constrained_layout=True,
+            sharex=True,
+            sharey=True,
         )
         for k in range(len(spec_data_list)):
             ax[k].imshow(
-                flux_rect_stack[k] - global_sky_stack[k][np.newaxis, :],
+                diff[k], # - global_sky_stack[k][np.newaxis, :],
                 cmap=cmap,
                 origin="lower",
                 aspect="auto",
-                vmin=np.nanpercentile(flux_rect, 5),
-                vmax=np.nanpercentile(flux_rect, 95),
+                vmin=-5,
+                vmax=5,
+                # vmin=np.nanpercentile(flux_rect, 5),
+                # vmax=np.nanpercentile(flux_rect, 95),
             )
-            ax[k].set_title(f"Object {k+1}")
+            ax[k].set_title(f"Object {k+1} - Mean")
             ax[k].set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[-1].imshow(
             flux_rect,
@@ -481,6 +552,7 @@ class SpecData:
         hdr["SPATRESLN"] = public_data["spat_resln"]
         hdr["SPECRESLN"] = public_data["spec_resln"]
         hdr["SPECFILE"] = public_data["cache_path"]
+        hdr["SKYOFFSET"] = public_data["sky_offset"]
 
         # Create HDUs
         spat_hdu = fits.ImageHDU(public_data["spat_rect"], name="SPAT")
@@ -550,7 +622,77 @@ class SpecData:
             **kwargs,
         )
 
-    def rectify(
+    def update_pypeit_skymodel(self, spec_model: SpecModel, spec2d_file: str):
+        """
+        Update the sky model in the PypeIt spec2d file.
+        """
+        import os
+        from pypeit import spec2dobj
+
+        preproc_file = spec2d_file.replace(".fits", "_preproc.fits")
+        rect_file = spec2d_file.replace(".fits", "_rect.fits")
+        output_file = spec2d_file.replace(".fits", "_hostsub.fits")
+
+        if not (os.path.exists(spec2d_file) | os.path.exists(rect_file)):
+            raise FileNotFoundError("Spec2D file or rectified file not found.")
+
+        # The new sky model will be composed of
+        ###### (i) the preliminary global sky (average across the slit) removed before the rectification
+        ###### (ii) the global sky (average of the sky region) subtracted after the rectification
+        ###### (iii) the local sky modeled with HostSub
+
+        # Preliminary sky line removal - reduce the noise introduced in the rectification
+        ###### Set the sky model to NaN if the corresponding pixels are excluded from the fit
+        with fits.open(preproc_file) as hdul_preproc:
+            waveimg = jnp.array(hdul_preproc["WAVEIMG"].data, dtype=jnp.float32)
+            dist = jnp.array(hdul_preproc["DIST"].data - self.sky_offset, dtype=jnp.float32)
+            global_sky_pre = jnp.array(hdul_preproc["GLOBALSKY"].data, dtype=jnp.float32)
+            det = hdul_preproc[0].header["DET"]
+
+        # mask_model = (
+        #     (dist >= spec_model.spat[0])
+        #     & (dist <= spec_model.spat[-1])
+        #     & (waveimg >= spec_model.spec[0])
+        #     & (waveimg <= spec_model.spec[-1])
+        # )
+        # global_sky_pre = np.where(mask_model, global_sky_pre, np.nan)
+
+        # The global sky subtracted after the rectification
+        global_sky_post = Interp1D_Grid(
+            points=spec_model.f_sky_1d.X.ravel(), values=spec_model.f_sky_1d.y, method="cubic"
+        )(waveimg)
+
+        # The local sky
+        X = np.stack([dist.ravel(), waveimg.ravel()], axis=-1).reshape(-1, 2)
+        spat_mask = (dist.ravel() >= spec_model.spat_edges["host"][0]) & (dist.ravel() <= spec_model.spat_edges["host"][-1])
+        spec_mask = (waveimg.ravel() >= spec_model.spec[0]) & (waveimg.ravel() <= spec_model.spec[-1])
+        local_mask = spat_mask & spec_mask
+        
+        raise NotImplementedError
+
+        breakpoint()
+        
+
+        sky_host_prior, _ = spec_model.host_prior(X[local_mask])
+        sky_pred, sky_pred_var = spec_model._get_pred(spec_model._gp_1d, spec_model._gp_2d, X[local_mask], return_var=True)
+
+        sky_local = np.zeros_like(dist.ravel())
+        sky_local[local_mask] = sky_pred + sky_host_prior
+        sky_local = sky_local.reshape(dist.shape)
+
+        sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
+        # assert sci2d.sciimg.shape == sky_model.T.shape
+        sci2d.skymodel = (global_sky_pre + global_sky_post + sky_local).T
+
+        all_spec2d = spec2dobj.AllSpec2DObj()
+        all_spec2d[det] = sci2d
+
+        with fits.open(spec2d_file) as hdul:
+            pri_hdr = hdul[0].header
+
+        all_spec2d.write_to_fits(output_file, pri_hdr=pri_hdr)
+
+    def _rectify(
         self,
         points: ArrayLike,
         f_values: tuple[ArrayLike, ArrayLike, ArrayLike],
@@ -637,7 +779,7 @@ class SpecData:
         return flux_rect, flux_ivar_rect
 
     @show_and_save
-    def get_offset(self, points: ArrayLike, flux: ArrayLike, mask_wid: float = 2.0) -> float:
+    def _get_offset(self, points: ArrayLike, flux: ArrayLike, host_prior: Callable, mask_wid: float = 2.0) -> float:
         """
         Center the trace of the science object.
         """
@@ -682,15 +824,6 @@ class SpecData:
 
         slit_len_max = min(-self.spat_rect[0], self.spat_rect[-1]) * 2
         spat = self.spat_rect[np.abs(self.spat_rect) <= slit_len_max / 2]
-        slit_len = self.spat_rect.max() - self.spat_rect.min() + self.pixel_scale
-
-        host_prior = HostProfile.from_archival(
-            center_ra=self.center_ra,
-            center_dec=self.center_dec,
-            slit_len=slit_len,
-            slit_wid=self.slit_wid,
-            position_angle=self.position_angle,
-        ).model_host_profile_prior()
 
         obs = binned_mean_with_clipping(
             points[..., 0],
