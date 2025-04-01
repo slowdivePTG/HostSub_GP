@@ -79,7 +79,11 @@ class SpecData:
                 ).model_host_profile_prior()
 
                 self.sky_offset = self._get_offset(
-                    points=jnp.stack([dist, waveimg], axis=-1), flux=flux, show=True, mask_wid=2.0, host_prior=host_prior
+                    points=jnp.stack([dist, waveimg], axis=-1),
+                    flux=flux,
+                    show=True,
+                    mask_wid=2.0,
+                    host_prior=host_prior,
                 )
             self._points = jnp.stack([dist - self.sky_offset, waveimg], axis=-1)
 
@@ -451,7 +455,7 @@ class SpecData:
                 diff[i] = (flux_rect_stack[i] - jnp.nanmedian(flux_rect_stack, axis=0)) / flux_err_rect_stack[i]
                 pos_outlier[i] = diff[i] > 5 * mad_std(diff[i][np.isfinite(diff[i])])
                 neg_outlier[i] = diff[i] < -5 * mad_std(diff[i][np.isfinite(diff[i])])
-            
+
             for i in range(len(spec_data_list)):
                 # Mask the pixels with large positive deviations (cosmic rays)
                 cr_mask[i] = ~pos_outlier[i]
@@ -460,7 +464,6 @@ class SpecData:
                     if i != j:
                         # Mask the pixels with large negative deviations in other frames
                         cr_mask[i] &= ~neg_outlier[j] | neg_outlier[i]
-                
 
         w = flux_ivar_rect_stack
         weights = np.where(valid_mask & cr_mask, w, 0)
@@ -480,7 +483,7 @@ class SpecData:
         )
         for k in range(len(spec_data_list)):
             ax[k].imshow(
-                diff[k], # - global_sky_stack[k][np.newaxis, :],
+                diff[k],  # - global_sky_stack[k][np.newaxis, :],
                 cmap=cmap,
                 origin="lower",
                 aspect="auto",
@@ -664,17 +667,16 @@ class SpecData:
 
         # The local sky
         X = np.stack([dist.ravel(), waveimg.ravel()], axis=-1).reshape(-1, 2)
-        spat_mask = (dist.ravel() >= spec_model.spat_edges["host"][0]) & (dist.ravel() <= spec_model.spat_edges["host"][-1])
+        spat_mask = (dist.ravel() >= spec_model.spat_edges["host"][0]) & (
+            dist.ravel() <= spec_model.spat_edges["host"][-1]
+        )
         spec_mask = (waveimg.ravel() >= spec_model.spec[0]) & (waveimg.ravel() <= spec_model.spec[-1])
         local_mask = spat_mask & spec_mask
-        
-        raise NotImplementedError
-
-        breakpoint()
-        
 
         sky_host_prior, _ = spec_model.host_prior(X[local_mask])
-        sky_pred, sky_pred_var = spec_model._get_pred(spec_model._gp_1d, spec_model._gp_2d, X[local_mask], return_var=True)
+        _, _, (sky_pred, _) = spec_model._get_pred(
+            spec_model._gp_1d, spec_model._gp_2d, X[local_mask], return_var=True
+        )
 
         sky_local = np.zeros_like(dist.ravel())
         sky_local[local_mask] = sky_pred + sky_host_prior
@@ -682,7 +684,7 @@ class SpecData:
 
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
         # assert sci2d.sciimg.shape == sky_model.T.shape
-        sci2d.skymodel = (global_sky_pre + global_sky_post + sky_local).T
+        sci2d.skymodel = np.array(global_sky_pre + global_sky_post + sky_local).T
 
         all_spec2d = spec2dobj.AllSpec2DObj()
         all_spec2d[det] = sci2d
