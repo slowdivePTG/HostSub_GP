@@ -128,7 +128,9 @@ class HostSub(ScriptBase):
    
         # Update the skymodel frame in the original Spec2D object
         for i in sci_idx:
-            sci_file_2d = hostsubFile.filenames[i].replace("spec1d", "spec2d")
+            sci_file_1d = hostsubFile.filenames[i]
+            os.system(f"cp {sci_file_1d} {sci_file_1d.replace('.fits', '_hostsub.fits')}")
+            sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
             spec_data.update_pypeit_skymodel(spec_model=spec_model, spec2d_file=sci_file_2d)
 
     @staticmethod

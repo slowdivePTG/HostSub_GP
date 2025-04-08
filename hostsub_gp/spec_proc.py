@@ -73,7 +73,10 @@ class SpecData:
                 host_prior = HostProfile.from_archival(
                     center_ra=self.center_ra,
                     center_dec=self.center_dec,
-                    slit_len=self.spat_rect.max() - self.spat_rect.min() + self.pixel_scale,
+                    slit_len=min(
+                        self.spat_rect.max() - self.spat_rect.min(), 120 // self.pixel_scale * self.pixel_scale
+                    ) # slit_len <= 120 arcsec = 2 arcmin
+                    + self.pixel_scale,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,
                 ).model_host_profile_prior()
@@ -674,9 +677,7 @@ class SpecData:
         local_mask = spat_mask & spec_mask
 
         sky_host_prior, _ = spec_model.host_prior(X[local_mask])
-        _, _, (sky_pred, _) = spec_model._get_pred(
-            spec_model._gp_1d, spec_model._gp_2d, X[local_mask], return_var=True
-        )
+        _, _, (sky_pred, _) = spec_model._get_pred(spec_model._gp_1d, spec_model._gp_2d, X[local_mask], return_var=True)
 
         sky_local = np.zeros_like(dist.ravel())
         sky_local[local_mask] = sky_pred + sky_host_prior
@@ -824,7 +825,7 @@ class SpecData:
 
             return obs
 
-        slit_len_max = min(-self.spat_rect[0], self.spat_rect[-1]) * 2
+        slit_len_max = min(min(-self.spat_rect[0], self.spat_rect[-1]) * 2, 120)
         spat = self.spat_rect[np.abs(self.spat_rect) <= slit_len_max / 2]
 
         obs = binned_mean_with_clipping(
