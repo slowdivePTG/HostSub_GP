@@ -195,6 +195,20 @@ class SpecData:
 
             slit_wid = float(raw_header["MASK"].split("Longslit")[-1])
 
+        elif pypeit_header["PYP_SPEC"] == "not_alfosc":
+            if raw_dir is None:
+                raise ValueError("The raw file directory is needed for Binospec data.")
+            raw_file = "/".join([raw_dir, raw_file])
+            raw_header = fits.getheader(raw_file, ext=0)
+            position_angle = raw_header["FIELD"] - 90
+            if ra is None or dec is None:
+                # RA and DEC in the header are already in the format of degrees
+                ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
+            binning = int(pypeit_header["BINNING"].split(",")[1])  # in the spatial direction
+            pixel_scale = 0.2138 * binning
+            det = "DET01"
+            slit_wid = float(pypeit_header["DECKER"].split("_")[-1])
+
         else:
             raise NotImplementedError("Only LRIS and Binospec are supported")
 
