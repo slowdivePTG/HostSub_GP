@@ -455,7 +455,7 @@ class SpecModel:
                 counts_slit=counts_slit,
                 counts_err_slit=counts_err_slit,
             )
-        self.host_prior_gp = host_prof.model_host_profile_prior(spat_resln=spat_resln, **kwargs)
+        self._host_prior_gp = host_prof.model_host_profile_prior(spat_resln=spat_resln, **kwargs)
 
     def _get_host_prior(self) -> Callable[[Array], tuple[Array, Array]]:
         """
@@ -467,11 +467,11 @@ class SpecModel:
         # Scale the host flux prior to the observed data
         # All pixels on the host region summed along the spatial axis = 1
         scale = lambda X: jnp.interp(
-            X[..., 1].ravel(), self.spec, jnp.sum(self.host_prior_gp(_f_host.X)[0].reshape(_f_host.shape), axis=0)
+            X[..., 1].ravel(), self.spec, jnp.sum(self._host_prior_gp(_f_host.X)[0].reshape(_f_host.shape), axis=0)
         )
 
         def predict(X: Array) -> tuple[Array, Array]:
-            prior = self.host_prior_gp(X)
+            prior = self._host_prior_gp(X)
             return prior[0] / scale(X), prior[1] ** 0.5 / scale(X)
 
         return predict
@@ -795,6 +795,8 @@ class SpecModel:
         neg_log_prob_init = self._get_host_neg_log_probability(params=params_init_unbound, params_limit=params_limit)
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
         if ~np.isfinite(neg_log_prob_init):
+            breakpoint()
+            self._get_host_neg_log_probability(params=params_init_unbound, params_limit=params_limit)
             msgs.error("Initial log-probability is infinite.")
             msgs.info("Initial parameters:")
             _print_params(params_init)

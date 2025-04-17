@@ -75,7 +75,7 @@ class SpecData:
                     center_dec=self.center_dec,
                     slit_len=min(
                         self.spat_rect.max() - self.spat_rect.min(), 120 // self.pixel_scale * self.pixel_scale
-                    ) # slit_len <= 120 arcsec = 2 arcmin
+                    )  # slit_len <= 120 arcsec = 2 arcmin
                     + self.pixel_scale,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,
@@ -157,60 +157,101 @@ class SpecData:
         pypeit_header = fits.getheader(spec2d_file)
 
         # Access the header of the raw image
-        history = pypeit_header["HISTORY"]
-        for i in range(len(history)):
-            if "Combining frames" in history[i]:
-                raw_file = history[i + 1].strip('"')
-                break
+        raw_file = pypeit_header["FILENAME"]
+
+        # Items to load
+        # - RA, DEC (in degrees)
+        # - detector ID
+        # - pixel scale (in arcsec/pixel)
+        # - position angle (in degrees)
+        # - slit width (in arcsec)
+
+        def _get_raw_header(raw_dir: str, raw_file: str, **kwargs) -> fits.Header:
+            """
+            Get the header of the raw file.
+            """
+            if raw_dir is None:
+                raise ValueError(f"The raw file directory is needed for {pypeit_header['PYP_SPEC']} data.")
+            return fits.getheader("/".join([raw_dir, raw_file]), **kwargs)
 
         if pypeit_header["PYP_SPEC"] in ["keck_lris_blue", "keck_lris_red", "keck_lris_red_mark4"]:
-            position_angle = pypeit_header["ROTPOSN"] + 90
+            # Keck/LRIS
+
             if ra is None or dec is None:
-                # RA and Dec in the header are already in the format of degrees
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
-            binning = int(pypeit_header["BINNING"].split(",")[1])  # in the spatial direction
-            pixel_scale = 0.135 * binning
+
             if "red_mark4" in pypeit_header["PYP_SPEC"]:
                 det = "DET01"
             else:
                 det = "DET02"
+
+            binning = int(pypeit_header["BINNING"].split(",")[1])  # in the spatial direction
+            pixel_scale = 0.135 * binning
+
+            position_angle = pypeit_header["ROTPOSN"] + 90
+
             slit_wid = float(pypeit_header["SLITNAME"].split("_")[-1])
 
         elif pypeit_header["PYP_SPEC"] == "mmt_binospec":
-            if raw_dir is None:
-                raise ValueError("The raw file directory is needed for Binospec data.")
-            raw_file = "/".join([raw_dir, raw_file])
-            raw_header = fits.getheader(raw_file, ext=1)
+            # MMT/Binospec
 
-            # PA: parallactic angle
-            # ROT: instrument rotator angle (relative to the parallactic angle)
-            position_angle = raw_header["PA"] - raw_header["ROT"]
-            pixel_scale = 0.24
-            det = "DET02"
+            raw_header = _get_raw_header(raw_dir, raw_file, ext=1)
+
             if ra is None or dec is None:
                 # RA and DEC in the header are in the format of 'HH:MM:SS.SS' and 'DD:MM:SS.SS'
                 ra_str, dec_str = raw_header["CATRA"].strip("'"), raw_header["CATDEC"].strip("'")
                 coord = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg))
                 ra, dec = coord.ra.deg, coord.dec.deg
 
+            det = "DET02"
+
+            pixel_scale = 0.24
+
+            # PA: parallactic angle
+            # ROT: instrument rotator angle (relative to the parallactic angle)
+            position_angle = raw_header["PA"] - raw_header["ROT"]
+
             slit_wid = float(raw_header["MASK"].split("Longslit")[-1])
 
         elif pypeit_header["PYP_SPEC"] == "not_alfosc":
-            if raw_dir is None:
-                raise ValueError("The raw file directory is needed for Binospec data.")
-            raw_file = "/".join([raw_dir, raw_file])
-            raw_header = fits.getheader(raw_file, ext=0)
-            position_angle = raw_header["FIELD"] - 90
+            # NOT/ALFOSC
+
+            raw_header = _get_raw_header(raw_dir, raw_file, ext=0)
+
             if ra is None or dec is None:
-                # RA and DEC in the header are already in the format of degrees
                 ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
+
+            det = "DET01"
+
             binning = int(pypeit_header["BINNING"].split(",")[1])  # in the spatial direction
             pixel_scale = 0.2138 * binning
-            det = "DET01"
+
+            position_angle = raw_header["FIELD"] + 180
+
+            # Slit width format: "Slit_1.3"
             slit_wid = float(pypeit_header["DECKER"].split("_")[-1])
 
+        elif pypeit_header["PYP_SPEC"] == "vlt_fors2":
+            # VLT/FORS2
+
+            raw_header = _get_raw_header(raw_dir, raw_file, ext=0)
+
+            if ra is None or dec is None:
+                ra, dec = pypeit_header["RA"], pypeit_header["DEC"]
+
+            det = "DET01"
+
+            pixel_scale = 0.25
+
+            position_angle = -raw_header["HIERARCH ESO ADA POSANG"] + 180
+
+            # Slit width format: "Slit1_0arcsec"
+            slit_wid = float(
+                ".".join(pypeit_header["DECKER"].split("Slit")[-1].split("arcsec")[0].split("_"))
+            )
+
         else:
-            raise NotImplementedError("Only LRIS and Binospec are supported")
+            raise NotImplementedError("Only LRIS, Binospec, ALFOSC, and FORS2 are supported")
 
         # If the object ID in the science frame is provided (i.e., object successfully found), use the object trace
         if obj_id is not None:
@@ -245,7 +286,10 @@ class SpecData:
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
 
         # Spectral resolution: the FWHM of the arc lines
-        spec_resln = sci2d["wavesol"]["mesured_fwhm"].value[0]  # A typo in PypeIt
+        try:
+            spec_resln = sci2d["wavesol"]["measured_fwhm"].value[0]
+        except KeyError:
+            spec_resln = sci2d["wavesol"]["mesured_fwhm"].value[0]  # A typo in old PypeIt versions
 
         flux = np.array(sci2d.sciimg.T)
         ivar = np.array(sci2d.ivarraw.T)

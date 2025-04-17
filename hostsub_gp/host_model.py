@@ -10,7 +10,7 @@ import jax.numpy as jnp
 # jax.config.update("jax_enable_x64", True)
 
 from .gp import GP
-from .host_image import PS1Image, SDSSImage
+from .host_image import PS1Image, SDSSImage, LSImage, ArchivalImage
 from .interp import Interp2D_Grid
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
@@ -204,43 +204,37 @@ class HostProfile:
             # Load all filters
             filters = "ugrizy"
 
+        # Data
         data_list, header_list = [], []
         wv_eff = []
         flts = []
 
-        # Load SDSS images
-        sdss_filters = "u"
-        if len(sdss_filters) > 0:
-            SDSS = SDSSImage(
-                ra=center_ra,
-                dec=center_dec,
-                filters="".join([flt for flt in sdss_filters if flt in filters]),
-                path="./sdss_cutout/",
-            )
-            SDSS.download()
-            data_list_sdss, header_list_sdss = SDSS.load()
-            data_list.extend(data_list_sdss)
-            header_list.extend(header_list_sdss)
-            flts.extend(SDSS.filters)
-            wv_eff_sdss = np.array([SDSS.wv_eff_dict[flt] for flt in SDSS.filters])
-            wv_eff.extend(wv_eff_sdss)
+        def _load_images(image_class: ArchivalImage, filters: str, center_ra: float, center_dec: float) -> bool:
+            """
+            Load images from the specified image class.
+            """
+            image: ArchivalImage = image_class(ra=center_ra, dec=center_dec, filters=filters)
+            image.download()
+            data, header = image.load()
+            if len(data) == 0:
+                return False
+            data_list.extend(data)
+            header_list.extend(header)
+            flts.extend(image.filters)
+            wv_eff.extend(np.array([image.wv_eff_dict[flt] for flt in image.filters]))
+            return True
 
-        # Load PS1 images
-        ps1_filters = "grizy"
-        if len(ps1_filters) > 0:
-            PS1 = PS1Image(
-                ra=center_ra,
-                dec=center_dec,
-                filters="".join([flt for flt in ps1_filters if flt in filters]),
-                path="./ps1_cutout/",
-            )
-            PS1.download()
-            data_list_ps1, header_list_ps1 = PS1.load()
-            data_list.extend(data_list_ps1)
-            header_list.extend(header_list_ps1)
-            flts.extend(PS1.filters)
-            wv_eff_ps1 = np.array([PS1.wv_eff_dict[flt] for flt in PS1.filters])
-            wv_eff.extend(wv_eff_ps1)
+        # Try to load SDSS u-band image
+        _load_images(SDSSImage, "".join(flt for flt in "u" if flt in filters), center_ra, center_dec)
+
+        # Try to load PS1 images
+        _ps_loaded = _load_images(PS1Image, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec)
+        if not _ps_loaded:
+            # If no PS images found, try to load LS images
+            _ls_loaded = _load_images(LSImage, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
+            if not _ls_loaded:
+                # If no images found, raise an error
+                raise ValueError("No PS1 or LS images found")
 
         # TODO: Load acquisition images (optional)
 

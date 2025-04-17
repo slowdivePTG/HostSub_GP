@@ -99,9 +99,11 @@ class HostSub(ScriptBase):
             spec_data_cfg["ra"] = Float(par_hostsub.get("ra", None))
             spec_data_cfg["dec"] = Float(par_hostsub.get("dec", None))
             spec_data_cfg["sky_offset"] = Float(par_hostsub.get("sky_offset", None))
+            spec_data_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
 
             # Run the host subtraction
-            if args.overwrite or not os.path.exists(sci_rect_file):
+            from_pypeit = args.overwrite or not os.path.exists(sci_rect_file)
+            if from_pypeit:
                 # Load the pypeit 2dspec file and save the rectified file
                 spec_data = SpecData.from_pypeit(
                     sci_file=sci_file_2d,
@@ -120,7 +122,7 @@ class HostSub(ScriptBase):
             spec_data_list.append(spec_data)
 
         if args.coadd2d:
-            spec_data_coadd2d = SpecData.coadd2d(spec_data_list, show=True)
+            spec_data_coadd2d = SpecData.coadd2d(spec_data_list, show=from_pypeit) # Only show the plot after a new rectification
             spec_model = HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
