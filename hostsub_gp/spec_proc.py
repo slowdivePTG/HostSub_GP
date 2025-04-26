@@ -74,8 +74,8 @@ class SpecData:
                     center_ra=self.center_ra,
                     center_dec=self.center_dec,
                     slit_len=min(
-                        self.spat_rect.max() - self.spat_rect.min(), 120 // self.pixel_scale * self.pixel_scale
-                    )  # slit_len <= 120 arcsec = 2 arcmin
+                        self.spat_rect.max() - self.spat_rect.min(), 60 // self.pixel_scale * self.pixel_scale
+                    )  # slit_len <= 60 arcsec = 1 arcmin
                     + self.pixel_scale,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,

@@ -194,7 +194,7 @@ class HostSub(ScriptBase):
         seeing_match_cfg = {}
         seeing_match_cfg["max_dseeing"] = Float(par_seeing_match.get("max_dseeing", 1.0))
         seeing_match_cfg["min_dseeing"] = Float(par_seeing_match.get("min_dseeing", 0.0))
-        seeing_match_cfg["step_dseeing"] = Float(par_seeing_match.get("step_dseeing", 0.01))
+        seeing_match_cfg["step_dseeing"] = Float(par_seeing_match.get("step_dseeing", 0.05))
         seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
         if seeing_match_cfg["dseeing"] == 0:
             seeing_match_cfg["dseeing"] = None
@@ -203,7 +203,7 @@ class HostSub(ScriptBase):
         par_host_prior = par_hostsub.get("host_prior", {})
         host_prior_cfg = {}
         host_prior_cfg["filters"] = par_host_prior.get("filters", "grizy")
-        host_prior_cfg["spat_resln"] = Float(par_host_prior.get("spat_resln", 1.0))
+        # host_prior_cfg["spat_resln"] = Float(par_host_prior.get("spat_resln", 1.0))
         host_prior_cfg["noise_smooth_kernel"] = Int(par_host_prior.get("noise_smooth_kernel", None))
 
         # Initialize the SpecModel object
@@ -232,14 +232,36 @@ class HostSub(ScriptBase):
             # Update the SpecModel object
             dseeing_opt = spec_model.update_seeing(dseeing, **seeing_match_cfg)
 
-            # Update the SpecWrapper objects
-            dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
-            spec_model.construct_spec_wrapper(
-                f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),
-                host_emission_cfg=host_emission_cfg,
-                **spec_wrapper_cfg,
-                save=f"QA/{output_suffix}_conv.pdf",
-            )
+            if dseeing_opt > 0:
+                msgs.info("The seeing of the spectrum is better than the reference image.")
+                msgs.info("Convolve the spectrum with a Gaussian kernel.")
+                msgs.info(f"Optimized seeing difference is {dseeing_opt:.2f}.")
+
+                # Update the SpecWrapper objects
+                dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+                spec_model.construct_spec_wrapper(
+                    f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),
+                    host_emission_cfg=host_emission_cfg,
+                    **spec_wrapper_cfg,
+                    save=f"QA/{output_suffix}_conv.pdf",
+                )
+
+            elif dseeing_opt < 0:
+                msgs.info("The seeing of the spectrum is worse than the reference image.")
+                msgs.info("Convolve the reference image with a Gaussian kernel.")
+                msgs.info(f"Optimized seeing difference is {dseeing_opt:.2f}.")
+
+                # Update the Host galaxy prior
+                spec_model.build_host_prior(
+                    from_archival=True,
+                    **host_prior_cfg,
+                    dseeing=dseeing_opt,
+                    save=f"QA/{output_suffix}_host_prior_conv.pdf",
+                )
+
+            else:
+                msgs.info("The seeing of the spectrum is the same as the reference image.")
+                msgs.info("No convolution needed.")
 
         # Prior of the host profiles
         spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")

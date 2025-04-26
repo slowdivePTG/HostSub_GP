@@ -425,13 +425,13 @@ class SpecModel:
     def build_host_prior(
         self,
         filters: str | list[str] = "grizy",
-        spat_resln: float = 1.0,
         noise_smooth_kernel: float = None,
         from_archival: bool = True,
         wv_eff: ArrayLike = None,
         spat_slit: ArrayLike = None,
         counts_slit: ArrayLike = None,
         counts_err_slit: ArrayLike = None,
+        dseeing: float = None,
         **kwargs,
     ):
         """
@@ -441,7 +441,7 @@ class SpecModel:
         if from_archival:
             # Load the archival photometric data (PS1, SDSS)
             host_prof = HostProfile.from_archival(
-                spec_model=self, filters=filters, noise_smooth_kernel=noise_smooth_kernel
+                spec_model=self, filters=filters, noise_smooth_kernel=noise_smooth_kernel, dseeing=dseeing
             )
         elif (wv_eff is None) or (spat_slit is None) or (counts_slit is None) or (counts_err_slit is None):
             raise ValueError("Please provide the photometric data for modeling the host prior.")
@@ -455,7 +455,7 @@ class SpecModel:
                 counts_slit=counts_slit,
                 counts_err_slit=counts_err_slit,
             )
-        self._host_prior_gp = host_prof.model_host_profile_prior(spat_resln=spat_resln, **kwargs)
+        self._host_prior_gp = host_prof.model_host_profile_prior(spat_resln=self.spat_resln, **kwargs)
 
     def _get_host_prior(self) -> Callable[[Array], tuple[Array, Array]]:
         """
@@ -544,16 +544,19 @@ class SpecModel:
         """
         if dseeing is None:
             dseeing = self._match_seeing(**kwargs)
-        # Update the spatial resolution
-        spat_resln_0 = self.spat_resln
-        msgs.info(f"Original spatial resolution: {spat_resln_0:.2f} arcsec")
-        self.spat_resln = (spat_resln_0**2 + dseeing**2) ** 0.5
-        msgs.info(f"Updated spatial resolution: {self.spat_resln:.2f} arcsec")
 
-        # Update the input mask width
-        self._mask_wid = self._mask_wid * self.spat_resln / spat_resln_0
-        # Update the mask, sky, and host regions
-        self._build_spat_filter()
+        if dseeing > 0:
+            # Update the spatial resolution
+            spat_resln_0 = self.spat_resln
+            msgs.info(f"Original spatial resolution: {spat_resln_0:.2f} arcsec")
+            self.spat_resln = (spat_resln_0**2 + dseeing**2) ** 0.5
+            msgs.info(f"Updated spatial resolution: {self.spat_resln:.2f} arcsec")
+
+            # Update the input mask width
+            self._mask_wid = self._mask_wid * self.spat_resln / spat_resln_0
+            # Update the mask, sky, and host regions
+            self._build_spat_filter()
+
         return dseeing
 
     @show_and_save

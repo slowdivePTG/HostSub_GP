@@ -35,7 +35,7 @@ class ArchivalImage:
         """
 
         for flt in self.filters:
-            file = f"{self.path}//{flt}.fits"
+            file = f"{self.path}/{flt}.fits"
             if not os.path.exists(file):
                 return False
         return True

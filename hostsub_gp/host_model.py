@@ -9,6 +9,8 @@ import jax.numpy as jnp
 
 # jax.config.update("jax_enable_x64", True)
 
+from astropy.stats import mad_std
+
 from .gp import GP
 from .host_image import PS1Image, SDSSImage, LSImage, ArchivalImage
 from .interp import Interp2D_Grid
@@ -160,6 +162,7 @@ class HostProfile:
         position_angle: float = None,
         filters: str | list = None,
         noise_smooth_kernel: int = None,
+        dseeing: float = None,
     ):
         """
         Load archival images from PS1 and SDSS and estimate the host galaxy spatial profile.
@@ -183,10 +186,12 @@ class HostProfile:
         noise_smooth_kernel : int, optional
             Kernel size for smoothing the noise.
         """
+        import astropy.units as u
+
         from astropy.wcs import WCS
         from astropy.wcs.utils import proj_plane_pixel_scales
         from astropy.coordinates import SkyCoord
-        import astropy.units as u
+        from scipy.ndimage import gaussian_filter
 
         if spec_model is not None:
             center_ra = spec_model.center_ra
@@ -202,7 +207,14 @@ class HostProfile:
 
         if filters is None:
             # Load all filters
-            filters = "ugrizy"
+            filters = "grizy"
+
+        # Seeing correction
+        if dseeing is not None:
+            dseeing = np.abs(dseeing)  # By default, dseeing is negative
+            assert spec_model is not None, "dseeing is only available for SpecModel"
+        else:
+            dseeing = 0.0
 
         # Data
         data_list, header_list = [], []
@@ -216,6 +228,14 @@ class HostProfile:
             image: ArchivalImage = image_class(ra=center_ra, dec=center_dec, filters=filters)
             image.download()
             data, header = image.load()
+            # Convolve the images with a Gaussian kernel
+            if dseeing > 0:
+                for k in range(len(data)):
+                    dseeing_wv = dseeing * (image.wv_eff_dict[image.filters[k]] / spec_model.spec.mean()) ** (-1 / 2.5)
+                    data[k] = gaussian_filter(data[k], sigma=dseeing_wv / spec_model.pixel_scale / 2.355)
+                    msgs.info(
+                        f"Convolving {image.filters[k]} with a dseeing = {dseeing_wv:.2f} arcsec kernel (sigma = {dseeing_wv / spec_model.pixel_scale / 2.355:.2f} pixels)"
+                    )
             if len(data) == 0:
                 return False
             data_list.extend(data)
@@ -228,10 +248,10 @@ class HostProfile:
         _load_images(SDSSImage, "".join(flt for flt in "u" if flt in filters), center_ra, center_dec)
 
         # Try to load PS1 images
-        _ps_loaded = _load_images(PS1Image, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec)
-        if not _ps_loaded:
+        _ps1_loaded = _load_images(PS1Image, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
+        if not _ps1_loaded:
             # If no PS images found, try to load LS images
-            _ls_loaded = _load_images(LSImage, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
+            _ls_loaded = _load_images(LSImage, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec)
             if not _ls_loaded:
                 # If no images found, raise an error
                 raise ValueError("No PS1 or LS images found")
@@ -259,11 +279,10 @@ class HostProfile:
             if wcs.wcs.has_cd():  # Check if CD matrix is present
                 cd = wcs.wcs.cd
                 pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
-                pa_img = jnp.arctan2(cd[0, 1], cd[1, 1]) + np.pi  # Arctangent of the y-x ratio
             else:  # Otherwise, use PC matrix with CDELT
                 cd = wcs.wcs.pc * wcs.wcs.cdelt
                 pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
-                pa_img = jnp.arctan2(cd[0, 1], cd[1, 1])  # Arctangent of the y-x ratio
+            pa_img = jnp.arctan2(-cd[0, 1], cd[1, 1])  # Arctangent of the y-x ratio
 
             # Define the rectangle size in pixels or arcminutes (angular size)
             slit_len_pix = slit_len / pixel_scale  # Slit length in pixels
@@ -303,12 +322,17 @@ class HostProfile:
                     ]
                 )
             )
-            # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
-            err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
-            # Smooth the error: convolution with a boxcar filter
-            if noise_smooth_kernel is not None:
-                err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
-            counts_err_slit.append(err)
+            # # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
+            # err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
+            # # Smooth the error: convolution with a boxcar filter
+            # if noise_smooth_kernel is not None:
+            #     err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
+            # counts_err_slit.append(err)
+            # err = mad_std(data[np.isfinite(data) & (data < np.nanpercentile(data, 25))]) / np.sqrt(slit_wid_pix)
+            err = mad_std(data[np.isfinite(data) & (data < np.abs(np.nanmin(data)))]) / np.sqrt(slit_wid_pix)
+            counts_err_slit.append(
+                np.ones_like(counts_slit[-1]) * err
+            )
 
         return cls(
             filters=flts,
