@@ -16,6 +16,7 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 
 from .interp import Interp1D_Grid, Interp2D_Grid
+from .interp import Interp2D_Scipy, Interp2D_RBF, Interp2D_Linear
 from .spec_model import SpecModel
 from .host_model import HostProfile
 from ._utils import plt, msgs
@@ -246,9 +247,7 @@ class SpecData:
             position_angle = -raw_header["HIERARCH ESO ADA POSANG"] + 180
 
             # Slit width format: "Slit1_0arcsec"
-            slit_wid = float(
-                ".".join(pypeit_header["DECKER"].split("Slit")[-1].split("arcsec")[0].split("_"))
-            )
+            slit_wid = float(".".join(pypeit_header["DECKER"].split("Slit")[-1].split("arcsec")[0].split("_")))
 
         else:
             raise NotImplementedError("Only LRIS, Binospec, ALFOSC, and FORS2 are supported")
@@ -459,7 +458,7 @@ class SpecData:
 
     @classmethod
     @show_and_save
-    def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs):
+    def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs) -> tuple["SpecData", np.ndarray]:
         """
         Coadd multiple SpecData objects.
 
@@ -467,6 +466,13 @@ class SpecData:
         ----------
         spec_data_list : list[SpecData]
             A list of SpecData objects to be coadded.
+
+        Returns
+        -------
+        SpecData
+            The coadded SpecData object.
+        cr_mask : np.ndarray
+            The mask of cosmic rays.
         """
 
         from astropy.stats import mad_std
@@ -543,16 +549,7 @@ class SpecData:
             sharey=True,
         )
         for k in range(len(spec_data_list)):
-            ax[k].imshow(
-                diff[k],  # - global_sky_stack[k][np.newaxis, :],
-                cmap=cmap,
-                origin="lower",
-                aspect="auto",
-                vmin=-5,
-                vmax=5,
-                # vmin=np.nanpercentile(flux_rect, 5),
-                # vmax=np.nanpercentile(flux_rect, 95),
-            )
+            ax[k].imshow(diff[k], cmap=cmap, origin="lower", aspect="auto", vmin=-5, vmax=5)
             ax[k].set_title(f"Object {k+1} - Mean")
             ax[k].set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[-1].imshow(
@@ -572,19 +569,22 @@ class SpecData:
         flux_err_rect = np.sqrt(np.sum(weighted_errors, axis=0) / np.sum(weights, axis=0) ** 2)
         flux_ivar_rect = np.where(np.isfinite(flux_err_rect), flux_err_rect**-2, 0)
 
-        return cls(
-            pixel_scale=spec_data_list[0].pixel_scale,
-            center_ra=spec_data_list[0].center_ra,
-            center_dec=spec_data_list[0].center_dec,
-            slit_wid=spec_data_list[0].slit_wid,
-            position_angle=spec_data_list[0].position_angle,
-            spat_resln=spec_data_list[0].spat_resln,
-            spec_resln=spec_data_list[0].spec_resln,
-            spat_rect=spec_data_list[0].spat_rect,
-            spec_rect=spec_data_list[0].spec_rect,
-            flux_rect=flux_rect,
-            flux_ivar_rect=flux_ivar_rect,
-            **kwargs,
+        return (
+            cls(
+                pixel_scale=spec_data_list[0].pixel_scale,
+                center_ra=spec_data_list[0].center_ra,
+                center_dec=spec_data_list[0].center_dec,
+                slit_wid=spec_data_list[0].slit_wid,
+                position_angle=spec_data_list[0].position_angle,
+                spat_resln=spec_data_list[0].spat_resln,
+                spec_resln=spec_data_list[0].spec_resln,
+                spat_rect=spec_data_list[0].spat_rect,
+                spec_rect=spec_data_list[0].spec_rect,
+                flux_rect=flux_rect,
+                flux_ivar_rect=flux_ivar_rect,
+                **kwargs,
+            ),
+            cr_mask,
         )
 
     def to_fits(self):
@@ -688,7 +688,7 @@ class SpecData:
 
     def update_pypeit_skymodel(self, spec_model: SpecModel, spec2d_file: str):
         """
-        Update the sky model in the PypeIt spec2d file.
+        Update the sky model and the mask in the PypeIt spec2d file.
         """
         import os
         from pypeit import spec2dobj
@@ -706,20 +706,48 @@ class SpecData:
         ###### (iii) the local sky modeled with HostSub
 
         # Preliminary sky line removal - reduce the noise introduced in the rectification
-        ###### Set the sky model to NaN if the corresponding pixels are excluded from the fit
         with fits.open(preproc_file) as hdul_preproc:
             waveimg = jnp.array(hdul_preproc["WAVEIMG"].data, dtype=jnp.float32)
             dist = jnp.array(hdul_preproc["DIST"].data - self.sky_offset, dtype=jnp.float32)
             global_sky_pre = jnp.array(hdul_preproc["GLOBALSKY"].data, dtype=jnp.float32)
             det = hdul_preproc[0].header["DET"]
 
-        # mask_model = (
-        #     (dist >= spec_model.spat[0])
-        #     & (dist <= spec_model.spat[-1])
-        #     & (waveimg >= spec_model.spec[0])
-        #     & (waveimg <= spec_model.spec[-1])
-        # )
-        # global_sky_pre = np.where(mask_model, global_sky_pre, np.nan)
+        sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
+
+        # Update the bmpmask to include cosmic rays
+        with fits.open(rect_file) as hdul_rect:
+            mask_cr = jnp.argwhere(~jnp.array(hdul_rect["CR_MASK"].data, dtype=jnp.bool))
+            wave_rect = jnp.array(hdul_rect["SPEC"].data, dtype=jnp.float32)
+            dist_rect = jnp.array(hdul_rect["SPAT"].data, dtype=jnp.float32)
+
+        # The mask of the pixels with cosmic rays
+        coords_rect = jnp.meshgrid(dist_rect, wave_rect, indexing="ij")
+
+        # First create the interpolator object for the cosmic ray mask
+        interpolator = Interp2D_Scipy(method="nearest")
+
+        # Create the coordinates for the rectified grid
+        # coords_rect is already [wave_rect, dist_rect] from meshgrid
+        points = jnp.stack(coords_rect, axis=-1)
+
+        # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
+        mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
+        mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(2)
+
+        # Fit the interpolator with the rectified grid points and mask values
+        interpolator.fit(points, mask_values)
+
+        # Create query points from the non-uniform grid
+        query_points = jnp.stack([dist, waveimg], axis=-1)
+        # Ensure the query points are finite
+        query_points = jnp.where(np.isfinite(query_points), query_points, 0)
+
+        # Interpolate the mask onto the non-uniform grid
+        mapped_cr_mask = np.asarray(
+            interpolator.predict(query_points.reshape(-1, 2)).reshape(waveimg.shape), dtype=np.int16
+        )
+        # Update the mask in the PypeIt spec2d file
+        sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
 
         # The global sky subtracted after the rectification
         global_sky_post = Interp1D_Grid(
@@ -741,7 +769,6 @@ class SpecData:
         sky_local[local_mask] = sky_pred + sky_host_prior
         sky_local = sky_local.reshape(dist.shape)
 
-        sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
         # assert sci2d.sciimg.shape == sky_model.T.shape
         sci2d.skymodel = np.array(global_sky_pre + global_sky_post + sky_local).T
 
@@ -774,8 +801,6 @@ class SpecData:
         interp_method : str, optional (default: "rbf")
             The interpolation method.
         """
-
-        from .interp import Interp2D_RBF, Interp2D_Linear, Interp2D_Scipy
 
         if ~jnp.all(jnp.isfinite(points)):
             raise ValueError("Some points are NaN.")

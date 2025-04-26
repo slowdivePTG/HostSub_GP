@@ -6,6 +6,8 @@ import numpy as np
 import os
 import argparse
 
+from astropy.io import fits
+
 from hostsub_gp import SpecData, SpecModel
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput, Digitize
@@ -122,8 +124,36 @@ class HostSub(ScriptBase):
             spec_data_list.append(spec_data)
 
         if args.coadd2d:
-            spec_data_coadd2d = SpecData.coadd2d(spec_data_list, show=from_pypeit) # Only show the plot after a new rectification
+            spec_data_coadd2d, spec_data_cr_mask = SpecData.coadd2d(spec_data_list, show=from_pypeit) # Only show the plot after a new rectification
+
+            # Write the cr_mask to the rectified files
+            for k, i in enumerate(sci_idx):
+                sci_file_1d = hostsubFile.filenames[i]
+                sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
+                sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace("spec1d", "spec2d")
+                hdul_rect = fits.open(sci_rect_file, mode="update")
+
+                # Create a new frame for the CR mask
+                hdu_cr_mask = fits.ImageHDU(data=np.array(spec_data_cr_mask[k], dtype=int), name="CR_MASK")
+
+                if "CR_MASK" in hdul_rect:
+                    # Overwrite the existing CR mask
+                    hdul_rect["CR_MASK"].data = np.array(spec_data_cr_mask[k], dtype=int)
+                else:
+                    # Append the new CR mask to the HDU list
+                    hdul_rect.append(hdu_cr_mask)
+                    
+                # Update the header with the new CR mask
+                hdul_rect[0].header["CR_MASK"] = True
+
+                # Save the updated file
+                hdul_rect.writeto(sci_rect_file, overwrite=True)
+
+                hdul_rect.close()
+
             spec_model = HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
+
+
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
                 spec_model = HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
