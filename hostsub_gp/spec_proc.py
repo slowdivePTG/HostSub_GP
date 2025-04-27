@@ -481,7 +481,7 @@ class SpecData:
             raise ValueError("No SpecData object provided.")
 
         if len(spec_data_list) == 1:
-            return spec_data_list[0]
+            return spec_data_list[0], None
 
         # Check if the pixel scales are the same
         if not all(spec_data.pixel_scale == spec_data_list[0].pixel_scale for spec_data in spec_data_list):
@@ -716,38 +716,39 @@ class SpecData:
 
         # Update the bmpmask to include cosmic rays
         with fits.open(rect_file) as hdul_rect:
-            mask_cr = jnp.argwhere(~jnp.array(hdul_rect["CR_MASK"].data, dtype=jnp.bool))
-            wave_rect = jnp.array(hdul_rect["SPEC"].data, dtype=jnp.float32)
-            dist_rect = jnp.array(hdul_rect["SPAT"].data, dtype=jnp.float32)
+            if "CR_MASK" in hdul_rect:
+                mask_cr = jnp.argwhere(~jnp.array(hdul_rect["CR_MASK"].data, dtype=jnp.bool))
+                wave_rect = jnp.array(hdul_rect["SPEC"].data, dtype=jnp.float32)
+                dist_rect = jnp.array(hdul_rect["SPAT"].data, dtype=jnp.float32)
 
-        # The mask of the pixels with cosmic rays
-        coords_rect = jnp.meshgrid(dist_rect, wave_rect, indexing="ij")
+                # The mask of the pixels with cosmic rays
+                coords_rect = jnp.meshgrid(dist_rect, wave_rect, indexing="ij")
 
-        # First create the interpolator object for the cosmic ray mask
-        interpolator = Interp2D_Scipy(method="nearest")
+                # First create the interpolator object for the cosmic ray mask
+                interpolator = Interp2D_Scipy(method="nearest")
 
-        # Create the coordinates for the rectified grid
-        # coords_rect is already [wave_rect, dist_rect] from meshgrid
-        points = jnp.stack(coords_rect, axis=-1)
+                # Create the coordinates for the rectified grid
+                # coords_rect is already [wave_rect, dist_rect] from meshgrid
+                points = jnp.stack(coords_rect, axis=-1)
 
-        # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
-        mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
-        mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(2)
+                # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
+                mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
+                mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(2)
 
-        # Fit the interpolator with the rectified grid points and mask values
-        interpolator.fit(points, mask_values)
+                # Fit the interpolator with the rectified grid points and mask values
+                interpolator.fit(points, mask_values)
 
-        # Create query points from the non-uniform grid
-        query_points = jnp.stack([dist, waveimg], axis=-1)
-        # Ensure the query points are finite
-        query_points = jnp.where(np.isfinite(query_points), query_points, 0)
+                # Create query points from the non-uniform grid
+                query_points = jnp.stack([dist, waveimg], axis=-1)
+                # Ensure the query points are finite
+                query_points = jnp.where(np.isfinite(query_points), query_points, 0)
 
-        # Interpolate the mask onto the non-uniform grid
-        mapped_cr_mask = np.asarray(
-            interpolator.predict(query_points.reshape(-1, 2)).reshape(waveimg.shape), dtype=np.int16
-        )
-        # Update the mask in the PypeIt spec2d file
-        sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
+                # Interpolate the mask onto the non-uniform grid
+                mapped_cr_mask = np.asarray(
+                    interpolator.predict(query_points.reshape(-1, 2)).reshape(waveimg.shape), dtype=np.int16
+                )
+                # Update the mask in the PypeIt spec2d file
+                sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
 
         # The global sky subtracted after the rectification
         global_sky_post = Interp1D_Grid(

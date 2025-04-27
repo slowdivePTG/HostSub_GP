@@ -17,7 +17,7 @@ from .interp import Interp2D_Grid
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
 
-from typing import Callable, Optional
+from typing import Callable, Optional, Literal
 from jax._src.typing import Array, ArrayLike
 from .spec_base import SpecModelP
 
@@ -161,6 +161,7 @@ class HostProfile:
         slit_wid: float = 1.0,
         position_angle: float = None,
         filters: str | list = None,
+        survey: Literal["PS1", "LS"] = "PS1",
         noise_smooth_kernel: int = None,
         dseeing: float = None,
     ):
@@ -183,6 +184,8 @@ class HostProfile:
             Position angle of the slit.
         filters : str or list, optional
             Filters to load the images.
+        survey : str, optional
+            Survey to use for loading images. Options are 'PS1' or 'LS'.
         noise_smooth_kernel : int, optional
             Kernel size for smoothing the noise.
         """
@@ -226,7 +229,7 @@ class HostProfile:
             Load images from the specified image class.
             """
             image: ArchivalImage = image_class(ra=center_ra, dec=center_dec, filters=filters)
-            image.download()
+            image.get_cutout()
             data, header = image.load()
             # Convolve the images with a Gaussian kernel
             if dseeing > 0:
@@ -248,13 +251,16 @@ class HostProfile:
         _load_images(SDSSImage, "".join(flt for flt in "u" if flt in filters), center_ra, center_dec)
 
         # Try to load PS1 images
-        _ps1_loaded = _load_images(PS1Image, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
-        if not _ps1_loaded:
-            # If no PS images found, try to load LS images
-            _ls_loaded = _load_images(LSImage, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec)
+        if survey == "PS1":
+            _ps1_loaded = _load_images(PS1Image, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec)
+            if not _ps1_loaded:
+                raise ValueError("No PS1 images found")
+        elif survey == "LS":
+            _ls_loaded = _load_images(LSImage, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
             if not _ls_loaded:
-                # If no images found, raise an error
-                raise ValueError("No PS1 or LS images found")
+                raise ValueError("No LS images found")
+        else:
+            raise ValueError("Invalid survey. Options are 'PS1' or 'LS'.")
 
         # TODO: Load acquisition images (optional)
 
@@ -328,8 +334,7 @@ class HostProfile:
             # if noise_smooth_kernel is not None:
             #     err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
             # counts_err_slit.append(err)
-            # err = mad_std(data[np.isfinite(data) & (data < np.nanpercentile(data, 25))]) / np.sqrt(slit_wid_pix)
-            err = mad_std(data[np.isfinite(data) & (data < np.abs(np.nanmin(data)))]) / np.sqrt(slit_wid_pix)
+            err = mad_std(data[np.isfinite(data) & (data < np.nanpercentile(data, 50))]) / np.sqrt(slit_wid_pix)
             counts_err_slit.append(
                 np.ones_like(counts_slit[-1]) * err
             )

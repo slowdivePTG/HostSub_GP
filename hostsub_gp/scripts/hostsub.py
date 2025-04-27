@@ -133,18 +133,19 @@ class HostSub(ScriptBase):
                 sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace("spec1d", "spec2d")
                 hdul_rect = fits.open(sci_rect_file, mode="update")
 
-                # Create a new frame for the CR mask
-                hdu_cr_mask = fits.ImageHDU(data=np.array(spec_data_cr_mask[k], dtype=int), name="CR_MASK")
+                if spec_data_cr_mask is not None:
+                    # Create a new frame for the CR mask
+                    hdu_cr_mask = fits.ImageHDU(data=np.array(spec_data_cr_mask[k], dtype=int), name="CR_MASK")
 
-                if "CR_MASK" in hdul_rect:
-                    # Overwrite the existing CR mask
-                    hdul_rect["CR_MASK"].data = np.array(spec_data_cr_mask[k], dtype=int)
-                else:
-                    # Append the new CR mask to the HDU list
-                    hdul_rect.append(hdu_cr_mask)
-                    
-                # Update the header with the new CR mask
-                hdul_rect[0].header["CR_MASK"] = True
+                    if "CR_MASK" in hdul_rect:
+                        # Overwrite the existing CR mask
+                        hdul_rect["CR_MASK"].data = np.array(spec_data_cr_mask[k], dtype=int)
+                    else:
+                        # Append the new CR mask to the HDU list
+                        hdul_rect.append(hdu_cr_mask)
+
+                    # Update the header with the new CR mask
+                    hdul_rect[0].header["CR_MASK"] = True
 
                 # Save the updated file
                 hdul_rect.writeto(sci_rect_file, overwrite=True)
@@ -233,6 +234,7 @@ class HostSub(ScriptBase):
         par_host_prior = par_hostsub.get("host_prior", {})
         host_prior_cfg = {}
         host_prior_cfg["filters"] = par_host_prior.get("filters", "grizy")
+        host_prior_cfg["survey"] = par_host_prior.get("survey", "PS1")
         # host_prior_cfg["spat_resln"] = Float(par_host_prior.get("spat_resln", 1.0))
         host_prior_cfg["noise_smooth_kernel"] = Int(par_host_prior.get("noise_smooth_kernel", None))
 

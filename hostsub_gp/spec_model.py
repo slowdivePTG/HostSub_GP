@@ -19,7 +19,7 @@ from .gp import GP
 from .host_model import HostProfile
 from .spec_wrapper import SpecWrapper
 
-from typing import Callable, Optional
+from typing import Callable, Optional, Literal
 from jax._src.typing import ArrayLike, Array
 from matplotlib.axes import Axes
 
@@ -425,6 +425,7 @@ class SpecModel:
     def build_host_prior(
         self,
         filters: str | list[str] = "grizy",
+        survey: Literal["PS1", "LS"] = "PS1",
         noise_smooth_kernel: float = None,
         from_archival: bool = True,
         wv_eff: ArrayLike = None,
@@ -441,7 +442,7 @@ class SpecModel:
         if from_archival:
             # Load the archival photometric data (PS1, SDSS)
             host_prof = HostProfile.from_archival(
-                spec_model=self, filters=filters, noise_smooth_kernel=noise_smooth_kernel, dseeing=dseeing
+                spec_model=self, filters=filters, survey=survey, noise_smooth_kernel=noise_smooth_kernel, dseeing=dseeing
             )
         elif (wv_eff is None) or (spat_slit is None) or (counts_slit is None) or (counts_err_slit is None):
             raise ValueError("Please provide the photometric data for modeling the host prior.")
@@ -449,6 +450,7 @@ class SpecModel:
             # Call the constructor of the HostProfile class
             host_prof = HostProfile(
                 filters=filters,
+                survey=survey,
                 wv_eff=wv_eff,
                 spec_model=self,
                 spat_slit=spat_slit,

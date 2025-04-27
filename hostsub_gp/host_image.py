@@ -13,6 +13,7 @@ import subprocess
 import os
 
 from ._utils import msgs
+from ._utils._astronometry import query_astrometry_net_wcs
 
 
 class ArchivalImage:
@@ -42,7 +43,7 @@ class ArchivalImage:
 
     def load(self) -> tuple[list, list]:
         """
-        Load images from the PS1 Image Cutout Service
+        Load images from the path
         """
 
         data_list = []
@@ -50,7 +51,15 @@ class ArchivalImage:
         filters = []
 
         for flt in self.filters:
-            file = f"{self.path}//{flt}.fits"
+            
+            file = f"{self.path}/{flt}.fits"
+            file_wcs = f"{self.path}/{flt}_wcs.fits"
+            if os.path.exists(file_wcs):
+                # If WCS calibrated file exists, load it instead of the original
+                msgs.info(f"Loading WCS calibrated file: {file_wcs}")
+                file = file_wcs
+            else:
+                msgs.warning(f"Loading original file (WCS not calibrated by Astrometry.net): {file}")
             try:
                 with fits.open(file) as hdulist:
                     data_list.append(hdulist[0].data)
@@ -66,6 +75,21 @@ class ArchivalImage:
 
         return data_list, header_list
 
+    def get_cutout(self, overwrite: bool = False):
+        """
+        Get cutout images from the archival service
+        """
+
+        # Check if images already exist
+        if not overwrite and self.check_exists():
+            msgs.info("Images already exist.")
+        else:
+            self.download(overwrite=overwrite)
+
+        # WCS calibration with Astrometry.net
+        query_astrometry_net_wcs(self.path, overwrite=overwrite)
+
+
     def download(self, overwrite: bool = False):
         """
         Download images from the archival service
@@ -78,7 +102,7 @@ class PS1Image(ArchivalImage):
     Class to load images from the PS1 Image Cutout Service
     """
 
-    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout", size: int = 600):
+    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout", size: int = 720):
         super().__init__(ra, dec, filters, path)
         self.size = size
         self.wv_eff_dict = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
@@ -105,6 +129,8 @@ class PS1Image(ArchivalImage):
             if os.path.exists(fitspath) and not overwrite:
                 continue
             subprocess.run(["wget", fitsurl[k], "-O", fitspath])
+
+        query_astrometry_net_wcs(self.path, overwrite=overwrite)
 
     def _getimages(self):
         """Query ps1filenames.py service to get a list of images"""
