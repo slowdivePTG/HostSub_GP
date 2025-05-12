@@ -46,7 +46,9 @@ class Interp2D_Grid:
 
     def __call__(self, x):
         if self.method in ["nearest", "linear"]:
-            return jax.scipy.interpolate.RegularGridInterpolator(self.points, self.values, method=self.method)(x)
+            return jax.scipy.interpolate.RegularGridInterpolator(
+                self.points, self.values, method=self.method
+            )(x)
 
 
 ###################################################################################################
@@ -92,7 +94,9 @@ class Interp2D_base(ABC):
         values = jnp.asarray(values, dtype=jnp.float32)
         self.shape = points.shape[:2]
         if values.shape != self.shape:
-            raise ValueError(f"Shape mismatch between points {(points.shape)} and values {(values.shape)}")
+            raise ValueError(
+                f"Shape mismatch between points {(points.shape)} and values {(values.shape)}"
+            )
 
         self.points = points / self.scales
         self.values = jnp.asarray(values, dtype=jnp.float32)
@@ -119,7 +123,9 @@ class Interp2D_base(ABC):
         qx, qy = query_point
 
         if self.shape is None or self.x_grid is None or self.y_grid is None:
-            raise ValueError("Interpolator not fitted yet. Call fit() with training data.")
+            raise ValueError(
+                "Interpolator not fitted yet. Call fit() with training data."
+            )
 
         # First search for x position in middle column
         mid_row = self.shape[1] // 2
@@ -138,7 +144,9 @@ class Interp2D_base(ABC):
         return i_index, j_index
 
     # @partial(jax.jit, static_argnums=(0, 3, 4))
-    def _get_cell_points_and_values(self, i: Array, j: Array, di: int = 4, dj: int = 2) -> tuple[Array, Array]:
+    def _get_cell_points_and_values(
+        self, i: Array, j: Array, di: int = 4, dj: int = 2
+    ) -> tuple[Array, Array]:
         """
         Get the neighboring cells of a grid cell and their values.
 
@@ -155,8 +163,16 @@ class Interp2D_base(ABC):
             points: Array of shape (4, 2) containing corner coordinates
             values: Array of shape (4,) containing corner values
         """
-        if self.values is None or self.points is None or self.shape is None or self.x_grid is None or self.y_grid is None:
-            raise ValueError("Interpolator not fitted yet. Call fit() with training data.")
+        if (
+            self.values is None
+            or self.points is None
+            or self.shape is None
+            or self.x_grid is None
+            or self.y_grid is None
+        ):
+            raise ValueError(
+                "Interpolator not fitted yet. Call fit() with training data."
+            )
 
         i_idx = jnp.arange(-di // 2, di // 2)
         j_idx = jnp.arange(-dj // 2, dj // 2)
@@ -167,13 +183,20 @@ class Interp2D_base(ABC):
         i_grid, j_grid = jnp.meshgrid(i_idx, j_idx, indexing="ij")
         i_grid = i_grid.ravel()
         j_grid = j_grid.ravel()
-        points = jnp.stack([self.x_grid[i_grid, j_grid], self.y_grid[i_grid, j_grid]], axis=1)
+        points = jnp.stack(
+            [self.x_grid[i_grid, j_grid], self.y_grid[i_grid, j_grid]], axis=1
+        )
         values = self.values[i_grid, j_grid]
 
         return points, values
 
     @abstractmethod
-    def _compute_weights(self, cell_points: Array, query_point: Array, cell_values: Optional[Array] = None) -> Array:
+    def _compute_weights(
+        self,
+        cell_points: Array,
+        query_point: Array,
+        cell_values: Optional[Array] = None,
+    ) -> Array:
         """
         Compute interpolation weights for given cell points and query point.
         To be implemented by subclasses.
@@ -254,7 +277,12 @@ class Interp2D_Linear(Interp2D_base):
     2D bilinear interpolation on semi-uniform grid.
     """
 
-    def _compute_weights(self, cell_points: Array, query_point: Array, cell_values: Optional[Array] = None) -> Array:
+    def _compute_weights(
+        self,
+        cell_points: Array,
+        query_point: Array,
+        cell_values: Optional[Array] = None,
+    ) -> Array:
         """
         Compute weights for bilinear interpolation
         """
@@ -262,7 +290,9 @@ class Interp2D_Linear(Interp2D_base):
         distances = jnp.linalg.norm(cell_points - query_point, axis=1)
         # Handle zero distance (exact match)
         return jax.lax.cond(
-            jnp.any(distances < 1e-10), lambda: jnp.where(distances == 0, 1.0, 0.0), lambda: 1.0 / distances
+            jnp.any(distances < 1e-10),
+            lambda: jnp.where(distances == 0, 1.0, 0.0),
+            lambda: 1.0 / distances,
         )
 
 
@@ -304,12 +334,20 @@ class Interp2D_RBF(Interp2D_base):
             return jnp.where(jnp.isfinite(r), jnp.sqrt(1 + (self.epsilon * r) ** 2), 0)
 
         def inverse_multiquadric(r):
-            return jnp.where(jnp.isfinite(r), 1 / jnp.sqrt(1 + (self.epsilon * r) ** 2), 0)
+            return jnp.where(
+                jnp.isfinite(r), 1 / jnp.sqrt(1 + (self.epsilon * r) ** 2), 0
+            )
 
-        kernels = {"gaussian": gaussian, "multiquadric": multiquadric, "inverse_multiquadric": inverse_multiquadric}
+        kernels = {
+            "gaussian": gaussian,
+            "multiquadric": multiquadric,
+            "inverse_multiquadric": inverse_multiquadric,
+        }
         return kernels[kernel_name]
 
-    def _compute_weights(self, cell_points: Array, query_points: Array, cell_values: Array) -> Array:
+    def _compute_weights(
+        self, cell_points: Array, query_points: Array, cell_values: Array
+    ) -> Array:
         """
         Compute weights using RBF kernel
         """
@@ -321,8 +359,11 @@ class Interp2D_RBF(Interp2D_base):
         except:
             msgs.warning("Singular matrix in RBF interpolation")
             return jax.lax.cond(
-                jnp.any(distances < 1e-10), lambda: jnp.where(distances == 0, 1.0, 0.0), lambda: 1.0 / distances
+                jnp.any(distances < 1e-10),
+                lambda: jnp.where(distances == 0, 1.0, 0.0),
+                lambda: 1.0 / distances,
             )
+
 
 class Interp2D_Scipy(Interp2D_base):
     """
@@ -347,11 +388,9 @@ class Interp2D_Scipy(Interp2D_base):
         super().__init__(scales)
         self.method = method
 
-    def _compute_weights(self, 
-                        cell_points: Array, 
-                        query_point: Array,
-                        dx: float,
-                        dy: float) -> Array:
+    def _compute_weights(
+        self, cell_points: Array, query_point: Array, dx: float, dy: float
+    ) -> Array:
         """
         Compute weights using scipy's griddata. This is a dummy implementation.
         Actual interpolation is done in the predict method.
@@ -375,8 +414,10 @@ class Interp2D_Scipy(Interp2D_base):
         from scipy.interpolate import griddata
 
         if self.points is None or self.values is None:
-            raise ValueError("Interpolator not fitted yet. Call fit() with training data.")
-        
+            raise ValueError(
+                "Interpolator not fitted yet. Call fit() with training data."
+            )
+
         query_points = jnp.asarray(query_points) / self.scales
 
         # Flatten the grid points and values
@@ -385,10 +426,7 @@ class Interp2D_Scipy(Interp2D_base):
 
         # Use scipy's griddata for interpolation
         interpolated_values = griddata(
-            flat_points,
-            flat_values,
-            query_points,
-            method=self.method
+            flat_points, flat_values, query_points, method=self.method
         )
 
         return jnp.asarray(interpolated_values)

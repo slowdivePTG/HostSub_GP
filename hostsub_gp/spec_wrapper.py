@@ -17,7 +17,10 @@ class SpecWrapper:
     """A wrapper for the 1D and 2D spectra."""
 
     def __init__(
-        self, points: Array | tuple[Array, Array], values: Optional[Array] = None, values_err: Optional[Array] = None
+        self,
+        points: Array | tuple[Array, Array],
+        values: Optional[Array] = None,
+        values_err: Optional[Array] = None,
     ):
         """
         Initialize the SpecWrapper object.
@@ -41,7 +44,7 @@ class SpecWrapper:
         else:
             if points.ndim != 1:
                 raise ValueError("Invalid shape of the input coordinates.")
-            self.spat = None # 1D spectrum, no spatial axis
+            self.spat = None  # 1D spectrum, no spatial axis
             self.spec = self.spec_img = jnp.array(points)
             self.X = self.spec[:, None]
 
@@ -53,7 +56,10 @@ class SpecWrapper:
             self.Y = self.Yerr = None
             self.y = self.yerr = None
         else:
-            if not (((values.ndim == 1) | (values.ndim == 2)) & (values.shape == self.spec_img.shape)):
+            if not (
+                ((values.ndim == 1) | (values.ndim == 2))
+                & (values.shape == self.spec_img.shape)
+            ):
                 breakpoint()
                 raise ValueError("Invalid shape of the input values.")
             if values_err is not None:
@@ -79,7 +85,10 @@ class SpecWrapper:
                 raise ValueError("Y shape error")
 
     def sigma_clip(
-        self, sigma: Optional[float] = None, clip_cr: bool = False, batch_idx: Optional[list | tuple[list, list]] = None
+        self,
+        sigma: Optional[float] = None,
+        clip_cr: bool = False,
+        batch_idx: Optional[list | tuple[list, list]] = None,
     ) -> "SpecWrapper":
         """
         Sigma clipping for the spectrum.
@@ -133,30 +142,49 @@ class SpecWrapper:
                 batch_idx = ([jnp.arange(self.shape[0])],)
             else:
                 # Calculate the means and standard deviations at each wavelength (for all spatial pixels)
-                batch_idx = ([jnp.arange(self.shape[0])], [jnp.array(i) for i in jnp.arange(self.shape[1])])
+                batch_idx = (
+                    [jnp.arange(self.shape[0])],
+                    [jnp.array(i) for i in jnp.arange(self.shape[1])],
+                )
 
         if self.Y.ndim == 1:
             for spec_idx in batch_idx[0]:
-                Y_target = Y_target.at[spec_idx].set(clip(self.Y[spec_idx], self.Yerr[spec_idx])[0])
-                Yerr_target = Yerr_target.at[spec_idx].set(clip(self.Y[spec_idx], self.Yerr[spec_idx])[1])
+                Y_target = Y_target.at[spec_idx].set(
+                    clip(self.Y[spec_idx], self.Yerr[spec_idx])[0]
+                )
+                Yerr_target = Yerr_target.at[spec_idx].set(
+                    clip(self.Y[spec_idx], self.Yerr[spec_idx])[1]
+                )
         else:
             for spat_idx in batch_idx[0]:
                 for spec_idx in batch_idx[1]:
                     if (spat_idx.ndim == 1) & (spec_idx.ndim == 1):
                         # Both spat_idx and spec_idx are lists
-                        Y_clip, Yerr_clip = clip(self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx])
+                        Y_clip, Yerr_clip = clip(
+                            self.Y[spat_idx, :][:, spec_idx],
+                            self.Yerr[spat_idx, :][:, spec_idx],
+                        )
                         Y_target = Y_target.at[jnp.ix_(spat_idx, spec_idx)].set(Y_clip)
-                        Yerr_target = Yerr_target.at[jnp.ix_(spat_idx, spec_idx)].set(Yerr_clip)
+                        Yerr_target = Yerr_target.at[jnp.ix_(spat_idx, spec_idx)].set(
+                            Yerr_clip
+                        )
                     else:
                         # Either spat_idx or spec_idx is a scalar
-                        Y_clip, Yerr_clip = clip(self.Y[spat_idx, :][:, spec_idx], self.Yerr[spat_idx, :][:, spec_idx])
+                        Y_clip, Yerr_clip = clip(
+                            self.Y[spat_idx, :][:, spec_idx],
+                            self.Yerr[spat_idx, :][:, spec_idx],
+                        )
                         Y_target = Y_target.at[(spat_idx, spec_idx)].set(Y_clip)
-                        Yerr_target = Yerr_target.at[(spat_idx, spec_idx)].set(Yerr_clip)
+                        Yerr_target = Yerr_target.at[(spat_idx, spec_idx)].set(
+                            Yerr_clip
+                        )
 
         masked_final = ~jnp.isfinite(Y_target)
         msgs.info(f"Sigma clipped {masked_final.sum() - masked_init.sum()} pixels")
 
-        return SpecWrapper(points=(self.spat, self.spec), values=Y_target, values_err=Yerr_target)
+        return SpecWrapper(
+            points=(self.spat, self.spec), values=Y_target, values_err=Yerr_target
+        )
 
     def fill_nan(self) -> "SpecWrapper":
         """
@@ -185,16 +213,24 @@ class SpecWrapper:
 
         # Interpolate
         Y_filled = griddata((x[valid], y[valid]), Y[valid], (x, y), method="linear")
-        Y_err_filled = griddata((x[valid], y[valid]), Yerr[valid], (x, y), method="linear")
+        Y_err_filled = griddata(
+            (x[valid], y[valid]), Yerr[valid], (x, y), method="linear"
+        )
         filled_count = jnp.sum(~valid)
 
         # Ideally use a logging mechanism here
         msgs.info(f"Filled {filled_count} NaN pixels")
 
-        return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
+        return SpecWrapper(
+            points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled
+        )
 
     def marginalize(
-        self, margin_type: str = "mean", weights: str | Optional[ArrayLike] = None, sigma_clip: float = 5.0, nan_threshold: float = 0.1
+        self,
+        margin_type: str = "mean",
+        weights: str | Optional[ArrayLike] = None,
+        sigma_clip: float = 5.0,
+        nan_threshold: float = 0.1,
     ) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.
@@ -258,18 +294,26 @@ class SpecWrapper:
 
         # Calculate errors
         weighted_errors = jnp.where(combined_mask, (self.Yerr * weights) ** 2, 0)
-        mean_value_err = jnp.sqrt(jnp.sum(weighted_errors, axis=0) / jnp.sum(weights, axis=0) ** 2)
+        mean_value_err = jnp.sqrt(
+            jnp.sum(weighted_errors, axis=0) / jnp.sum(weights, axis=0) ** 2
+        )
 
         # Mask columns with NaN fraction > nan_threshold
         nan_fraction = jnp.sum(~jnp.isfinite(self.Y), axis=0) / self.shape[0]
         mean_value = jnp.where(nan_fraction > nan_threshold, jnp.nan, mean_value)
-        mean_value_err = jnp.where(nan_fraction > nan_threshold, jnp.nan, mean_value_err)
+        mean_value_err = jnp.where(
+            nan_fraction > nan_threshold, jnp.nan, mean_value_err
+        )
 
         if margin_type == "mean":
-            return SpecWrapper(points=self.spec, values=mean_value, values_err=mean_value_err)
+            return SpecWrapper(
+                points=self.spec, values=mean_value, values_err=mean_value_err
+            )
         elif margin_type == "sum":
             return SpecWrapper(
-                points=self.spec, values=mean_value * self.shape[0], values_err=mean_value_err * self.shape[0]
+                points=self.spec,
+                values=mean_value * self.shape[0],
+                values_err=mean_value_err * self.shape[0],
             )
 
     def subtract(self, other: "SpecWrapper") -> "SpecWrapper":
@@ -342,7 +386,9 @@ class SpecWrapper:
             """
 
             @partial(jax.jit, static_argnums=(2,))
-            def jax_gaussian_filter1d(y: Array, sigma: float, max_kernel_size=30) -> Array:
+            def jax_gaussian_filter1d(
+                y: Array, sigma: float, max_kernel_size=30
+            ) -> Array:
                 """
                 JAX implementation of 1D Gaussian filter
                 """
@@ -373,4 +419,6 @@ class SpecWrapper:
         Y_conv = gaussian_filter(self.Y, kernel_sigma)
         Yerr_conv = gaussian_filter(self.Yerr, kernel_sigma)
 
-        return SpecWrapper(points=(self.spat, self.spec), values=Y_conv, values_err=Yerr_conv)
+        return SpecWrapper(
+            points=(self.spat, self.spec), values=Y_conv, values_err=Yerr_conv
+        )

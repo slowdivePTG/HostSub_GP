@@ -1,7 +1,7 @@
 # hostsub_gp/inputfiles.py
 
 from pypeit.inputfiles import InputFile
-from typing import Callable, Any, Type
+from typing import Callable, Any
 
 
 class HostSubInput(InputFile):
@@ -30,7 +30,11 @@ class Digitize:
                     if len(value) % 2 != 0:
                         raise ValueError("The length of the tuple list must be even.")
                     value = ",".join(value).replace("(", "").replace(")", "").split(",")
-                    return [(self._call(value[i]), self._call(value[i + 1])) for i, _ in enumerate(value) if i % 2 == 0]
+                    return [
+                        (self._call(value[i]), self._call(value[i + 1]))
+                        for i, _ in enumerate(value)
+                        if i % 2 == 0
+                    ]
             # The input contains only values that can be directly converted to the specified data type.
             return [self._call(v) for v in value]
 

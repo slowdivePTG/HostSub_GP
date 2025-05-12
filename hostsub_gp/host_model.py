@@ -60,7 +60,9 @@ class HostProfile:
         prof_slit, prof_err_slit = [], []
 
         if spec_model is not None:
-            slit_len = spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
+            slit_len = (
+                spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
+            )
             pixel_scale = spec_model.pixel_scale
             mask_offset = spec_model.mask_offset
         elif slit_len is None or pixel_scale is None:
@@ -70,25 +72,39 @@ class HostProfile:
 
         for k in range(len(self.filters)):
             if spec_model is not None:
-                host_left = (spec_model.spat_edges["host"][0], spec_model.spat_edges["mask"][0])
-                host_right = (spec_model.spat_edges["mask"][1], spec_model.spat_edges["host"][1])
+                host_left = (
+                    spec_model.spat_edges["host"][0],
+                    spec_model.spat_edges["mask"][0],
+                )
+                host_right = (
+                    spec_model.spat_edges["mask"][1],
+                    spec_model.spat_edges["host"][1],
+                )
 
                 sky_left = (
                     spec_model.spat_edges["slit"][0],
-                    max(spec_model.spat_edges["sky"][0], spec_model.spat_edges["slit"][0]),
+                    max(
+                        spec_model.spat_edges["sky"][0],
+                        spec_model.spat_edges["slit"][0],
+                    ),
                 )
                 sky_right = (
-                    min(spec_model.spat_edges["sky"][1], spec_model.spat_edges["slit"][1]),
+                    min(
+                        spec_model.spat_edges["sky"][1],
+                        spec_model.spat_edges["slit"][1],
+                    ),
                     spec_model.spat_edges["slit"][1],
                 )
 
                 xi = counts_slit[k]
                 xi_err = counts_err_slit[k]
                 xi_sky_mean = (
-                    bound_sum(spat_slit[k], xi, x_bound=sky_left) + bound_sum(spat_slit[k], xi, x_bound=sky_right)
+                    bound_sum(spat_slit[k], xi, x_bound=sky_left)
+                    + bound_sum(spat_slit[k], xi, x_bound=sky_right)
                 ) / ((sky_left[1] - sky_left[0]) + (sky_right[1] - sky_right[0]))
                 xi_host_mean = (
-                    bound_sum(spat_slit[k], xi, x_bound=host_left) + bound_sum(spat_slit[k], xi, x_bound=host_right)
+                    bound_sum(spat_slit[k], xi, x_bound=host_left)
+                    + bound_sum(spat_slit[k], xi, x_bound=host_right)
                 ) / ((host_left[1] - host_left[0]) + (host_right[1] - host_right[0]))
                 prof_slit.append(
                     (xi - xi_sky_mean)
@@ -113,22 +129,32 @@ class HostProfile:
 
         # trim the slit
         if spec_model is not None:
-            self.host_wid = spec_model.spat_edges["host"][1] - spec_model.spat_edges["host"][0]  # Host width in pixels
+            self.host_wid = (
+                spec_model.spat_edges["host"][1] - spec_model.spat_edges["host"][0]
+            )  # Host width in pixels
         else:
             self.host_wid = slit_len  # Host width in pixels - if not specified, using the slit length
 
         host_idx = [
-            np.argwhere(np.abs(spat_slit[k] - mask_offset) <= np.ceil(self.host_wid / 2)).ravel()
+            np.argwhere(
+                np.abs(spat_slit[k] - mask_offset) <= np.ceil(self.host_wid / 2)
+            ).ravel()
             for k in range(len(self.filters))
         ]
 
         self.prof_slit = [prof_slit[k][host_idx[k]] for k in range(len(self.filters))]
-        self.prof_err_slit = [prof_err_slit[k][host_idx[k]] for k in range(len(self.filters))]
+        self.prof_err_slit = [
+            prof_err_slit[k][host_idx[k]] for k in range(len(self.filters))
+        ]
         self.spat_slit = [spat_slit[k][host_idx[k]] for k in range(len(self.filters))]
-        self.wv_slit = [np.ones_like(host_idx[k]) * self.wv_eff[k] for k in range(len(self.filters))]
+        self.wv_slit = [
+            np.ones_like(host_idx[k]) * self.wv_eff[k] for k in range(len(self.filters))
+        ]
         self.prof = jnp.concatenate(self.prof_slit)
         self.prof_err = jnp.concatenate(self.prof_err_slit)
-        self.X = jnp.stack([jnp.concatenate(self.spat_slit), jnp.concatenate(self.wv_slit)], axis=-1)
+        self.X = jnp.stack(
+            [jnp.concatenate(self.spat_slit), jnp.concatenate(self.wv_slit)], axis=-1
+        )
 
     @staticmethod
     def _suppress_fitsfixed_warning(func):
@@ -195,7 +221,9 @@ class HostProfile:
         if spec_model is not None:
             center_ra = spec_model.center_ra
             center_dec = spec_model.center_dec
-            slit_len = spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
+            slit_len = (
+                spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
+            )
             slit_wid = spec_model.slit_wid
             position_angle = spec_model.position_angle
         else:
@@ -220,7 +248,12 @@ class HostProfile:
         wv_eff = []
         flts = []
 
-        def _load_images(image_class: Type[SDSSImage | LSImage | PS1Image], filters: str, center_ra: float, center_dec: float) -> bool:
+        def _load_images(
+            image_class: Type[SDSSImage | LSImage | PS1Image],
+            filters: str,
+            center_ra: float,
+            center_dec: float,
+        ) -> bool:
             """
             Load images from the specified image class.
             """
@@ -229,10 +262,16 @@ class HostProfile:
             data, header = image.load()
             # Convolve the images with a Gaussian kernel
             if dseeing > 0:
-                assert spec_model is not None, "SpecModel is required for dseeing correction"
+                assert (
+                    spec_model is not None
+                ), "SpecModel is required for dseeing correction"
                 for k in range(len(data)):
-                    dseeing_wv = dseeing * (image.wv_eff_dict[image.filters[k]] / spec_model.spec.mean()) ** (-1 / 2.5)
-                    data[k] = gaussian_filter(data[k], sigma=dseeing_wv / spec_model.pixel_scale / 2.355)
+                    dseeing_wv = dseeing * (
+                        image.wv_eff_dict[image.filters[k]] / spec_model.spec.mean()
+                    ) ** (-1 / 2.5)
+                    data[k] = gaussian_filter(
+                        data[k], sigma=dseeing_wv / spec_model.pixel_scale / 2.355
+                    )
                     msgs.info(
                         f"Convolving {image.filters[k]} with a dseeing = {dseeing_wv:.2f} arcsec kernel (sigma = {dseeing_wv / spec_model.pixel_scale / 2.355:.2f} pixels)"
                     )
@@ -245,16 +284,29 @@ class HostProfile:
             return True
 
         # Try to load SDSS u-band image
-        _load_images(SDSSImage, "".join(flt for flt in "u" if flt in filters), center_ra, center_dec)
+        _load_images(
+            SDSSImage,
+            "".join(flt for flt in "u" if flt in filters),
+            center_ra,
+            center_dec,
+        )
 
         # Try LS images first if requested
         if survey == "LS" or survey == "any":
-            _ls_loaded = _load_images(LSImage, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
+            _ls_loaded = _load_images(
+                LSImage,
+                "".join(flt for flt in "griz" if flt in filters),
+                center_ra,
+                center_dec,
+            )
             if not _ls_loaded:
                 raise ValueError("No LS images found")
         if (survey == "PS1") or ((survey == "any") and not _ls_loaded):
             _ps1_loaded = _load_images(
-                PS1Image, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec
+                PS1Image,
+                "".join(flt for flt in "grizy" if flt in filters),
+                center_ra,
+                center_dec,
             )
             if not _ps1_loaded:
                 raise ValueError("No PS1 images found")
@@ -273,7 +325,7 @@ class HostProfile:
         counts_slit, counts_err_slit = [], []
 
         # Read the images and estimate the spatial profile
-        for (data, header) in zip(data_list, header_list):
+        for data, header in zip(data_list, header_list):
             # Load FITS image and WCS info
             wcs = WCS(header)
 
@@ -291,7 +343,10 @@ class HostProfile:
             # Define the rectangle size in pixels or arcminutes (angular size)
             slit_len_pix = slit_len / pixel_scale  # Slit length in pixels
             slit_wid_pix = slit_wid / pixel_scale  # Slit width in pixels
-            shape = (int(np.ceil(slit_len_pix / 2)) * 2, int(np.ceil(slit_wid_pix / 2)) * 2)
+            shape = (
+                int(np.ceil(slit_len_pix / 2)) * 2,
+                int(np.ceil(slit_wid_pix / 2)) * 2,
+            )
 
             # Define the target wcs
             wcs_target = WCS(naxis=2)
@@ -317,7 +372,9 @@ class HostProfile:
             wcs_target.wcs.equinox = 2000.0
 
             # Reproject the image to the slit-aligned WCS
-            data_reproj, _ = reproject_interp((data, wcs), wcs_target, shape_out=shape, order="bicubic")
+            data_reproj, _ = reproject_interp(
+                (data, wcs), wcs_target, shape_out=shape, order="bicubic"
+            )
 
             # Show testing plots
             # plt.subplot(projection=wcs)
@@ -344,11 +401,22 @@ class HostProfile:
             # plt.show()
 
             # Obtain the pixel coordinates of the slit
-            spat_slit.append((np.arange(shape[0]) + 1 - wcs_target.wcs.crpix[1]) * pixel_scale)
+            spat_slit.append(
+                (np.arange(shape[0]) + 1 - wcs_target.wcs.crpix[1]) * pixel_scale
+            )
             # Estimate the counts: average along the slit width
-            spat_slit_wid = (np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5) * pixel_scale
+            spat_slit_wid = (
+                np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5
+            ) * pixel_scale
             counts_slit.append(
-                np.array([bound_mean(spat_slit_wid, d, x_bound=(-slit_wid / 2, slit_wid / 2)) for d in data_reproj])
+                np.array(
+                    [
+                        bound_mean(
+                            spat_slit_wid, d, x_bound=(-slit_wid / 2, slit_wid / 2)
+                        )
+                        for d in data_reproj
+                    ]
+                )
             )
             # Estimate the error based on the sky regions
             err = (
@@ -365,7 +433,7 @@ class HostProfile:
             counts_err_slit.append(np.ones_like(counts_slit[-1]) * err)
 
         return cls(
-            filters = flts,
+            filters=flts,
             wv_eff=wv_eff,
             spat_slit=spat_slit,
             counts_slit=counts_slit,
@@ -376,7 +444,9 @@ class HostProfile:
         )
 
     @msgs.timer
-    def model_host_profile_prior(self, spat_resln: float = 1.0, **kwargs) -> Callable[[Any], Array | tuple[Array, Array]]:
+    def model_host_profile_prior(
+        self, spat_resln: float = 1.0, **kwargs
+    ) -> Callable[[Any], Array | tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
 
@@ -394,7 +464,10 @@ class HostProfile:
 
         # No prior photometric data
         if len(self.filters) == 0:
-            host_prior = lambda _: (jnp.array(1 / self.host_wid, dtype=jnp.float32), jnp.array(0, dtype=jnp.float32))  # constant, variance = 0
+            host_prior = lambda _: (
+                jnp.array(1 / self.host_wid, dtype=jnp.float32),
+                jnp.array(0, dtype=jnp.float32),
+            )  # constant, variance = 0
         # Single band - no wavelength dependence
         elif len(self.filters) == 1:
             params = dict(
@@ -412,7 +485,9 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = lambda x: gp_host_prior.predict(X_test=x[:, :1], return_var=True)
+            host_prior = lambda x: gp_host_prior.predict(
+                X_test=x[:, :1], return_var=True
+            )
         # Multiple bands - wavelength dependence
         else:
             params = dict(
@@ -423,8 +498,14 @@ class HostProfile:
             params_limit = dict(
                 log_scale=np.log10(
                     [
-                        [[spat_resln / 2.355, spat_resln / 2.355], [1e3, 1e3]],  # lower bound
-                        [[large_scale, spat_resln * 2], [large_scale, large_scale]],  # upper bound
+                        [
+                            [spat_resln / 2.355, spat_resln / 2.355],
+                            [1e3, 1e3],
+                        ],  # lower bound
+                        [
+                            [large_scale, spat_resln * 2],
+                            [large_scale, large_scale],
+                        ],  # upper bound
                     ]
                 )
             )
@@ -451,13 +532,23 @@ class HostProfile:
         from matplotlib.colors import Normalize
 
         _, ax = plt.subplots(
-            len(self.filters), 1, figsize=(6, 2 * len(self.filters)), sharex=True, sharey=True, constrained_layout=True
+            len(self.filters),
+            1,
+            figsize=(6, 2 * len(self.filters)),
+            sharex=True,
+            sharey=True,
+            constrained_layout=True,
         )
         ax = np.atleast_1d(ax)
         cmap = plt.cm.get_cmap("coolwarm")
         norm = Normalize(vmin=0, vmax=len(self.filters) - 1)
         for k in range(len(self.filters)):
-            ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.filters[k]}", color=cmap(norm(k)))
+            ax[k].plot(
+                self.spat_slit[k],
+                self.prof_slit[k],
+                label=f"{self.filters[k]}",
+                color=cmap(norm(k)),
+            )
             ax[k].plot(
                 self.spat_slit[k],
                 host_prior(jnp.stack([self.spat_slit[k], self.wv_slit[k]], axis=-1))[0],
@@ -492,7 +583,9 @@ def bound_sum(x: Array, y: Array, x_bound: Optional[tuple] = None) -> float:
     if x_bound[1] <= x_bound[0]:
         return jnp.float32(0)
     # sum up all pixels that are fully contained in the region
-    idx_center = (x > x_bound[0] + bin_size[0] / 2) & (x < x_bound[1] - bin_size[-1] / 2)
+    idx_center = (x > x_bound[0] + bin_size[0] / 2) & (
+        x < x_bound[1] - bin_size[-1] / 2
+    )
     sum_center = jnp.sum(y[idx_center] * bin_size[idx_center])
 
     # leftmost pixel that is partially contained in the region (if any)

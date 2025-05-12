@@ -51,7 +51,7 @@ class ArchivalImage:
         filters = []
 
         for flt in self.filters:
-            
+
             file = f"{self.path}/{flt}.fits"
             file_wcs = f"{self.path}/{flt}_wcs.fits"
             if os.path.exists(file_wcs):
@@ -59,7 +59,9 @@ class ArchivalImage:
                 msgs.info(f"Loading WCS calibrated file: {file_wcs}")
                 file = file_wcs
             else:
-                msgs.warning(f"Loading original file (WCS not calibrated by Astrometry.net): {file}")
+                msgs.warning(
+                    f"Loading original file (WCS not calibrated by Astrometry.net): {file}"
+                )
             try:
                 hdulist = fits.open(file)
                 data_list.append(hdulist[0].data)
@@ -89,7 +91,6 @@ class ArchivalImage:
         # WCS calibration with Astrometry.net
         query_astrometry_net_wcs(self.path, overwrite=overwrite)
 
-
     def download(self, overwrite: bool = True):
         """
         Download images from the archival service
@@ -102,7 +103,14 @@ class PS1Image(ArchivalImage):
     Class to load images from the PS1 Image Cutout Service
     """
 
-    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout", size: int = 2400):
+    def __init__(
+        self,
+        ra: float,
+        dec: float,
+        filters: str = "grizy",
+        path: str = "./ps1_cutout",
+        size: int = 2400,
+    ):
         super().__init__(ra, dec, filters, path)
         self.size = size
         self.wv_eff_dict = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
@@ -163,7 +171,9 @@ class SDSSImage(ArchivalImage):
     Class to load images from astroquery.sdss.SDSS
     """
 
-    def __init__(self, ra: float, dec: float, filters: str = "ugriz", path: str = "./sdss_cutout"):
+    def __init__(
+        self, ra: float, dec: float, filters: str = "ugriz", path: str = "./sdss_cutout"
+    ):
         super().__init__(ra, dec, filters, path)
         self.wv_eff_dict = dict(u=3556.52, g=4702.50, r=6175.58, i=7489.98, z=8946.71)
 
@@ -206,7 +216,9 @@ class LSImage(ArchivalImage):
     Class to load images from the DESI Legacy Imaging Surveys
     """
 
-    def __init__(self, ra: float, dec: float, filters: str = "griz", path: str = "./ls_cutout"):
+    def __init__(
+        self, ra: float, dec: float, filters: str = "griz", path: str = "./ls_cutout"
+    ):
         super().__init__(ra, dec, filters, path)
         # https://noirlab.edu/science/programs/ctio/filters/Dark-Energy-Camera
         self.wv_eff_dict = dict(g=4730, r=6420, i=7840, z=9260)
@@ -224,7 +236,10 @@ class LSImage(ArchivalImage):
             return
 
         url = "https://www.legacysurvey.org/viewer/fits-cutout?ra={ra:.4f}&dec={dec:.4f}&pixscale={px_scale}&layer=ls-dr10&size={size:g}".format(
-            ra=self.ra, dec=self.dec, px_scale=self.pixel_scale, size=self.size * 60 / self.pixel_scale
+            ra=self.ra,
+            dec=self.dec,
+            px_scale=self.pixel_scale,
+            size=self.size * 60 / self.pixel_scale,
         )
 
         status = self._download_url(url=url, outfile=f"{self.path}/dummy.fits")
@@ -234,7 +249,7 @@ class LSImage(ArchivalImage):
             hdu = fits.open(f"{self.path}/dummy.fits")
             hdu_header = hdu[0].header
 
-            for k, f in enumerate([*str( hdu_header["bands"] )]):
+            for k, f in enumerate([*str(hdu_header["bands"])]):
                 hdu_header["FILTER"] = f
                 hdu_header["GAIN"] = 100
                 fits.writeto(
@@ -250,7 +265,9 @@ class LSImage(ArchivalImage):
 
         else:
             msgs.warning("Failed to download LS images.")
-            msgs.warning("Field might not be covered by DESI LS or https://www.legacysurvey.org/viewer might be offline.")
+            msgs.warning(
+                "Field might not be covered by DESI LS or https://www.legacysurvey.org/viewer might be offline."
+            )
             return
 
     def _download_url(self, url: str, outfile: str, max_attempts: int = 5) -> bool:
@@ -272,9 +289,13 @@ class LSImage(ArchivalImage):
                 subprocess.run(["wget", url, "-O", outfile], check=True)
                 return True
             except HTTPError as e:
-                print(f"Failed attempt {attempt} to download {outfile} with an HTTPError: {e}")
+                print(
+                    f"Failed attempt {attempt} to download {outfile} with an HTTPError: {e}"
+                )
             except URLError as e:
-                print(f"Failed attempt {attempt} to download {outfile} with a URLError: {e}")
+                print(
+                    f"Failed attempt {attempt} to download {outfile} with a URLError: {e}"
+                )
             time.sleep(1)
 
         print(f"Failed to download image {outfile}")

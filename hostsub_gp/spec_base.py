@@ -3,8 +3,10 @@
 from typing import Protocol, TypeVar
 from jax._src.typing import Array
 
+
 class SpecModelProtocol(Protocol):
     """Protocol for the SpecModel class"""
+
     pixel_scale: float
     center_ra: float
     center_dec: float
@@ -19,4 +21,5 @@ class SpecModelProtocol(Protocol):
     slit_wid: float
     mask_offset: float
 
-SpecModelP = TypeVar('SpecModelP', bound=SpecModelProtocol)
+
+SpecModelP = TypeVar("SpecModelP", bound=SpecModelProtocol)

@@ -19,7 +19,9 @@ class AstrometryNetSolver:
             API_KEY = os.getenv("ASTROMETRY_NET_TOKEN")
             self.ast.api_key = API_KEY
         except Exception as e:
-            raise ValueError("API key not found. Please set the 'ASTROMETRY_NET_TOKEN' environment variable.") from e
+            raise ValueError(
+                "API key not found. Please set the 'ASTROMETRY_NET_TOKEN' environment variable."
+            ) from e
 
     def solve_field(self, fits_path: str, **settings) -> str:
         """
@@ -64,13 +66,17 @@ class AstrometryNetSolver:
             msgs.info(f"Submitting {fits_path} to astrometry.net...")
 
             # Submit the image for solving
-            wcs_header = self.ast.solve_from_image(fits_path, **astrometry_dict, solve_timeout=600)
+            wcs_header = self.ast.solve_from_image(
+                fits_path, **astrometry_dict, solve_timeout=600
+            )
 
             if wcs_header:
                 msgs.info("Successfully solved field!")
 
                 # Create new FITS file with WCS solution
-                output_path = Path(fits_path).parent / f"{Path(fits_path).stem}_wcs.fits"
+                output_path = (
+                    Path(fits_path).parent / f"{Path(fits_path).stem}_wcs.fits"
+                )
 
                 hdul = fits.open(fits_path)
                 # Update the original FITS file with WCS solution
@@ -109,7 +115,9 @@ class AstrometryNetSolver:
             # Check for required basic WCS keywords
             basic_required = ["CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2"]
             if not all(keyword in header for keyword in basic_required):
-                msgs.warning("Basic WCS keywords (CRVAL1, CRVAL2, CRPIX1, CRPIX2) not found.")
+                msgs.warning(
+                    "Basic WCS keywords (CRVAL1, CRVAL2, CRPIX1, CRPIX2) not found."
+                )
                 return None
 
             # Create WCS object
@@ -137,7 +145,9 @@ class AstrometryNetSolver:
                 "center_ra": float(center_ra),  # in degrees
                 "center_dec": float(center_dec),  # in degrees
                 "scale_est": float(pixel_scale),  # in arcseconds per pixel
-                "radius": float((naxis1**2 + naxis2**2) ** 0.5 * pixel_scale / 3600.0 / 2),  # in degrees
+                "radius": float(
+                    (naxis1**2 + naxis2**2) ** 0.5 * pixel_scale / 3600.0 / 2
+                ),  # in degrees
             }
 
         except Exception as e:
@@ -179,15 +189,25 @@ def query_astrometry_net_wcs(directory, overwrite=False, **kwargs):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Process FITS files with Astrometry.net")
+    parser = argparse.ArgumentParser(
+        description="Process FITS files with Astrometry.net"
+    )
 
     parser.add_argument("directory", type=str, help="Directory containing FITS files")
-    parser.add_argument("--scale_est", type=float, default=None, help="Estimated scale in arcsec/pixel")
-    parser.add_argument("--center_ra", type=float, default=None, help="Center RA in degrees")
-    parser.add_argument("--center_dec", type=float, default=None, help="Center Dec in degrees")
+    parser.add_argument(
+        "--scale_est", type=float, default=None, help="Estimated scale in arcsec/pixel"
+    )
+    parser.add_argument(
+        "--center_ra", type=float, default=None, help="Center RA in degrees"
+    )
+    parser.add_argument(
+        "--center_dec", type=float, default=None, help="Center Dec in degrees"
+    )
     parser.add_argument("--radius", type=float, default=None, help="Radius in degrees")
     parser.add_argument("--tweak_order", type=int, default=None, help="Tweak order")
-    parser.add_argument("--downsample_factor", type=int, default=None, help="Downsample factor")
+    parser.add_argument(
+        "--downsample_factor", type=int, default=None, help="Downsample factor"
+    )
     args = parser.parse_args()
 
     # Generate kwargs excluding None values

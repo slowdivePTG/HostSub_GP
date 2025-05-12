@@ -67,7 +67,9 @@ class HostSub(ScriptBase):
         # Load the configuration file
         hostsubFile = HostSubInput.from_file(args.hostsub_file)
         assert hostsubFile.data is not None, "No data found in the configuration file."
-        assert hostsubFile.filenames is not None, "No files found in the configuration file."
+        assert (
+            hostsubFile.filenames is not None
+        ), "No files found in the configuration file."
         assert hostsubFile.config is not None
         par = hostsubFile.config
 
@@ -84,13 +86,20 @@ class HostSub(ScriptBase):
         # Loop over science files
         sci_idx = np.argwhere(hostsubFile.data["frametype"] == "science").ravel()
         spec_data_list = []
-        spat_rect, spec_rect = None, None  # For all the science files, use the same points for interpolation
+        spat_rect, spec_rect = (
+            None,
+            None,
+        )  # For all the science files, use the same points for interpolation
         base_file_list = []
         for i in sci_idx:
             sci_file_1d = hostsubFile.filenames[i]
             sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
-            sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace("spec1d", "spec2d")
-            base_file_list.append(sci_file_1d.replace("spec1d_", "").replace(".fits", ""))
+            sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace(
+                "spec1d", "spec2d"
+            )
+            base_file_list.append(
+                sci_file_1d.replace("spec1d_", "").replace(".fits", "")
+            )
 
             # If the object ID is not provided,
             # Set it to None and use the standard star file
@@ -130,22 +139,30 @@ class HostSub(ScriptBase):
             spec_data_list.append(spec_data)
 
         if args.coadd2d:
-            spec_data_coadd2d, spec_data_cr_mask = SpecData.coadd2d(spec_data_list, show=from_pypeit) # Only show the plot after a new rectification
+            spec_data_coadd2d, spec_data_cr_mask = SpecData.coadd2d(
+                spec_data_list, show=from_pypeit
+            )  # Only show the plot after a new rectification
 
             # Write the cr_mask to the rectified files
             for k, i in enumerate(sci_idx):
                 sci_file_1d = hostsubFile.filenames[i]
                 sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
-                sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace("spec1d", "spec2d")
+                sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace(
+                    "spec1d", "spec2d"
+                )
                 hdul_rect = fits.open(sci_rect_file, mode="update")
 
                 if spec_data_cr_mask is not None:
                     # Create a new frame for the CR mask
-                    hdu_cr_mask = fits.ImageHDU(data=np.array(spec_data_cr_mask[k], dtype=int), name="CR_MASK")
+                    hdu_cr_mask = fits.ImageHDU(
+                        data=np.array(spec_data_cr_mask[k], dtype=int), name="CR_MASK"
+                    )
 
                     if "CR_MASK" in hdul_rect:
                         # Overwrite the existing CR mask
-                        hdul_rect["CR_MASK"].data = np.array(spec_data_cr_mask[k], dtype=int)
+                        hdul_rect["CR_MASK"].data = np.array(
+                            spec_data_cr_mask[k], dtype=int
+                        )
                     else:
                         # Append the new CR mask to the HDU list
                         hdul_rect.append(hdu_cr_mask)
@@ -158,23 +175,33 @@ class HostSub(ScriptBase):
 
                 hdul_rect.close()
 
-            spec_model = HostSub._model_host_subtraction(args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d")
-
+            spec_model = HostSub._model_host_subtraction(
+                args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d"
+            )
 
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
-                spec_model = HostSub._model_host_subtraction(args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1])
-   
+                spec_model = HostSub._model_host_subtraction(
+                    args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1]
+                )
+
         # Update the skymodel frame in the original Spec2D object
         for i in sci_idx:
             sci_file_1d = hostsubFile.filenames[i]
-            os.system(f"cp {sci_file_1d} {sci_file_1d.replace('.fits', '_hostsub.fits')}")
+            os.system(
+                f"cp {sci_file_1d} {sci_file_1d.replace('.fits', '_hostsub.fits')}"
+            )
             sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
-            spec_data.update_pypeit_skymodel(spec_model=spec_model, spec2d_file=sci_file_2d)
+            spec_data.update_pypeit_skymodel(
+                spec_model=spec_model, spec2d_file=sci_file_2d
+            )
 
     @staticmethod
     def _model_host_subtraction(
-        args: argparse.Namespace, spec_data: SpecData, par_hostsub: dict, output_suffix: str = None
+        args: argparse.Namespace,
+        spec_data: SpecData,
+        par_hostsub: dict,
+        output_suffix: str = None,
     ) -> SpecModel:
         """
         Model the host galaxy and subtract it from the 1D spectrum.
@@ -215,23 +242,39 @@ class HostSub(ScriptBase):
         # Parameters for identifying host emission lines
         par_host_emission = par_hostsub.get("host_emission", {})
         host_emission_cfg = {}
-        host_emission_cfg["find_host_emission"] = par_host_emission.get("find_host_emission", "True") in [
+        host_emission_cfg["find_host_emission"] = par_host_emission.get(
+            "find_host_emission", "True"
+        ) in [
             "True",
             "true",
         ]
         host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 0.05))
         host_emission_cfg["kernel_wid"] = (
-            None if "kernel_wid" not in par_host_emission else Float(par_host_emission["kernel_wid"])
+            None
+            if "kernel_wid" not in par_host_emission
+            else Float(par_host_emission["kernel_wid"])
         )
-        host_emission_cfg["z"] = None if "z" not in par_host_emission else Float(par_host_emission["z"])
-        host_emission_cfg["z_err"] = None if "z_err" not in par_host_emission else Float(par_host_emission["z_err"])
+        host_emission_cfg["z"] = (
+            None if "z" not in par_host_emission else Float(par_host_emission["z"])
+        )
+        host_emission_cfg["z_err"] = (
+            None
+            if "z_err" not in par_host_emission
+            else Float(par_host_emission["z_err"])
+        )
 
         # Parameters for matching the seeing of the host and science spectra
         par_seeing_match = par_hostsub.get("seeing_match", {})
         seeing_match_cfg = {}
-        seeing_match_cfg["max_dseeing"] = Float(par_seeing_match.get("max_dseeing", 1.0))
-        seeing_match_cfg["min_dseeing"] = Float(par_seeing_match.get("min_dseeing", 0.0))
-        seeing_match_cfg["step_dseeing"] = Float(par_seeing_match.get("step_dseeing", 0.05))
+        seeing_match_cfg["max_dseeing"] = Float(
+            par_seeing_match.get("max_dseeing", 1.0)
+        )
+        seeing_match_cfg["min_dseeing"] = Float(
+            par_seeing_match.get("min_dseeing", 0.0)
+        )
+        seeing_match_cfg["step_dseeing"] = Float(
+            par_seeing_match.get("step_dseeing", 0.05)
+        )
         seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
         if seeing_match_cfg["dseeing"] == 0:
             seeing_match_cfg["dseeing"] = None
@@ -265,18 +308,26 @@ class HostSub(ScriptBase):
         if not args.skip_seeing_match:
             dseeing = seeing_match_cfg.pop("dseeing", None)
             if dseeing is not None:
-                msgs.info(f"Using the seeing difference of {dseeing} provided by the user.")
+                msgs.info(
+                    f"Using the seeing difference of {dseeing} provided by the user."
+                )
 
             # Update the SpecModel object
             dseeing_opt = spec_model.update_seeing(dseeing, **seeing_match_cfg)
 
             if dseeing_opt > 0:
-                msgs.info("The seeing of the spectrum is better than the reference image.")
+                msgs.info(
+                    "The seeing of the spectrum is better than the reference image."
+                )
                 msgs.info("Convolve the spectrum with a Gaussian kernel.")
                 msgs.info(f"Optimized seeing difference is {dseeing_opt:.2f}.")
 
                 # Update the SpecWrapper objects
-                dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+                dseeing_wv = (
+                    dseeing_opt
+                    / spec_model.pixel_scale
+                    * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+                )
                 spec_model.construct_spec_wrapper(
                     f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),
                     host_emission_cfg=host_emission_cfg,
@@ -285,7 +336,9 @@ class HostSub(ScriptBase):
                 )
 
             elif dseeing_opt < 0:
-                msgs.info("The seeing of the spectrum is worse than the reference image.")
+                msgs.info(
+                    "The seeing of the spectrum is worse than the reference image."
+                )
                 msgs.info("Convolve the reference image with a Gaussian kernel.")
                 msgs.info(f"Optimized seeing difference is {dseeing_opt:.2f}.")
 
@@ -298,11 +351,15 @@ class HostSub(ScriptBase):
                 )
 
             else:
-                msgs.info("The seeing of the spectrum is the same as the reference image.")
+                msgs.info(
+                    "The seeing of the spectrum is the same as the reference image."
+                )
                 msgs.info("No convolution needed.")
 
         # Prior of the host profiles
-        spec_model._plot_host_profile_prior(show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf")
+        spec_model._plot_host_profile_prior(
+            show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf"
+        )
 
         # Skip the subsequent modeling if requested
         if args.skip_model:
@@ -323,7 +380,9 @@ class HostSub(ScriptBase):
         spec_model._plot_pred(show=False, save=f"QA/{output_suffix}_pred.pdf")
 
         # Posterior of the host profiles
-        spec_model._plot_host_profile_pred(show=False, save=f"QA/{output_suffix}_host_profile_pred.pdf")
+        spec_model._plot_host_profile_pred(
+            show=False, save=f"QA/{output_suffix}_host_profile_pred.pdf"
+        )
 
         # Extract the science spectrum
         spec_model.extract_sci(show=False, save=f"QA/{output_suffix}_sci.pdf")
@@ -340,12 +399,16 @@ class HostSub(ScriptBase):
             ).T,
             fmt="%.4f %.6e %.6e %.6e %.6e",
         )
-        msgs.info(f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt")
+        msgs.info(
+            f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt"
+        )
 
         return spec_model
 
     @staticmethod
-    def _load_gp_params(par: dict) -> tuple[dict[str, float], list[dict[str, tuple[float, float]]]]:
+    def _load_gp_params(
+        par: dict,
+    ) -> tuple[dict[str, float], list[dict[str, tuple[float, float]]]]:
         # Convert the initial parameters to the correct data type
         params_init_1d = {k: Float(v) for k, v in par.get("params_init_1d", {}).items()}
         params_init_2d = {k: Float(v) for k, v in par.get("params_init_2d", {}).items()}
@@ -355,8 +418,16 @@ class HostSub(ScriptBase):
         # Reset the key names
         def _set_params_limit(params_limit_dict):
             """Integrate upper and lower limits of each parameter."""
-            upper = {k.replace("_upper", ""): Float(v) for k, v in params_limit_dict.items() if "upper" in k}
-            lower = {k.replace("_lower", ""): Float(v) for k, v in params_limit_dict.items() if "lower" in k}
+            upper = {
+                k.replace("_upper", ""): Float(v)
+                for k, v in params_limit_dict.items()
+                if "upper" in k
+            }
+            lower = {
+                k.replace("_lower", ""): Float(v)
+                for k, v in params_limit_dict.items()
+                if "lower" in k
+            }
             return {k: (lower[k], upper[k]) for k in lower}
 
         params_limit_1d = _set_params_limit(par.get("params_limit_1d", {}))

@@ -78,20 +78,30 @@ class GP:
                 self.params_init = _init_params(params_init)
             except Exception as e:
                 raise ValueError("Optimization: " + str(e))
-            assert isinstance(self.params_init, dict), "params_init must be a dictionary"
-            self.params_init_unbound = _transform_bound_to_unbound(self.params_init, self.params_limit)
+            assert isinstance(
+                self.params_init, dict
+            ), "params_init must be a dictionary"
+            self.params_init_unbound = _transform_bound_to_unbound(
+                self.params_init, self.params_limit
+            )
 
             self.params_unbound = self._optimize(self.X, self.y, self.yerr)
-            self.params = _transform_unbound_to_bound(self.params_unbound, self.params_limit)
+            self.params = _transform_unbound_to_bound(
+                self.params_unbound, self.params_limit
+            )
             _print_params(self.params)
         else:
             self.params = params
-            self.params_unbound = _transform_bound_to_unbound(self.params, self.params_limit)
+            self.params_unbound = _transform_bound_to_unbound(
+                self.params, self.params_limit
+            )
 
         assert isinstance(self.params, dict), "params must be a dictionary"
 
         # Build the GP
-        self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type, **kwargs)
+        self.gp = _build_gp(self.params, self.X, self.yerr)(
+            kernel_type=self.kernel_type, **kwargs
+        )
 
     def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
         """Optimize the hyperparameters of the Gaussian Process with jaxopt.ScipyMinimize."""
@@ -131,11 +141,13 @@ class GP:
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params_unbound
 
-    def predict(self, X_test: Array, return_var: bool = False) -> Array | tuple[Array, Array]:
+    def predict(
+        self, X_test: Array, return_var: bool = False
+    ) -> Array | tuple[Array, Array]:
         """Predict the mean and variance of the Gaussian Process at the input points."""
 
         X_test = jnp.asarray(X_test)
-        
+
         # The 1D GP uses the quasiseparable kernel to speed up the computation
         # which requires the input to be a 1D array
         if X_test.shape[-1] == 1:
@@ -149,7 +161,9 @@ class GP:
 
 
 @partial(jax.jit, static_argnames=("kernel_type",))
-def _neg_log_prob(params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str) -> JAXArray:
+def _neg_log_prob(
+    params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str
+) -> JAXArray:
     """Negative log-probability of the Gaussian Process."""
     params_bound = _transform_unbound_to_bound(params, params_limit)
     assert isinstance(params_bound, dict), "params must be a dictionary"
@@ -175,19 +189,23 @@ class _build_gp:
         # For EmissionLine kernel only
         self.log_amp_line = params.get("log_amp_line")
         self.scale_line = params.get("scale_line")
-        
+
         self.ndim = X.shape[-1]
         if self.ndim == 1:
             self.X = jnp.asarray(X.ravel())
         elif self.ndim == 2:
             self.X = jnp.asarray(X)
         else:
-            raise ValueError("Invalid number of dimensions: supported values are 1 or 2")
+            raise ValueError(
+                "Invalid number of dimensions: supported values are 1 or 2"
+            )
         self.yerr = jnp.asarray(yerr)
 
     def __call__(self, kernel_type: str, **kwargs) -> GaussianProcess:
         kernel = self._build_kernel(kernel_type, **kwargs)
-        return GaussianProcess(kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean)
+        return GaussianProcess(
+            kernel=kernel, X=self.X, diag=self.yerr**2, mean=self.mean
+        )
 
     def _build_kernel(self, kernel_type: str, **kwargs) -> kernels.Kernel:
         """
@@ -225,7 +243,9 @@ class _build_gp:
                 raise ValueError("2D kernel: X must be a 2D array")
 
             if self.log_amp_line is None or self.scale_line is None:
-                raise ValueError("EmissionLine kernel requires 'amp_line', and 'scale_line' parameters")
+                raise ValueError(
+                    "EmissionLine kernel requires 'amp_line', and 'scale_line' parameters"
+                )
             emission_lines = kwargs.get("emission_lines")
             assert emission_lines is not None, "emission_lines must be provided"
             if emission_lines is None:
@@ -247,7 +267,9 @@ class _build_gp:
 
         # Invalid kernel type
         else:
-            raise ValueError("Invalid kernel type: supported types are 'HostProfile', '1D', '2D'")
+            raise ValueError(
+                "Invalid kernel type: supported types are 'HostProfile', '1D', '2D'"
+            )
 
         return kernel
 
@@ -274,7 +296,9 @@ class _build_gp:
         if amp.shape != ():
             raise ValueError(f"Invalid amplitude shape {amp.shape}: expected ()")
         # Use transforms.Linear to handle anisotropic kernels
-        return amp * transforms.Linear(1 / scale, kernel=kernels.Matern52(distance=L2Distance()))
+        return amp * transforms.Linear(
+            1 / scale, kernel=kernels.Matern52(distance=L2Distance())
+        )
 
     @staticmethod
     def _build_2D_composite_kernel(amp: Array, scale: Array) -> kernels.Kernel:
