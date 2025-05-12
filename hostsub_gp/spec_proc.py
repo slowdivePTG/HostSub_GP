@@ -9,7 +9,7 @@ import jax.numpy as jnp
 # jax.config.update("jax_enable_x64", True)
 
 from jax._src.typing import ArrayLike, Array
-from typing import Callable
+from typing import Callable, Optional
 
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
@@ -39,16 +39,16 @@ class SpecData:
         spec_resln: float,
         spat_rect: ArrayLike,
         spec_rect: ArrayLike,
-        flux_rect: ArrayLike = None,
-        flux_ivar_rect: ArrayLike = None,
-        dist: ArrayLike = None,
-        waveimg: ArrayLike = None,
-        flux: ArrayLike = None,
-        flux_global_sky: ArrayLike = None,
-        flux_ivar: ArrayLike = None,
-        sky_offset: float = None,
-        to_caches: bool = False,
-        cache_path: str = None,
+        flux_rect: Optional[Array] = None,
+        flux_ivar_rect: Optional[ Array ] = None,
+        dist: Optional[ Array ] = None,
+        waveimg: Optional[ Array ] = None,
+        flux: Optional[ Array ] = None,
+        flux_global_sky: Optional[ Array ] = None,
+        flux_ivar: Optional[ Array ] = None,
+        sky_offset: Optional[ float ] = None,
+        to_caches: Optional[ bool ] = False,
+        cache_path: Optional[ str ] = None,
     ):
         self.spat_rect = jnp.asarray(spat_rect)
         self.spec_rect = jnp.asarray(spec_rect)
@@ -65,21 +65,20 @@ class SpecData:
             self.flux_rect = jnp.asarray(flux_rect)
             self.flux_ivar_rect = jnp.asarray(flux_ivar_rect)
         else:
-            if dist is None:
-                raise ValueError("No distance array provided.")
-            if (flux is None) or (flux_ivar is None) or (waveimg is None):
-                raise ValueError("No flux, ivar, or wavelength solution provided.")
+            assert dist is not None, "Distance array is not available."
+            assert flux is not None and flux_ivar is not None, "Flux and ivar arrays are not available."
 
             if self.sky_offset is None:
                 host_prior = HostProfile.from_archival(
                     center_ra=self.center_ra,
                     center_dec=self.center_dec,
                     slit_len=min(
-                        self.spat_rect.max() - self.spat_rect.min(), 60 // self.pixel_scale * self.pixel_scale
-                    )  # slit_len <= 60 arcsec = 1 arcmin
+                        self.spat_rect.max().item() - self.spat_rect.min().item(), 30 // self.pixel_scale * self.pixel_scale
+                    )  # slit_len <= 30 arcsec 
                     + self.pixel_scale,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,
+                    survey="PS1",
                 ).model_host_profile_prior()
 
                 self.sky_offset = self._get_offset(
@@ -110,14 +109,14 @@ class SpecData:
     def from_pypeit(
         cls,
         sci_file: str,
-        raw_dir: str = None,
-        obj_id: str = None,
-        std_file: str = None,
-        ra: float = None,
-        dec: float = None,
-        spat_resln: float = None,
-        spat_rect: ArrayLike = None,
-        spec_rect: ArrayLike = None,
+        raw_dir: Optional[ str ] = None,
+        obj_id: Optional[ str ] = None,
+        std_file: Optional[ str ] = None,
+        ra: Optional[ float ] = None,
+        dec: Optional[ float ] = None,
+        spat_resln: Optional[ float ] = None,
+        spat_rect: Optional[ ArrayLike ] = None,
+        spec_rect: Optional[ ArrayLike ] = None,
         **kwargs,
     ):
         """
@@ -167,7 +166,7 @@ class SpecData:
         # - position angle (in degrees)
         # - slit width (in arcsec)
 
-        def _get_raw_header(raw_dir: str, raw_file: str, **kwargs) -> fits.Header:
+        def _get_raw_header(raw_dir: str | None, raw_file: str, **kwargs) -> fits.Header:
             """
             Get the header of the raw file.
             """
@@ -200,7 +199,7 @@ class SpecData:
 
             if ra is None or dec is None:
                 # RA and DEC in the header are in the format of 'HH:MM:SS.SS' and 'DD:MM:SS.SS'
-                ra_str, dec_str = raw_header["CATRA"].strip("'"), raw_header["CATDEC"].strip("'")
+                ra_str, dec_str = str( raw_header["CATRA"] ).strip("'"), str(raw_header["CATDEC"]).strip("'")
                 coord = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg))
                 ra, dec = coord.ra.deg, coord.dec.deg
 
@@ -257,7 +256,7 @@ class SpecData:
             trace_file = spec1d_file
             trace_objs = specobjs.SpecObjs.from_fitsfile(trace_file, det=det)
             name_idx = trace_objs.name_indices(obj_id)
-            if all(~name_idx):
+            if not any(name_idx):
                 raise ValueError(f"Object {obj_id} not found in the trace file.")
             trace_obj = trace_objs[np.where(name_idx)[0][0]]
 
@@ -266,8 +265,11 @@ class SpecData:
             trace_file = std_file
             trace_objs = specobjs.SpecObjs.from_fitsfile(trace_file, det=det)
             # Find the SpecObj with the highest signal-to-noise ratio (S2N) in the SpecObjs
-            argmax_snr = np.argmax([obj["S2N"] for obj in trace_objs])
-            trace_obj = trace_objs[argmax_snr]
+            objs2n = []
+            for obj in trace_objs:
+                assert obj is not None
+                objs2n.append(obj["S2N"])
+            trace_obj = trace_objs[np.argmax(objs2n)]
         else:
             raise ValueError("No spec1d file provided for identifying the trace.")
 
@@ -277,10 +279,15 @@ class SpecData:
                     "The spatial resolution needs to be either provided in the config file or estimated from the standard."
                 )
             std_objs = specobjs.SpecObjs.from_fitsfile(std_file, det=det)
-            argmax_snr = np.argmax([obj["S2N"] for obj in std_objs])
-            spat_resln = std_objs[argmax_snr]["FWHM"] * pixel_scale
+            objs2n = []
+            for obj in std_objs:
+                assert obj is not None
+                objs2n.append(obj["S2N"])
+            trace_obj = std_objs[np.argmax(objs2n)]
+            spat_resln = trace_obj["FWHM"] * pixel_scale
 
-        trace_spat_pix = trace_obj["TRACE_SPAT"]  # spatial pixel of the trace
+        assert trace_obj is not None, "Trace object is not available."
+        trace_spat_pix = jnp.asarray(trace_obj["TRACE_SPAT"], dtype=float)  # spatial pixel of the trace
 
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
 
@@ -302,11 +309,12 @@ class SpecData:
         # Estimate the distance from the standard trace
         # For each pixel in the 2D spectrum with a certain wavelength,
         # find the corresponding spectral pixel within the trace at the same wavelength
-        trace_spec = Interp2D_Grid(points=(np.arange(waveimg.shape[0]), np.arange(waveimg.shape[1])), values=waveimg)(
+        trace_spec = Interp2D_Grid(points=(jnp.arange(waveimg.shape[0]), jnp.arange(waveimg.shape[1])), values=jnp.asarray(waveimg))(
             np.stack([trace_spat_pix, np.arange(waveimg.shape[1])], axis=-1)
         )
-        trace_spec_pix = np.where(
-            tilts != 0, Interp1D_Grid(points=trace_spec, values=np.arange(len(trace_spec)))(waveimg), np.nan
+        assert trace_spec is not None, "Trace spectral pixels are not available."
+        trace_spec_pix = jnp.where(
+            tilts != 0, Interp1D_Grid(points=jnp.asarray(trace_spec), values=jnp.arange(len(trace_spec)))(waveimg), np.nan
         )
 
         # indices of the spatial and spectral pixels
@@ -395,8 +403,13 @@ class SpecData:
         if spec_rect is None:
             # Spectral coordinates: at the location of the trace
             # Remove the first and last spectral pixels to avoid the edge effects
+            assert trace_spec is not None, "Trace spectral pixels are not available."
             spec_rect = trace_spec[1:-1]
             msgs.info(f"Wavelength range: {spec_rect[0]:.2f} - {spec_rect[-1]:.2f} Angstrom")
+
+        assert ra is not None, "RA is not available."
+        assert dec is not None, "DEC is not available."
+        assert position_angle is not None, "Position angle is not available."
 
         return cls(
             pixel_scale=pixel_scale,
@@ -419,7 +432,7 @@ class SpecData:
         )
 
     @classmethod
-    def from_fits(cls, fits_path: str = None, **kwargs):
+    def from_fits(cls, fits_path: Optional[ str ] = None, **kwargs):
         """
         Load 2D spectra from cache files.
 
@@ -434,31 +447,32 @@ class SpecData:
         msgs.info(f"Loading 2D spectrum from {fits_path}...")
 
         try:
-            with fits.open(fits_path) as f:
-                header = f[0].header
-                data = dict(
-                    pixel_scale=header["PIXSCALE"],
-                    center_ra=header["CENRA"],
-                    center_dec=header["CENDEC"],
-                    slit_wid=header["SLITWID"],
-                    position_angle=header["POSANG"],
-                    spat_resln=header["SPATRESLN"],
-                    spec_resln=header["SPECRESLN"],
-                    spat_rect=np.array(f["SPAT"].data, dtype=np.float64),
-                    spec_rect=np.array(f["SPEC"].data, dtype=np.float64),
-                    flux_rect=np.array(f["FLUX"].data, dtype=np.float64),
-                    flux_ivar_rect=np.array(f["IVAR"].data, dtype=np.float64),
-                    sky_offset=header["SKYOFFSET"],
-                    cache_path=header["SPECFILE"],
-                    to_caches=False,
-                )
+            f = fits.open(fits_path)
+            header = fits.getheader(fits_path, ext=0)
+            data = dict(
+                pixel_scale=header["PIXSCALE"],
+                center_ra=header["CENRA"],
+                center_dec=header["CENDEC"],
+                slit_wid=header["SLITWID"],
+                position_angle=header["POSANG"],
+                spat_resln=header["SPATRESLN"],
+                spec_resln=header["SPECRESLN"],
+                spat_rect=np.array(f["SPAT"].data, dtype=np.float64),
+                spec_rect=np.array(f["SPEC"].data, dtype=np.float64),
+                flux_rect=np.array(f["FLUX"].data, dtype=np.float64),
+                flux_ivar_rect=np.array(f["IVAR"].data, dtype=np.float64),
+                sky_offset=header["SKYOFFSET"],
+                cache_path=header["SPECFILE"],
+                to_caches=False,
+            )
+            f.close()
         except FileNotFoundError:
             raise FileNotFoundError(f"Fits file {fits_path} not found.")
         return cls(**data, **kwargs)
 
     @classmethod
     @show_and_save
-    def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs) -> tuple["SpecData", np.ndarray]:
+    def coadd2d(cls, spec_data_list: list["SpecData"], **kwargs) -> tuple["SpecData", np.ndarray | None]:
         """
         Coadd multiple SpecData objects.
 
@@ -581,7 +595,7 @@ class SpecData:
                 spat_rect=spec_data_list[0].spat_rect,
                 spec_rect=spec_data_list[0].spec_rect,
                 flux_rect=flux_rect,
-                flux_ivar_rect=flux_ivar_rect,
+                flux_ivar_rect=jnp.asarray( flux_ivar_rect ),
                 **kwargs,
             ),
             cr_mask,
@@ -706,65 +720,69 @@ class SpecData:
         ###### (iii) the local sky modeled with HostSub
 
         # Preliminary sky line removal - reduce the noise introduced in the rectification
-        with fits.open(preproc_file) as hdul_preproc:
-            waveimg = jnp.array(hdul_preproc["WAVEIMG"].data, dtype=jnp.float32)
-            dist = jnp.array(hdul_preproc["DIST"].data - self.sky_offset, dtype=jnp.float32)
-            global_sky_pre = jnp.array(hdul_preproc["GLOBALSKY"].data, dtype=jnp.float32)
-            det = hdul_preproc[0].header["DET"]
+        hdul_preproc = fits.open(preproc_file)
+        waveimg = jnp.array(hdul_preproc["WAVEIMG"].data, dtype=jnp.float32)
+        dist = jnp.array(hdul_preproc["DIST"].data - self.sky_offset, dtype=jnp.float32)
+        global_sky_pre = jnp.array(hdul_preproc["GLOBALSKY"].data, dtype=jnp.float32)
+        det = hdul_preproc[0].header["DET"]
+        hdul_preproc.close()
 
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
 
         # Update the bmpmask to include cosmic rays
-        with fits.open(rect_file) as hdul_rect:
-            if "CR_MASK" in hdul_rect:
-                mask_cr = jnp.argwhere(~jnp.array(hdul_rect["CR_MASK"].data, dtype=jnp.bool))
-                wave_rect = jnp.array(hdul_rect["SPEC"].data, dtype=jnp.float32)
-                dist_rect = jnp.array(hdul_rect["SPAT"].data, dtype=jnp.float32)
+        hdul_rect = fits.open(rect_file)
+        if "CR_MASK" in hdul_rect:
+            mask_cr = jnp.argwhere(~jnp.array(hdul_rect["CR_MASK"].data, dtype=jnp.bool))
+            wave_rect = jnp.array(hdul_rect["SPEC"].data, dtype=jnp.float32)
+            dist_rect = jnp.array(hdul_rect["SPAT"].data, dtype=jnp.float32)
 
-                # The mask of the pixels with cosmic rays
-                coords_rect = jnp.meshgrid(dist_rect, wave_rect, indexing="ij")
+            # The mask of the pixels with cosmic rays
+            coords_rect = jnp.meshgrid(dist_rect, wave_rect, indexing="ij")
 
-                # First create the interpolator object for the cosmic ray mask
-                interpolator = Interp2D_Scipy(method="nearest")
+            # First create the interpolator object for the cosmic ray mask
+            interpolator = Interp2D_Scipy(method="nearest")
 
-                # Create the coordinates for the rectified grid
-                # coords_rect is already [wave_rect, dist_rect] from meshgrid
-                points = jnp.stack(coords_rect, axis=-1)
+            # Create the coordinates for the rectified grid
+            # coords_rect is already [wave_rect, dist_rect] from meshgrid
+            points = jnp.stack(coords_rect, axis=-1)
 
-                # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
-                mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
-                mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(2)
+            # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
+            mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
+            mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(2)
 
-                # Fit the interpolator with the rectified grid points and mask values
-                interpolator.fit(points, mask_values)
+            # Fit the interpolator with the rectified grid points and mask values
+            interpolator.fit(points, mask_values)
 
-                # Create query points from the non-uniform grid
-                query_points = jnp.stack([dist, waveimg], axis=-1)
-                # Ensure the query points are finite
-                query_points = jnp.where(np.isfinite(query_points), query_points, 0)
+            # Create query points from the non-uniform grid
+            query_points = jnp.stack([dist, waveimg], axis=-1)
+            # Ensure the query points are finite
+            query_points = jnp.where(np.isfinite(query_points), query_points, 0)
 
-                # Interpolate the mask onto the non-uniform grid
-                mapped_cr_mask = np.asarray(
-                    interpolator.predict(query_points.reshape(-1, 2)).reshape(waveimg.shape), dtype=np.int16
-                )
-                # Update the mask in the PypeIt spec2d file
-                sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
+            # Interpolate the mask onto the non-uniform grid
+            mapped_cr_mask = np.asarray(
+                interpolator.predict(query_points.reshape(-1, 2)).reshape(waveimg.shape), dtype=np.int16
+            )
+            # Update the mask in the PypeIt spec2d file
+            sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
+        hdul_rect.close()
 
         # The global sky subtracted after the rectification
+        assert spec_model.f_sky_1d.y is not None, "The global sky model is not available."
         global_sky_post = Interp1D_Grid(
             points=spec_model.f_sky_1d.X.ravel(), values=spec_model.f_sky_1d.y, method="cubic"
         )(waveimg)
 
         # The local sky
-        X = np.stack([dist.ravel(), waveimg.ravel()], axis=-1).reshape(-1, 2)
+        x = np.stack([dist.ravel(), waveimg.ravel()], axis=-1).reshape(-1, 2)
         spat_mask = (dist.ravel() >= spec_model.spat_edges["host"][0]) & (
             dist.ravel() <= spec_model.spat_edges["host"][-1]
         )
         spec_mask = (waveimg.ravel() >= spec_model.spec[0]) & (waveimg.ravel() <= spec_model.spec[-1])
         local_mask = spat_mask & spec_mask
 
-        sky_host_prior, _ = spec_model.host_prior(X[local_mask])
-        _, _, (sky_pred, _) = spec_model._get_pred(spec_model._gp_1d, spec_model._gp_2d, X[local_mask], return_var=True)
+        x_mask = jnp.asarray(x[local_mask], dtype=jnp.float32)
+        sky_host_prior, _ = spec_model.host_prior(x_mask)
+        _, _, (sky_pred, _) = spec_model._get_pred(spec_model._gp_1d, spec_model._gp_2d, x_mask, return_var=True)
 
         sky_local = np.zeros_like(dist.ravel())
         sky_local[local_mask] = sky_pred + sky_host_prior
@@ -776,18 +794,19 @@ class SpecData:
         all_spec2d = spec2dobj.AllSpec2DObj()
         all_spec2d[det] = sci2d
 
-        with fits.open(spec2d_file) as hdul:
-            pri_hdr = hdul[0].header
+        hdul = fits.open(spec2d_file)
+        pri_hdr = hdul[0].header
+        hdul.close()
 
         all_spec2d.write_to_fits(output_file, pri_hdr=pri_hdr)
 
     def _rectify(
         self,
         points: ArrayLike,
-        f_values: tuple[ArrayLike, ArrayLike, ArrayLike],
+        f_values: tuple[Array, Array],
         batch_size: int = 1024,
         interp_method: str = "rbf",
-    ) -> tuple[ArrayLike, ArrayLike]:
+    ) -> tuple[Array, Array]:
         """
         Rectify the 2D spectrum onto a grid.
 
@@ -805,6 +824,8 @@ class SpecData:
 
         if ~jnp.all(jnp.isfinite(points)):
             raise ValueError("Some points are NaN.")
+
+        points = jnp.asarray(points, dtype=jnp.float32)
 
         if interp_method not in ["rbf", "linear", "scipy"]:
             raise ValueError("Invalid interpolation method.")
@@ -845,8 +866,8 @@ class SpecData:
                 f"Interpolating the flux in the spectral range {self.spec_rect[idx_list[0]]:.2f} - {self.spec_rect[idx_list[-1]]:.2f} Ang..."
             )
             # The range of the spectrum to interpolate
-            spec_min = idx_list[0]
-            spec_max = idx_list[-1] + 1
+            spec_min = idx_list.item(0)
+            spec_max = idx_list.item(-1) + 1
             # Initialize the interpolators (with padding)
             fit_min = max(spec_min - 1, 0)
             fit_max = min(spec_max + 1, points.shape[1])
@@ -863,18 +884,21 @@ class SpecData:
                 flux_ivar_rect[:, spec_min:spec_max].shape
             )
 
-        return flux_rect, flux_ivar_rect
+        return jnp.asarray( flux_rect ), jnp.asarray(flux_ivar_rect)
 
     @show_and_save
-    def _get_offset(self, points: ArrayLike, flux: ArrayLike, host_prior: Callable, mask_wid: float = 2.0) -> float:
+    def _get_offset(self, points: Array, flux: Array, host_prior: Callable, mask_wid: float = 2.0) -> float:
         """
         Center the trace of the science object.
         """
 
         def binned_mean_with_clipping(
-            points: ArrayLike, values: ArrayLike, bins: int, bin_range: tuple[float, float], **kwargs
+            points: Array, values: Array, bins: int, bin_range: tuple[float, float], **kwargs
         ):
             from astropy.stats import sigma_clip, mad_std
+
+            points = jnp.asarray(points, dtype=jnp.float32)
+            values = jnp.asarray(values, dtype=jnp.float32)
 
             bin_edges = np.linspace(bin_range[0], bin_range[1], bins + 1)
             bin_indices = np.digitize(points, bin_edges) - 1
@@ -900,7 +924,7 @@ class SpecData:
 
                 # Apply sigma clipping to the values in the bin
                 y_clipped = sigma_clip(y_in_bin, stdfunc="mad_std", **kwargs)
-
+                assert isinstance(y_clipped, np.ma.MaskedArray), "Clipped values are not a masked array."
                 # Compute the statistic (e.g., mean) of the clipped values (requires at least 80% valid data)
                 if (~y_clipped.mask).sum() > 0.80 * len(y_clipped):
                     obs[i] = np.nanmean(y_clipped[~y_clipped.mask])
@@ -909,14 +933,14 @@ class SpecData:
 
             return obs
 
-        slit_len_max = min(min(-self.spat_rect[0], self.spat_rect[-1]) * 2, 120)
+        slit_len_max = min(min(-self.spat_rect.item(0), self.spat_rect.item( -1 )) * 2, 30)
         spat = self.spat_rect[np.abs(self.spat_rect) <= slit_len_max / 2]
 
         obs = binned_mean_with_clipping(
             points[..., 0],
             flux,
             bins=len(spat),
-            bin_range=(spat[0] - self.pixel_scale / 2, spat[-1] + self.pixel_scale / 2),
+            bin_range=(spat.item(0) - self.pixel_scale / 2, spat.item(-1) + self.pixel_scale / 2),
             sigma=5,
         )
 
@@ -952,7 +976,7 @@ class SpecData:
         ax[0].axvline(offset_opt, color="k", linestyle="--")
 
         ax[1].scatter(
-            spat - offset_opt,
+            spat,
             (obs - jnp.nanmin(obs)) / (jnp.nanmax(obs) - jnp.nanmin(obs)),
             label="obs",
         )
@@ -967,7 +991,7 @@ class SpecData:
             )
         )[0]
         ax[1].scatter(
-            spat - offset_opt,
+            spat,
             (profile_prior - profile_prior.min()) / (profile_prior.max() - profile_prior.min()),
             label="prior",
         )

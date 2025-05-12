@@ -6,7 +6,7 @@ setup(
     packages=find_packages(),  # Automatically find all packages and subpackages
     package_data={"hostsub_gp": ["data/*"]},
     include_package_data=True,
-    install_requires=["tinygp", "jaxopt", "pypeit", "astroquery"],  # Add dependencies here
+    install_requires=["tinygp", "jaxopt", "pypeit", "astroquery", "reproject"],  # Add dependencies here
     entry_points={
         "console_scripts": [
             "hostsub = hostsub_gp.scripts.hostsub:HostSub.entry_point"

@@ -1,7 +1,7 @@
 # hostsub_gp/inputfiles.py
 
 from pypeit.inputfiles import InputFile
-from typing import Callable
+from typing import Callable, Any, Type
 
 
 class HostSubInput(InputFile):
@@ -22,7 +22,7 @@ class Digitize:
     def __init__(self, _call: Callable) -> None:
         self._call = _call
 
-    def __call__(self, value) -> any:
+    def __call__(self, value) -> Any:
         if isinstance(value, list):
             if isinstance(value[0], str):
                 # The input contains brackets

@@ -72,24 +72,24 @@ class AstrometryNetSolver:
                 # Create new FITS file with WCS solution
                 output_path = Path(fits_path).parent / f"{Path(fits_path).stem}_wcs.fits"
 
-                with fits.open(fits_path) as hdul:
-                    # Update the header with WCS solution
-                    hdul[0].header.update(wcs_header)
-                    # Save the new file
-                    hdul.writeto(output_path, overwrite=True)
+                hdul = fits.open(fits_path)
+                # Update the original FITS file with WCS solution
+                hdul[0].header.update(wcs_header)
+                # Save the updated file
+                hdul.writeto(fits_path, overwrite=True)
+                hdul.close()
 
                 msgs.info(f"WCS solution saved to: {output_path}")
                 return str(output_path)
             else:
-                breakpoint()
                 msgs.error("Plate solving failed!")
-                return None
+                return ""
 
         except Exception as e:
             msgs.error(f"Error during plate solving: {str(e)}")
-            return None
+            return ""
 
-    def extract_wcs_info(self, fits_path: str) -> dict:
+    def extract_wcs_info(self, fits_path: str) -> dict | None:
         """
         Extract WCS information from FITS header
 
@@ -104,42 +104,41 @@ class AstrometryNetSolver:
             Dictionary containing WCS parameters or None if extraction fails
         """
         try:
-            with fits.open(fits_path) as hdul:
-                header = hdul[0].header
+            header = fits.getheader(fits_path, 0)
 
-                # Check for required basic WCS keywords
-                basic_required = ["CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2"]
-                if not all(keyword in header for keyword in basic_required):
-                    msgs.warning("Basic WCS keywords (CRVAL1, CRVAL2, CRPIX1, CRPIX2) not found.")
-                    return None
+            # Check for required basic WCS keywords
+            basic_required = ["CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2"]
+            if not all(keyword in header for keyword in basic_required):
+                msgs.warning("Basic WCS keywords (CRVAL1, CRVAL2, CRPIX1, CRPIX2) not found.")
+                return None
 
-                # Create WCS object
-                wcs = WCS(header)
+            # Create WCS object
+            wcs = WCS(header)
 
-                # Calculate image center coordinates
-                naxis1 = header.get("NAXIS1", 0)
-                naxis2 = header.get("NAXIS2", 0)
-                if naxis1 == 0 or naxis2 == 0:
-                    return None
+            # Calculate image center coordinates
+            naxis1 = header.get("NAXIS1", 0)
+            naxis2 = header.get("NAXIS2", 0)
+            if naxis1 == 0 or naxis2 == 0:
+                return None
 
-                # Get center coordinates
-                center_x = naxis1 / 2
-                center_y = naxis2 / 2
-                center_ra, center_dec = wcs.all_pix2world(center_x, center_y, 0)
+            # Get center coordinates
+            center_x = naxis1 / 2
+            center_y = naxis2 / 2
+            center_ra, center_dec = wcs.all_pix2world(center_x, center_y, 0)
 
-                # Get the position angle of the image cutout
-                # Get the CD or PC matrix from WCS
-                if wcs.wcs.has_cd():  # Check if CD matrix is present
-                    pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
-                else:  # Otherwise, use PC matrix with CDELT
-                    pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
+            # Get the position angle of the image cutout
+            # Get the CD or PC matrix from WCS
+            if wcs.wcs.has_cd():  # Check if CD matrix is present
+                pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
+            else:  # Otherwise, use PC matrix with CDELT
+                pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
 
-                return {
-                    "center_ra": float(center_ra),  # in degrees
-                    "center_dec": float(center_dec),  # in degrees
-                    "scale_est": float(pixel_scale),  # in arcseconds per pixel
-                    "radius": float((naxis1**2 + naxis2**2) ** 0.5 * pixel_scale / 3600.0 / 2),  # in degrees
-                }
+            return {
+                "center_ra": float(center_ra),  # in degrees
+                "center_dec": float(center_dec),  # in degrees
+                "scale_est": float(pixel_scale),  # in arcseconds per pixel
+                "radius": float((naxis1**2 + naxis2**2) ** 0.5 * pixel_scale / 3600.0 / 2),  # in degrees
+            }
 
         except Exception as e:
             msgs.warning(f"WCS extraction failed: {str(e)}")

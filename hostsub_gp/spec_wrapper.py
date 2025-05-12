@@ -10,13 +10,14 @@ from functools import partial
 from ._utils import msgs
 
 from jax._src.typing import ArrayLike, Array
+from typing import Optional
 
 
 class SpecWrapper:
     """A wrapper for the 1D and 2D spectra."""
 
     def __init__(
-        self, points: ArrayLike | tuple[ArrayLike, ArrayLike], values: ArrayLike = None, values_err: ArrayLike = None
+        self, points: Array | tuple[Array, Array], values: Optional[Array] = None, values_err: Optional[Array] = None
     ):
         """
         Initialize the SpecWrapper object.
@@ -33,7 +34,7 @@ class SpecWrapper:
         # Loading the coordinates
         # Input = spatial and spectral axes of the 2D spectrum
         if isinstance(points, tuple):
-            self.spat, self.spec = jnp.array(points[0]), jnp.array(points[1])
+            self.spat, self.spec = jnp.asarray(points[0]), jnp.asarray(points[1])
             self.spec_img, self.spat_img = jnp.meshgrid(self.spec, self.spat)
             self.X = jnp.stack([self.spat_img.ravel(), self.spec_img.ravel()], axis=-1)
         # Input = spectral axis of the 1D spectrum
@@ -78,7 +79,7 @@ class SpecWrapper:
                 raise ValueError("Y shape error")
 
     def sigma_clip(
-        self, sigma: float = None, clip_cr: bool = False, batch_idx: ArrayLike | tuple[ArrayLike, ArrayLike] = None
+        self, sigma: Optional[float] = None, clip_cr: bool = False, batch_idx: Optional[list | tuple[list, list]] = None
     ) -> "SpecWrapper":
         """
         Sigma clipping for the spectrum.
@@ -193,7 +194,7 @@ class SpecWrapper:
         return SpecWrapper(points=(self.spat, self.spec), values=Y_filled, values_err=Y_err_filled)
 
     def marginalize(
-        self, margin_type: str = "mean", weights: str | ArrayLike = None, sigma_clip: float = 5.0, nan_threshold: float = 0.1
+        self, margin_type: str = "mean", weights: str | Optional[ArrayLike] = None, sigma_clip: float = 5.0, nan_threshold: float = 0.1
     ) -> "SpecWrapper":
         """
         Marginalize the 2D spectrum along the spatial axis to obtain the 1D spectrum.

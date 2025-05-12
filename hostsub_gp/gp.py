@@ -11,9 +11,11 @@ import jaxopt
 from functools import partial
 
 from tinygp import GaussianProcess, kernels, transforms
+from tinygp.helpers import JAXArray
 from tinygp.kernels.distance import L2Distance
 
 from jax._src.typing import ArrayLike, Array
+from typing import Optional
 
 from ._utils._par import (
     _transform_unbound_to_bound,
@@ -37,11 +39,11 @@ class GP:
         self,
         kernel_type: str,
         X: ArrayLike,
-        y: ArrayLike = None,
-        yerr: ArrayLike | float = None,
-        params: dict = None,
-        params_init: dict = None,
-        params_limit: dict = None,
+        y: Optional[ArrayLike] = None,
+        yerr: Optional[ArrayLike | float] = None,
+        params: Optional[dict] = None,
+        params_init: Optional[dict] = None,
+        params_limit: Optional[dict] = None,
         optimization: bool = False,
         **kwargs,
     ):
@@ -55,14 +57,19 @@ class GP:
         else:
             self.y = jnp.asarray(y)
 
-        if yerr is None:
-            self.yerr = jnp.zeros_like(y)
-        elif isinstance(yerr, (int, float)):
-            self.yerr = jnp.ones_like(y) * yerr
-        else:
-            self.yerr = jnp.asarray(yerr)
+            if yerr is None:
+                self.yerr = jnp.zeros_like(y)
+            elif isinstance(yerr, (int, float)):
+                self.yerr = jnp.ones_like(y) * yerr
+            else:
+                self.yerr = jnp.asarray(yerr)
 
         self.kernel_type = kernel_type
+
+        if params is None:
+            params = {}
+        if params_init is None:
+            params_init = {}
 
         # Initialize the parameters
         self.params_limit = params_limit if params_limit is not None else {}
@@ -71,14 +78,17 @@ class GP:
                 self.params_init = _init_params(params_init)
             except Exception as e:
                 raise ValueError("Optimization: " + str(e))
+            assert isinstance(self.params_init, dict), "params_init must be a dictionary"
             self.params_init_unbound = _transform_bound_to_unbound(self.params_init, self.params_limit)
 
-            self.params_unbound = self._optimize(X, self.y, self.yerr)
+            self.params_unbound = self._optimize(self.X, self.y, self.yerr)
             self.params = _transform_unbound_to_bound(self.params_unbound, self.params_limit)
             _print_params(self.params)
         else:
             self.params = params
             self.params_unbound = _transform_bound_to_unbound(self.params, self.params_limit)
+
+        assert isinstance(self.params, dict), "params must be a dictionary"
 
         # Build the GP
         self.gp = _build_gp(self.params, self.X, self.yerr)(kernel_type=self.kernel_type, **kwargs)
@@ -121,48 +131,29 @@ class GP:
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         return params_unbound
 
-    def predict(self, X_test: ArrayLike, return_var: bool = False) -> Array | tuple[Array, Array]:
+    def predict(self, X_test: Array, return_var: bool = False) -> Array | tuple[Array, Array]:
         """Predict the mean and variance of the Gaussian Process at the input points."""
 
+        X_test = jnp.asarray(X_test)
+        
         # The 1D GP uses the quasiseparable kernel to speed up the computation
         # which requires the input to be a 1D array
         if X_test.shape[-1] == 1:
             X_test = jnp.asarray(X_test.ravel())
-        else:
-            X_test = jnp.asarray(X_test)
 
         return self.gp.predict(self.y, X_test, return_var=return_var)
 
-        # def _predict(y: Array, X_test: Array, return_var: bool) -> Array | tuple[Array, Array]:
-        #     """tinygp.GaussianProcess.predict wrapper."""
-        #     return self.gp.predict(y=y, X_test=X_test, return_var=return_var)
-
-        # # Vectorize the single point prediction
-        # predict_on_grid = jax.vmap(_predict, in_axes=(None, 0, None))
-
-        # X_test = jnp.asarray(X_test)
-        # if X_test.ndim == self.X.ndim:
-        #     return _predict(self.y, X_test, return_var)
-        # elif (X_test.ndim == self.X.ndim + 1) & (X_test.shape[-1] == self.X.shape[-1]):
-        #     res = predict_on_grid(self.y, X_test, return_var)
-        #     # Flatten the output
-        #     if return_var:
-        #         return res[0].ravel(), res[1].ravel()
-        #     else:
-        #         return res.ravel()
-        # else:
-        #     raise ValueError("Invalid input shape: X_test must have the same shape as X or one additional dimension")
-
-    def log_probability(self, y: ArrayLike) -> jnp.float32:
+    def log_probability(self, y: ArrayLike) -> JAXArray:
         """Log-probability of the Gaussian Process."""
         return self.gp.log_probability(jnp.asarray(y))
 
 
 @partial(jax.jit, static_argnames=("kernel_type",))
-def _neg_log_prob(params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str) -> jnp.float32:
+def _neg_log_prob(params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str) -> JAXArray:
     """Negative log-probability of the Gaussian Process."""
-    params = _transform_unbound_to_bound(params, params_limit)
-    gp = _build_gp(params, X, yerr)(kernel_type=kernel_type)
+    params_bound = _transform_unbound_to_bound(params, params_limit)
+    assert isinstance(params_bound, dict), "params must be a dictionary"
+    gp = _build_gp(params_bound, X, yerr)(kernel_type=kernel_type)
     neg_log_prob = -gp.log_probability(y)
     return neg_log_prob
 
@@ -184,7 +175,7 @@ class _build_gp:
         # For EmissionLine kernel only
         self.log_amp_line = params.get("log_amp_line")
         self.scale_line = params.get("scale_line")
-
+        
         self.ndim = X.shape[-1]
         if self.ndim == 1:
             self.X = jnp.asarray(X.ravel())
@@ -205,6 +196,9 @@ class _build_gp:
         - 1D: 1D GP for the 1D spectrum
         - 2D: 2D GP for the 2D spectrum
         """
+        assert self.log_amp is not None, "log_amp must be provided"
+        assert self.log_scale is not None, "log_scale must be provided"
+
         amp = 10**self.log_amp
         scale = 10**self.log_scale
 
@@ -233,6 +227,7 @@ class _build_gp:
             if self.log_amp_line is None or self.scale_line is None:
                 raise ValueError("EmissionLine kernel requires 'amp_line', and 'scale_line' parameters")
             emission_lines = kwargs.get("emission_lines")
+            assert emission_lines is not None, "emission_lines must be provided"
             if emission_lines is None:
                 warnings.warn(
                     "EmissionLine kernel: emission_lines not provided, the kernel is equivalent to ExpSquared"
@@ -323,7 +318,7 @@ class EmissionLineKernel(kernels.Kernel):
 
     amp_line: float
     scale_line: float
-    emission_lines: ArrayLike
+    emission_lines: list | Array
 
     def evaluate(self, X1: Array, X2: Array) -> Array:
         """Evaluate the kernel."""
@@ -331,7 +326,7 @@ class EmissionLineKernel(kernels.Kernel):
         # Split coordinates
         x1_spec, x2_spec = X1[..., -1], X2[..., -1]
 
-        k_x1_x2 = 1
+        k_x1_x2 = jnp.array(1.0)
         # Add emission line effects
         for line in self.emission_lines:
             # Calculate proximity to emission line for each point

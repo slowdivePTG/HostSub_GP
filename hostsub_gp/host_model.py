@@ -4,7 +4,6 @@ __all__ = ["HostProfile"]
 
 import numpy as np
 
-import jax
 import jax.numpy as jnp
 
 # jax.config.update("jax_enable_x64", True)
@@ -12,24 +11,23 @@ import jax.numpy as jnp
 from astropy.stats import mad_std
 
 from .gp import GP
-from .host_image import PS1Image, SDSSImage, LSImage, ArchivalImage
-from .interp import Interp2D_Grid
+from .host_image import PS1Image, SDSSImage, LSImage
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
 
-from typing import Callable, Optional, Literal
-from jax._src.typing import Array, ArrayLike
+from typing import Callable, Optional, Literal, Type, Any
+from jax._src.typing import Array
 from .spec_base import SpecModelP
 
 
 class HostProfile:
     def __init__(
         self,
-        filters: str,
+        filters: str | list[str],
         wv_eff: list[float],
-        spat_slit: list[ArrayLike],
-        counts_slit: list[ArrayLike],
-        counts_err_slit: list[ArrayLike],
+        spat_slit: list[Array],
+        counts_slit: list[Array],
+        counts_err_slit: list[Array],
         spec_model: Optional[SpecModelP] = None,
         slit_len: Optional[float] = None,
         pixel_scale: Optional[float] = None,
@@ -43,11 +41,11 @@ class HostProfile:
             Filters to load the images.
         wv_eff : list[float]
             Effective wavelengths.
-        spat_slit : list[ArrayLike]
+        spat_slit : list[Array]
             Spatial coordinates along the slit.
-        counts_slit : list[ArrayLike]
+        counts_slit : list[Array]
             Counts along the slit.
-        counts_err_slit : list[ArrayLike]
+        counts_err_slit : list[Array]
             Errors of the counts along the slit.
         spec_model : SpecModelP, optional
             SpecModel object.
@@ -155,15 +153,15 @@ class HostProfile:
     def from_archival(
         cls,
         spec_model: Optional[SpecModelP] = None,
-        center_ra: float = None,
-        center_dec: float = None,
-        slit_len: float = None,
+        center_ra: Optional[float] = None,
+        center_dec: Optional[float] = None,
+        slit_len: Optional[float] = None,
         slit_wid: float = 1.0,
-        position_angle: float = None,
-        filters: str | list = None,
-        survey: Literal["PS1", "LS"] = "PS1",
-        noise_smooth_kernel: int = None,
-        dseeing: float = None,
+        position_angle: Optional[float] = None,
+        filters: Optional[str | list] = None,
+        survey: Literal["PS1", "LS", "any"] = "PS1",
+        noise_smooth_kernel: Optional[int] = None,
+        dseeing: Optional[float] = None,
     ):
         """
         Load archival images from PS1 and SDSS and estimate the host galaxy spatial profile.
@@ -189,12 +187,10 @@ class HostProfile:
         noise_smooth_kernel : int, optional
             Kernel size for smoothing the noise.
         """
-        import astropy.units as u
-
         from astropy.wcs import WCS
         from astropy.wcs.utils import proj_plane_pixel_scales
-        from astropy.coordinates import SkyCoord
         from scipy.ndimage import gaussian_filter
+        from reproject import reproject_interp
 
         if spec_model is not None:
             center_ra = spec_model.center_ra
@@ -213,26 +209,27 @@ class HostProfile:
             filters = "grizy"
 
         # Seeing correction
-        if dseeing is not None:
-            dseeing = np.abs(dseeing)  # By default, dseeing is negative
-            assert spec_model is not None, "dseeing is only available for SpecModel"
-        else:
+        if dseeing is None:
             dseeing = 0.0
+        else:
+            dseeing = np.abs(dseeing)  # By default, dseeing is negative
+        assert isinstance(dseeing, float), "dseeing is not properly assigned"
 
         # Data
         data_list, header_list = [], []
         wv_eff = []
         flts = []
 
-        def _load_images(image_class: ArchivalImage, filters: str, center_ra: float, center_dec: float) -> bool:
+        def _load_images(image_class: Type[SDSSImage | LSImage | PS1Image], filters: str, center_ra: float, center_dec: float) -> bool:
             """
             Load images from the specified image class.
             """
-            image: ArchivalImage = image_class(ra=center_ra, dec=center_dec, filters=filters)
+            image = image_class(ra=center_ra, dec=center_dec, filters=filters)
             image.get_cutout()
             data, header = image.load()
             # Convolve the images with a Gaussian kernel
             if dseeing > 0:
+                assert spec_model is not None, "SpecModel is required for dseeing correction"
                 for k in range(len(data)):
                     dseeing_wv = dseeing * (image.wv_eff_dict[image.filters[k]] / spec_model.spec.mean()) ** (-1 / 2.5)
                     data[k] = gaussian_filter(data[k], sigma=dseeing_wv / spec_model.pixel_scale / 2.355)
@@ -250,17 +247,17 @@ class HostProfile:
         # Try to load SDSS u-band image
         _load_images(SDSSImage, "".join(flt for flt in "u" if flt in filters), center_ra, center_dec)
 
-        # Try to load PS1 images
-        if survey == "PS1":
-            _ps1_loaded = _load_images(PS1Image, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec)
-            if not _ps1_loaded:
-                raise ValueError("No PS1 images found")
-        elif survey == "LS":
+        # Try LS images first if requested
+        if survey == "LS" or survey == "any":
             _ls_loaded = _load_images(LSImage, "".join(flt for flt in "griz" if flt in filters), center_ra, center_dec)
             if not _ls_loaded:
                 raise ValueError("No LS images found")
-        else:
-            raise ValueError("Invalid survey. Options are 'PS1' or 'LS'.")
+        if (survey == "PS1") or ((survey == "any") and not _ls_loaded):
+            _ps1_loaded = _load_images(
+                PS1Image, "".join(flt for flt in "grizy" if flt in filters), center_ra, center_dec
+            )
+            if not _ps1_loaded:
+                raise ValueError("No PS1 images found")
 
         # TODO: Load acquisition images (optional)
 
@@ -276,57 +273,88 @@ class HostProfile:
         counts_slit, counts_err_slit = [], []
 
         # Read the images and estimate the spatial profile
-        for k, (data, header) in enumerate(zip(data_list, header_list)):
+        for (data, header) in zip(data_list, header_list):
             # Load FITS image and WCS info
             wcs = WCS(header)
 
-            # Get the position angle of the image cutout
+            # Step 1. Get the position angle and pixel scale of the image cutout
             # Get the CD or PC matrix from WCS
             if wcs.wcs.has_cd():  # Check if CD matrix is present
-                cd = wcs.wcs.cd
+                # cd = wcs.wcs.cd
                 pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
             else:  # Otherwise, use PC matrix with CDELT
-                cd = wcs.wcs.pc * wcs.wcs.cdelt
+                # cd = wcs.wcs.pc * wcs.wcs.cdelt
                 pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
-            pa_img = jnp.arctan2(-cd[0, 1], cd[1, 1])  # Arctangent of the y-x ratio
+            # pa_img = jnp.arctan2(-cd[0, 1], cd[1, 1])  # Arctangent of the y-x ratio
 
+            # Step 2. Resample the image to the slit with a given position angle
             # Define the rectangle size in pixels or arcminutes (angular size)
             slit_len_pix = slit_len / pixel_scale  # Slit length in pixels
             slit_wid_pix = slit_wid / pixel_scale  # Slit width in pixels
+            shape = (int(np.ceil(slit_len_pix / 2)) * 2, int(np.ceil(slit_wid_pix / 2)) * 2)
 
-            # Convert RA, Dec to pixel coordinates
-            coord = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
-            center_x, center_y = wcs.world_to_pixel(coord)
+            # Define the target wcs
+            wcs_target = WCS(naxis=2)
+            wcs_target.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+            wcs_target.wcs.crval = [center_ra, center_dec]
+            wcs_target.wcs.crpix = [(shape[1] + 1) / 2, (shape[0] + 1) / 2]
 
-            # Create a slit with the specified size/position angle
-            slit_y_0, slit_x_0 = np.meshgrid(
-                np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5,
-                np.arange(-np.ceil(slit_len_pix / 2), np.ceil(slit_len_pix / 2)) + 0.5,
-            )
-
-            # Obtain the pixel coordinates of the slit
-            pa_slit = pa_img + np.deg2rad(position_angle) + np.pi / 2  # w.r.t. the west
-            rot_matrix = np.array([[np.cos(pa_slit), -np.sin(pa_slit)], [np.sin(pa_slit), np.cos(pa_slit)]])
-            slit_x_rot, slit_y_rot = np.dot(rot_matrix, np.array([slit_x_0.flatten(), slit_y_0.flatten()]))
-            slit_x_rot += center_x
-            slit_y_rot += center_y
-            # Resample the image along the slit
-            spat_slit.append((np.arange(-np.ceil(slit_len_pix / 2), np.ceil(slit_len_pix / 2)) + 0.5) * pixel_scale)
-            data_slit = Interp2D_Grid(
-                points=(np.arange(data.shape[1]) + 1, np.arange(data.shape[0]) + 1), values=data.T
-            )(np.stack([slit_x_rot, slit_y_rot], axis=-1)).reshape(slit_x_0.shape)
-            # Estimate the counts: average along the slit width
-            counts_slit.append(
+            # Include rotation in CD matric
+            # Add 90 degrees to the position angle to align slit with the x-axis - w.r.t. the west
+            theta = np.deg2rad(position_angle) + np.pi
+            wcs_target.wcs.cd = (
                 np.array(
                     [
-                        bound_mean(
-                            (np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5) * pixel_scale,
-                            d,
-                            x_bound=(-slit_wid / 2, slit_wid / 2),
-                        )
-                        for d in data_slit
+                        [-pixel_scale * np.cos(theta), -pixel_scale * np.sin(theta)],
+                        [pixel_scale * np.sin(theta), -pixel_scale * np.cos(theta)],
                     ]
                 )
+                / 3600
+            )
+
+            # Set additional required WCS parameters
+            wcs_target.wcs.radesys = "ICRS"
+            wcs_target.wcs.equinox = 2000.0
+
+            # Reproject the image to the slit-aligned WCS
+            data_reproj, _ = reproject_interp((data, wcs), wcs_target, shape_out=shape, order="bicubic")
+
+            # Show testing plots
+            # plt.subplot(projection=wcs)
+            # plt.imshow(data, cmap="gray", vmin=np.nanpercentile(data, 1), vmax=np.nanpercentile(data, 99))
+
+            # grid = np.meshgrid(range(shape[1]), range(shape[0]))
+            # coords = wcs_target.pixel_to_world(grid[0].ravel(), grid[1].ravel())
+            # pixels = wcs.world_to_pixel(coords)
+
+            # plt.scatter(pixels[0], pixels[1], s=1, color="red", alpha=0.5)
+            # coord_center = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
+            # center_x, center_y = wcs.world_to_pixel(coord_center)
+            # plt.scatter(center_x, center_y, s=100, color="blue", marker="x", label="Target center")
+            # plt.show()
+
+            # plt.subplot(projection=wcs_target)
+            # plt.imshow(data_reproj, cmap="gray", vmin=np.nanpercentile(data_reproj, 1), vmax=np.nanpercentile(data_reproj, 99), aspect="auto")
+            # grid = np.meshgrid(range(shape[1]), range(shape[0]))
+            # plt.scatter(grid[0], grid[1], s=1, color="red", alpha=0.5)
+            # coord_center = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
+            # center_x, center_y = wcs_target.world_to_pixel(coord_center)
+            # plt.scatter(center_x, center_y, s=100, color="blue", marker="x", label="Target center")
+
+            # plt.show()
+
+            # Obtain the pixel coordinates of the slit
+            spat_slit.append((np.arange(shape[0]) + 1 - wcs_target.wcs.crpix[1]) * pixel_scale)
+            # Estimate the counts: average along the slit width
+            spat_slit_wid = (np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5) * pixel_scale
+            counts_slit.append(
+                np.array([bound_mean(spat_slit_wid, d, x_bound=(-slit_wid / 2, slit_wid / 2)) for d in data_reproj])
+            )
+            # Estimate the error based on the sky regions
+            err = (
+                mad_std(data[np.isfinite(data) & (data < np.nanpercentile(data, 50))])
+                / np.sqrt(slit_wid_pix)
+                / np.sqrt(1 - 2 / np.pi)
             )
             # # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
             # err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
@@ -334,13 +362,10 @@ class HostProfile:
             # if noise_smooth_kernel is not None:
             #     err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
             # counts_err_slit.append(err)
-            err = mad_std(data[np.isfinite(data) & (data < np.nanpercentile(data, 50))]) / np.sqrt(slit_wid_pix)
-            counts_err_slit.append(
-                np.ones_like(counts_slit[-1]) * err
-            )
+            counts_err_slit.append(np.ones_like(counts_slit[-1]) * err)
 
         return cls(
-            filters=flts,
+            filters = flts,
             wv_eff=wv_eff,
             spat_slit=spat_slit,
             counts_slit=counts_slit,
@@ -351,7 +376,7 @@ class HostProfile:
         )
 
     @msgs.timer
-    def model_host_profile_prior(self, spat_resln: float = 1.0, **kwargs) -> Callable[[Array], tuple[Array, Array]]:
+    def model_host_profile_prior(self, spat_resln: float = 1.0, **kwargs) -> Callable[[Any], Array | tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
 
@@ -369,7 +394,7 @@ class HostProfile:
 
         # No prior photometric data
         if len(self.filters) == 0:
-            host_prior = lambda _: (jnp.float32(1 / self.host_wid), jnp.float32(0))  # constant, variance = 0
+            host_prior = lambda _: (jnp.array(1 / self.host_wid, dtype=jnp.float32), jnp.array(0, dtype=jnp.float32))  # constant, variance = 0
         # Single band - no wavelength dependence
         elif len(self.filters) == 1:
             params = dict(
@@ -387,7 +412,7 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = jax.jit(lambda x: gp_host_prior.predict(y=self.prof, X_test=x[:, :1], return_var=True))
+            host_prior = lambda x: gp_host_prior.predict(X_test=x[:, :1], return_var=True)
         # Multiple bands - wavelength dependence
         else:
             params = dict(
@@ -419,17 +444,18 @@ class HostProfile:
         return host_prior
 
     @show_and_save
-    def _plot_host_profile(self, host_prior) -> Callable[[Array], Array]:
+    def _plot_host_profile(self, host_prior) -> None:
         """
         Plot the host galaxy spatial profile.
         """
+        from matplotlib.colors import Normalize
 
         _, ax = plt.subplots(
             len(self.filters), 1, figsize=(6, 2 * len(self.filters)), sharex=True, sharey=True, constrained_layout=True
         )
         ax = np.atleast_1d(ax)
         cmap = plt.cm.get_cmap("coolwarm")
-        norm = plt.Normalize(vmin=0, vmax=len(self.filters) - 1)
+        norm = Normalize(vmin=0, vmax=len(self.filters) - 1)
         for k in range(len(self.filters)):
             ax[k].plot(self.spat_slit[k], self.prof_slit[k], label=f"{self.filters[k]}", color=cmap(norm(k)))
             ax[k].plot(
@@ -456,7 +482,7 @@ class HostProfile:
         ax[-1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
 
 
-def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float32:
+def bound_sum(x: Array, y: Array, x_bound: Optional[tuple] = None) -> float:
     """
     Compute the mean values in a bounded region.
     """
@@ -489,7 +515,7 @@ def bound_sum(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.fl
     return sum_center + sum_left + sum_right
 
 
-def bound_mean(x: Array, y: Array, x_bound: tuple[float, float] = None) -> jnp.float32:
+def bound_mean(x: Array, y: Array, x_bound: tuple) -> float:
     """
     Compute the sum in a bounded region.
     """

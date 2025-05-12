@@ -1,6 +1,7 @@
 # hostsub_gp/scripts/hostsub.py
 # The main script to conduct an end-to-end host subtraction
 
+from typing import Callable
 import numpy as np
 
 import os
@@ -8,14 +9,16 @@ import argparse
 
 from astropy.io import fits
 
+from typing import Any
+
 from hostsub_gp import SpecData, SpecModel
 from .scriptbase import ScriptBase
 from ..inputfiles import HostSubInput, Digitize
 from .._utils import msgs
 
 
-Float = Digitize(float)
-Int = Digitize(int)
+Float: Callable[[Any], float | tuple[float, float]] = Digitize(float)
+Int: Callable[[Any], int | tuple[int, int]] = Digitize(int)
 
 
 class HostSub(ScriptBase):
@@ -63,10 +66,13 @@ class HostSub(ScriptBase):
     def main(args: argparse.Namespace):
         # Load the configuration file
         hostsubFile = HostSubInput.from_file(args.hostsub_file)
+        assert hostsubFile.data is not None, "No data found in the configuration file."
+        assert hostsubFile.filenames is not None, "No files found in the configuration file."
+        assert hostsubFile.config is not None
         par = hostsubFile.config
 
         # Prepare the QA directory
-        os.system(f"mkdir -p QA")
+        os.system("mkdir -p QA")
 
         # Standard star
         if any(hostsubFile.data["frametype"] == "standard"):
@@ -236,7 +242,7 @@ class HostSub(ScriptBase):
         host_prior_cfg["filters"] = par_host_prior.get("filters", "grizy")
         host_prior_cfg["survey"] = par_host_prior.get("survey", "PS1")
         # host_prior_cfg["spat_resln"] = Float(par_host_prior.get("spat_resln", 1.0))
-        host_prior_cfg["noise_smooth_kernel"] = Int(par_host_prior.get("noise_smooth_kernel", None))
+        # host_prior_cfg["noise_smooth_kernel"] = Int(par_host_prior.get("noise_smooth_kernel", None))
 
         # Initialize the SpecModel object
         spec_model = spec_data.to_SpecModel(**spec_model_cfg)

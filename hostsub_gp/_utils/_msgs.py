@@ -1,17 +1,18 @@
 # hostsub_gp/_utils/_msgs.py
 
-from typing import Callable
+from typing import Callable, Any
 
-class msgs():
+
+class msgs:
     """Class to print messages of multiple types."""
 
     # ANSI color codes
-    GREEN = '\033[92m'      # Info
-    RED = '\033[91m'        # Error
-    YELLOW = '\033[93m'     # Warning
-    BLUE = '\033[94m'       # Parameter
-    BOLD = '\033[1m'        # Bold text
-    RESET = '\033[0m'       # Reset color
+    GREEN = "\033[92m"  # Info
+    RED = "\033[91m"  # Error
+    YELLOW = "\033[93m"  # Warning
+    BLUE = "\033[94m"  # Parameter
+    BOLD = "\033[1m"  # Bold text
+    RESET = "\033[0m"  # Reset color
 
     @staticmethod
     def info(message: str):
@@ -38,7 +39,7 @@ class msgs():
         from functools import wraps
 
         @wraps(func)
-        def wrapper(*args, **kwargs) -> any:
+        def wrapper(*args, **kwargs) -> Any:
             start = time.time()
             result = func(*args, **kwargs)
             end = time.time()

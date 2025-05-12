@@ -23,7 +23,7 @@ class Interp1D_Grid:
     A wrapper around jax.numpy.interp.
     """
 
-    def __init__(self, points: ArrayLike, values: ArrayLike, method="linear"):
+    def __init__(self, points: Array, values: Array, method="linear"):
         self.method = method
         self.points = points
         self.values = jnp.asarray(values)
@@ -39,10 +39,10 @@ class Interp2D_Grid:
     A wrapper around jax.scipy.interpolate.RegularGridInterpolator.
     """
 
-    def __init__(self, points: tuple[ArrayLike, ArrayLike], values: ArrayLike, method="linear"):
+    def __init__(self, points: tuple[Array, Array], values: Array, method="linear"):
         self.method = method
         self.points = points
-        self.values = jnp.array(values)
+        self.values = values
 
     def __call__(self, x):
         if self.method in ["nearest", "linear"]:
@@ -89,6 +89,7 @@ class Interp2D_base(ABC):
             Array of shape (nx, ny) containing the values at each point
         """
         points = jnp.asarray(points, dtype=jnp.float32)
+        values = jnp.asarray(values, dtype=jnp.float32)
         self.shape = points.shape[:2]
         if values.shape != self.shape:
             raise ValueError(f"Shape mismatch between points {(points.shape)} and values {(values.shape)}")
@@ -117,17 +118,8 @@ class Interp2D_base(ABC):
         """
         qx, qy = query_point
 
-        # def _searchsorted_vector(x, q):
-        #     return jax.vmap(lambda x: jnp.searchsorted(x, q))(x)
-
-        # breakpoint()
-        # # Find the first i index in each row where x[i] > qx
-        # i_index = _searchsorted_vector(self.x_grid, qx) - 1
-        # i_index = jnp.clip(i_index, 0, self.shape[0] - 2)
-
-        # # Find the first j indice in the array consisting of y values of the found i row where y[j] > qy
-        # j_index = jnp.searchsorted(jnp.array([self.y_grid[i_index[idx], idx] for idx in range(self.shape[1])]), qy) - 1
-        # j_index = jnp.clip(j_index, 0, self.shape[1] - 2)
+        if self.shape is None or self.x_grid is None or self.y_grid is None:
+            raise ValueError("Interpolator not fitted yet. Call fit() with training data.")
 
         # First search for x position in middle column
         mid_row = self.shape[1] // 2
@@ -146,7 +138,7 @@ class Interp2D_base(ABC):
         return i_index, j_index
 
     # @partial(jax.jit, static_argnums=(0, 3, 4))
-    def _get_cell_points_and_values(self, i: int, j: int, di: int = 4, dj: int = 2) -> tuple[Array, Array]:
+    def _get_cell_points_and_values(self, i: Array, j: Array, di: int = 4, dj: int = 2) -> tuple[Array, Array]:
         """
         Get the neighboring cells of a grid cell and their values.
 
@@ -163,6 +155,9 @@ class Interp2D_base(ABC):
             points: Array of shape (4, 2) containing corner coordinates
             values: Array of shape (4,) containing corner values
         """
+        if self.values is None or self.points is None or self.shape is None or self.x_grid is None or self.y_grid is None:
+            raise ValueError("Interpolator not fitted yet. Call fit() with training data.")
+
         i_idx = jnp.arange(-di // 2, di // 2)
         j_idx = jnp.arange(-dj // 2, dj // 2)
         i_idx = jnp.clip(i + i_idx, 0, self.shape[0] - 1)
@@ -378,6 +373,9 @@ class Interp2D_Scipy(Interp2D_base):
             Array of interpolated values at query_points
         """
         from scipy.interpolate import griddata
+
+        if self.points is None or self.values is None:
+            raise ValueError("Interpolator not fitted yet. Call fit() with training data.")
         
         query_points = jnp.asarray(query_points) / self.scales
 

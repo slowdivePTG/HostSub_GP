@@ -14,15 +14,18 @@ import numpy as np
 
 # jax.config.update("jax_enable_x64", True)
 
-from typing import Callable, Optional
+from typing import Callable, Optional, Concatenate, Any
 
 from ._msgs import msgs
 
-DictInput = dict | tuple[dict, dict] | list[dict]
-DictOutput = dict | list[dict]
+Dict = dict | tuple[dict, dict]
 
 
-def sequence_input(func: Optional[Callable] = None, *, verbose: bool = False) -> Callable:
+def sequence_input(
+    func: Optional[Callable[Concatenate[dict, ...], dict]] = None,
+    *,
+    verbose: bool = False,
+) -> Any:
     """
     Decorator to handle sequence-like inputs with optional verbose output.
 
@@ -42,51 +45,53 @@ def sequence_input(func: Optional[Callable] = None, *, verbose: bool = False) ->
     """
     from functools import wraps
 
-    def decorator(func: Callable[[dict], dict]) -> Callable[[DictInput], DictOutput]:
+    def decorator(func: Callable[Concatenate[dict, ...], dict]) -> Callable:
         @wraps(func)
-        def wrapper(arg: DictInput, *args, **kwargs) -> DictOutput:
-            if isinstance(arg, (tuple, list)):
+        def wrapper(arg: Dict, *args, **kwargs) -> Dict | dict:
+            if isinstance(arg, tuple):
                 if not all((isinstance(item, dict) | (item is None)) for item in arg):
                     raise TypeError("All elements in tuple must be dictionaries")
                 results = []
                 for k, item in enumerate(arg):
                     if verbose:
-                        msgs.info(f"The {msgs.BLUE}{msgs.BOLD}{k+1}D{msgs.RESET} parameters")
+                        msgs.info(
+                            f"The {msgs.BLUE}{msgs.BOLD}{k+1}D{msgs.RESET} parameters"
+                        )
                     results.append(func(item, *args, **kwargs))
-                return results
-            if not (isinstance(arg, dict) | (arg is None)):
+                return tuple(results)
+            elif isinstance(arg, dict) or arg is None:
+                result = func(arg, *args, **kwargs)
+                return result
+            else:
                 raise TypeError("Input must be a dictionary or tuple of dictionaries")
-            return func(arg, *args, **kwargs)
 
         return wrapper
 
-    # Handle both @sequence_input and @sequence_input() syntax
     return decorator(func) if callable(func) else decorator
 
 
 @sequence_input
-def _check_params(params: dict, require_all: bool = True):
+def _check_params(params: dict, require_all: bool = True) -> dict:
     """Check if the parameters are valid."""
-    if params is None:
-        raise ValueError("params must be provided")
     if require_all:
         key_required = ["log_amp", "log_scale", "mean"]
         for key in key_required:
             if key not in params:
                 raise ValueError(f"params must contain {key}")
+    return params
 
 
 @sequence_input
 def _init_params(params: dict, require_all: bool = True) -> dict:
     """Initialize the parameters with appropriate typing."""
-    if params is None:
-        return None
 
     _check_params(params, require_all=require_all)
 
     def ensure_scalar_or_array(x):
         if not isinstance(x, jax.Array):
-            x = np.asarray(x, dtype=jnp.float32)  # In case x is a scalar or an array of str
+            x = np.asarray(
+                x, dtype=jnp.float32
+            )  # In case x is a scalar or an array of str
         if x.size > 1:
             return jnp.asarray(x, dtype=jnp.float32)  # Array[float64]
         elif x.ndim == 0:
@@ -103,7 +108,7 @@ def _init_params(params: dict, require_all: bool = True) -> dict:
 
 
 @sequence_input(verbose=True)
-def _print_params(params: dict):
+def _print_params(params: dict) -> dict:
     """Print the parameters."""
 
     def _print_param(params, key, key_str):
@@ -115,7 +120,13 @@ def _print_params(params: dict):
             msgs.parameter(f"{key_str}: " + ", ".join([f"{val:.3e}" for val in vals]))
         else:
             msgs.parameter(
-                f"{key_str}: " + ", ".join(["({})".format(", ".join([f"{v:.3e}" for v in val])) for val in vals])
+                f"{key_str}: "
+                + ", ".join(
+                    [
+                        "({})".format(", ".join([f"{v:.3e}" for v in val]))
+                        for val in vals
+                    ]
+                )
             )
 
     try:
@@ -129,9 +140,12 @@ def _print_params(params: dict):
     except TypeError as e:
         raise TypeError("Invalid type for params: " + str(e))
 
+    return params
+
 
 def _transform_unbound_to_bound(
-    params: dict | tuple[dict, dict], params_limit: dict | tuple[dict, dict] = None
+    params: dict | tuple[dict, dict],
+    params_limit: Optional[dict | tuple[dict, dict]] = None,
 ) -> dict | tuple[dict, dict]:
     """Transform unbounded parameters to the bounded space with the sigmoid function."""
     if params_limit is None:
@@ -150,40 +164,46 @@ def _transform_unbound_to_bound(
         return transformed_params
 
     if isinstance(params, tuple) and isinstance(params_limit, tuple):
-        return _transform(params[0], params_limit[0]), _transform(params[1], params_limit[1])
+        return _transform(params[0], params_limit[0]), _transform(
+            params[1], params_limit[1]
+        )
     elif isinstance(params, dict) and isinstance(params_limit, dict):
         return _transform(params, params_limit)
     else:
-        raise TypeError(f"Invalid type for params ({type(params)}) and params_limit ({type(params_limit)})")
+        raise TypeError(
+            f"Invalid type for params ({type(params)}) and params_limit ({type(params_limit)})"
+        )
 
 
 def _transform_bound_to_unbound(
-    params: dict | tuple[dict, dict], params_limit: dict | tuple[dict, dict] = None
+    params: dict | tuple[dict, dict],
+    params_limit: Optional[dict | tuple[dict, dict]] = None,
 ) -> dict | tuple[dict, dict]:
     """Transform bounded parameters to the unbounded space with the inverse sigmoid function."""
     if params_limit is None:
         return params
 
-    def _transform(p, p_limit):
+    def _transform(p: dict[str, float], p_limit: dict[str, tuple[float, float]] | None):
         if p_limit is None:
             return p
+
         transformed_params = {}
-        try:
-            for key, val in p.items():
-                if key in p_limit:
-                    lower, upper = p_limit[key]
-                    transformed_params[key] = jnp.log((val - lower) / (upper - val))
-                else:
-                    transformed_params[key] = val
-        except Exception as e:
-            raise ValueError(
-                f"Invalid {key} to transform bound to unbound: value = {val}, upper/lower = {upper}/{lower}:" + str(e)
-            )
+        for key, val in p.items():
+            if key in p_limit:
+                lower, upper = p_limit[key]
+                transformed_params[key] = jnp.log((val - lower) / (upper - val))
+            else:
+                transformed_params[key] = val
+
         return transformed_params
 
     if isinstance(params, tuple) and isinstance(params_limit, tuple):
-        return _transform(params[0], params_limit[0]), _transform(params[1], params_limit[1])
+        return _transform(params[0], params_limit[0]), _transform(
+            params[1], params_limit[1]
+        )
     elif isinstance(params, dict) and isinstance(params_limit, dict):
         return _transform(params, params_limit)
     else:
-        raise TypeError(f"Invalid type for params ({type(params)}) and params_limit ({type(params_limit)})")
+        raise TypeError(
+            f"Invalid type for params ({type(params)}) and params_limit ({type(params_limit)})"
+        )

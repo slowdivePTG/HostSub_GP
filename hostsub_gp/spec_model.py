@@ -22,6 +22,9 @@ from .spec_wrapper import SpecWrapper
 from typing import Callable, Optional, Literal
 from jax._src.typing import ArrayLike, Array
 from matplotlib.axes import Axes
+from matplotlib.colors import Normalize
+from matplotlib.patches import Rectangle
+from matplotlib import cm
 
 
 class SpecModel:
@@ -111,21 +114,21 @@ class SpecModel:
 
     def __init__(
         self,
-        dat: ArrayLike,  # 2D spectrum (spatial x spectral)
-        dat_err: ArrayLike = None,  # 2D error spectrum
+        dat: Array,  # 2D spectrum (spatial x spectral)
+        dat_err: Array,  # 2D error spectrum
         *,
-        spat: ArrayLike = None,  # spatial grids
-        spec: ArrayLike = None,  # spectral grids
-        pixel_scale: float = None,  # arcsec/pixel
-        center_ra: float = None,  # RA of the center
-        center_dec: float = None,  # DEC of the center
-        slit_wid: float = 1.0,  # arcsec
-        position_angle: float = None,  # degree
-        spat_resln: float = 1.0,  # arcsec, FWHM/seeing
-        spec_resln: float = 7.5,  # LRIS, 1'' slit
-        slit_len: float = None,  # arcsec
+        spat: Array,  # spatial grids
+        spec: Array,  # spectral grids
+        pixel_scale: float,  # arcsec/pixel
+        position_angle: float,  # degree
+        slit_wid: float,  # arcsec
+        spat_resln: float,  # arcsec, FWHM/seeing
+        spec_resln: float, # Angstrom 
+        center_ra: Optional[float] = None,  # RA of the center
+        center_dec: Optional[float] = None,  # DEC of the center
+        slit_len: Optional[float] = None,  # arcsec
         slit_trim: tuple[int, int] = (1, 1),  # pixels
-        spec_range: tuple[float, float] = None,  # Angstrom
+        spec_range: Optional[tuple[float, float]] = None,  # Angstrom
         host_wid: float = 10.0,  # in arcsec, host region used for the fitting
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
         mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
@@ -148,7 +151,7 @@ class SpecModel:
         self.spat = _spat[inslit_spat]
 
         if spec_range is None:
-            spec_range = (spec[0], spec[-1])
+            spec_range = (spec.item( 0 ), spec.item(-1))
         _inslit_spec = (spec >= spec_range[0]) & (spec <= spec_range[1])
         self.spec = spec[_inslit_spec]
         msgs.info(f"Spatial range: {self.spat[0]:.2f} - {self.spat[-1]:.2f} arcsec")
@@ -203,7 +206,7 @@ class SpecModel:
         # The sky region
         if self._sky_region[0] is None:
             spat_edges_sky_left = spat_edges["slit"][0]
-            msgs.info(f"Excluding the left sky region")
+            msgs.info("Excluding the left sky region")
         else:
             spat_edges_sky_left = (jnp.ceil(self._sky_region[0] / self.pixel_scale) - 0.5) * self.pixel_scale
             msgs.info(
@@ -211,7 +214,7 @@ class SpecModel:
             )
         if self._sky_region[1] is None:
             spat_edges_sky_right = spat_edges["slit"][1]
-            msgs.info(f"Excluding the right sky region")
+            msgs.info("Excluding the right sky region")
         else:
             spat_edges_sky_right = (jnp.ceil(self._sky_region[1] / self.pixel_scale) + 0.5) * self.pixel_scale
             msgs.info(
@@ -266,10 +269,10 @@ class SpecModel:
         self,
         f_obs: SpecWrapper,
         batch_2d: tuple[int, int] = (2, 64),
-        host_emission_cfg: dict = None,
+        host_emission_cfg: Optional[dict] = None,
         sigma_clip: float = 5.0,
         show: bool = False,
-        save: str = None,
+        save: Optional[str] = None,
     ):
         """
         Construct the SpecWrapper objects corresponding to the 1D/2D spectrum in the global sky region, the host region, and in the batched 2D grids.
@@ -290,7 +293,7 @@ class SpecModel:
             The path to save the diagnostic plots, by default None (do not save).
         """
         # Estimate the global sky background (sky + host): mean of the sky region along the spectral direction
-        msgs.info(f"Estimating the global sky background")
+        msgs.info("Estimating the global sky background")
         self.f_sky = (
             f_obs.apply_spatial_filter(self.spat_filter["sky"]).sigma_clip(sigma=sigma_clip, clip_cr=True).fill_nan()
         )
@@ -338,6 +341,14 @@ class SpecModel:
         # Construct the prior of the host galaxy from images
         msgs.info("Building the host flux prior")
         self.host_prior = self._get_host_prior()
+
+        assert self.f_obs.spat is not None and self.f_obs.spec is not None
+        assert self.f_batch_2d.spat is not None and self.f_batch_2d.spec is not None
+        assert self.f_host_batch_2d.spat is not None and self.f_host_batch_2d.spec is not None
+
+        assert self.f_obs.y is not None and self.f_obs.yerr is not None
+        assert self.f_host_1d.y is not None and self.f_host_1d.yerr is not None
+
         # The entire 2D data
         prior, prior_std = self.host_prior(self.f_obs.X)
         self.f_prior = SpecWrapper(
@@ -371,8 +382,8 @@ class SpecModel:
 
     def model_host(
         self,
-        params_init: tuple[dict, dict] | list[dict] = None,
-        params_limit: tuple[dict, dict] | list[dict] = None,
+        params_init: tuple[dict, dict], 
+        params_limit: Optional[tuple[dict, dict]] = None,
         optimization: bool = False,
         optimization_kwargs: dict = {},
     ):
@@ -389,22 +400,23 @@ class SpecModel:
         # Initialize the parameters
         params_init_1d = self._set_params_init(params_init[0], ndim=1)
         params_init_2d = self._set_params_init(params_init[1], ndim=2)
-        params_init = [params_init_1d, params_init_2d]
+        params_init = ( params_init_1d, params_init_2d )
 
         # Set the limits for the parameters
         if params_limit is None:
-            params_limit = [None, None]
+            params_limit = ({}, {})
         else:
             params_limit = _init_params(params_limit, require_all=False)
-
+        assert isinstance(params_limit, list)
         if optimization:
             # Initialize the limits for the parameters
-            params_limit[0] = self._set_params_limit(params_limit[0], ndim=1)
-            params_limit[1] = self._set_params_limit(params_limit[1], ndim=2)
+            params_limit_1d = self._set_params_limit(params_limit[0], ndim=1)
+            params_limit_2d = self._set_params_limit(params_limit[1], ndim=2)
+            params_limit = (params_limit_1d, params_limit_2d)
 
             msgs.info("Round 1: Fitting the 1D spectrum of the host galaxy")
             # Update the initial parameters with the 1D results
-            params_init[0] = self._model_host_1d_opt(params_init=params_init[0], params_limit=params_limit[0])
+            params_init = (self._model_host_1d_opt(params_init=params_init[0], params_limit=params_limit[0]), params_init[1])
 
             msgs.info("Round 2: Fitting the 2D spatial profile")
             self.gp_params = self._model_host_2d_opt(
@@ -414,6 +426,8 @@ class SpecModel:
             )
         else:
             self.gp_params = params_init
+
+        assert isinstance(self.gp_params, tuple)
 
         self._gp_1d, self._gp_2d = self._build_host_gp(params=self.gp_params)
 
@@ -426,13 +440,13 @@ class SpecModel:
         self,
         filters: str | list[str] = "grizy",
         survey: Literal["PS1", "LS"] = "PS1",
-        noise_smooth_kernel: float = None,
+        noise_smooth_kernel: Optional[int] = None,
         from_archival: bool = True,
-        wv_eff: ArrayLike = None,
-        spat_slit: ArrayLike = None,
-        counts_slit: ArrayLike = None,
-        counts_err_slit: ArrayLike = None,
-        dseeing: float = None,
+        wv_eff: Optional[list[float]] = None,
+        spat_slit: Optional[list[Array]] = None,
+        counts_slit: Optional[list[Array]] = None,
+        counts_err_slit: Optional[list[Array]] = None,
+        dseeing: Optional[float] = None,
         **kwargs,
     ):
         """
@@ -442,7 +456,11 @@ class SpecModel:
         if from_archival:
             # Load the archival photometric data (PS1, SDSS)
             host_prof = HostProfile.from_archival(
-                spec_model=self, filters=filters, survey=survey, noise_smooth_kernel=noise_smooth_kernel, dseeing=dseeing
+                spec_model=self,
+                filters=filters,
+                survey=survey,
+                noise_smooth_kernel=noise_smooth_kernel,
+                dseeing=dseeing,
             )
         elif (wv_eff is None) or (spat_slit is None) or (counts_slit is None) or (counts_err_slit is None):
             raise ValueError("Please provide the photometric data for modeling the host prior.")
@@ -450,7 +468,6 @@ class SpecModel:
             # Call the constructor of the HostProfile class
             host_prof = HostProfile(
                 filters=filters,
-                survey=survey,
                 wv_eff=wv_eff,
                 spec_model=self,
                 spat_slit=spat_slit,
@@ -515,6 +532,8 @@ class SpecModel:
             )
             _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(_spat_batch_2d_idx_in_host)
 
+            assert _f_host_batch_2d.spat is not None and _f_host_batch_2d.spec is not None
+
             # Get the prior
             prior_host_batch, _ = self.host_prior(_f_host_batch_2d.X)
             _f_host_batch_prior = SpecWrapper(
@@ -525,6 +544,7 @@ class SpecModel:
             # Calculate the distance relative to the prior
             _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
+            assert _dist_host_batch_2d.y is not None and _dist_host_batch_2d.yerr is not None
             # Calculate the chi2
             return jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
@@ -540,13 +560,13 @@ class SpecModel:
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
         return best_dseeing
 
-    def update_seeing(self, dseeing: ArrayLike = None, **kwargs) -> float:
+    def update_seeing(self, dseeing: Optional[float] = None, **kwargs) -> float:
         """
         Update the seeing of the host galaxy profile with the instrumental seeing.
         """
         if dseeing is None:
             dseeing = self._match_seeing(**kwargs)
-
+            assert dseeing is not None
         if dseeing > 0:
             # Update the spatial resolution
             spat_resln_0 = self.spat_resln
@@ -570,6 +590,7 @@ class SpecModel:
         msgs.info("Extracting the science spectrum.")
 
         self.f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
+        assert self.f_mask.spat is not None and self.f_mask.spec is not None
         X_mask = self.f_mask.X.reshape(self.f_mask.shape[0], self.f_mask.shape[1], -1)
 
         # Evaluate the background with the Gaussian Process model
@@ -608,6 +629,8 @@ class SpecModel:
 
         if not hasattr(self, "_f_pred"):
             raise AttributeError("Please model the host galaxy first.")
+        assert self.f_sci_pred_1d.y is not None and self.f_sci_classic_1d.y is not None, "Not sky-subtracted"
+
         _, ax = plt.subplots(1, 1, figsize=(10, 4))
         ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#8c96c6")
         ax.plot(self.f_sci_classic_1d.X, self.f_sci_classic_1d.y, color="grey", alpha=0.5, zorder=-1)
@@ -622,7 +645,7 @@ class SpecModel:
 
         return ax
 
-    def _set_params_init(self, params_init: dict = None, ndim: int = 1) -> dict:
+    def _set_params_init(self, params_init: Optional[dict] = None, ndim: int = 1) -> dict:
         """
         Setup the initial parameters for the Gaussian Process model.
 
@@ -638,6 +661,7 @@ class SpecModel:
         dict
             The initial parameters for the Gaussian Process model.
         """
+        assert self.f_host_1d.y is not None, "Please build the host galaxy spectrum first."
         # 1D spectrum of the host galaxy
         if ndim == 1:
             log_amp_est = np.log10(((self.f_host_1d.y) ** 2).max())
@@ -674,9 +698,11 @@ class SpecModel:
                 if k not in params_init:
                     params_init[k] = v
 
-        return _init_params(params_init, require_all=True)
+        params_init_res = _init_params(params_init, require_all=True)
+        assert isinstance(params_init_res, dict)
+        return params_init_res
 
-    def _set_params_limit(self, params_limit: dict = None, ndim: int = 1) -> dict:
+    def _set_params_limit(self, params_limit: Optional[dict] = None, ndim: int = 1) -> dict:
         """
         Setup the parameters limits by merging the user input limits with the default limits.
 
@@ -784,7 +810,8 @@ class SpecModel:
             params_limit=params_limit,
             optimization=True,
         ).params
-
+        
+        assert isinstance(params_1d, dict)
         return params_1d
 
     @msgs.timer
@@ -800,7 +827,6 @@ class SpecModel:
         neg_log_prob_init = self._get_host_neg_log_probability(params=params_init_unbound, params_limit=params_limit)
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
         if ~np.isfinite(neg_log_prob_init):
-            breakpoint()
             self._get_host_neg_log_probability(params=params_init_unbound, params_limit=params_limit)
             msgs.error("Initial log-probability is infinite.")
             msgs.info("Initial parameters:")
@@ -822,13 +848,14 @@ class SpecModel:
         if soln.state.status != 0:
             msgs.warning(f"Optimization failed with status {soln.state.status}.")
         params = _transform_unbound_to_bound(soln.params, params_limit[1])
+        assert isinstance(params, dict)
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         msgs.info("Final parameters:")
         _print_params(params)
         return (params_init[0], params)
 
     def _build_host_gp(
-        self, params: tuple[dict, dict], params_limit: tuple[dict, dict] = (None, None)
+        self, params: tuple[dict, dict], params_limit: Optional[tuple[dict, dict]] = None
     ) -> tuple[GP, GP]:
         """
         Build the Gaussian Process for the 1D host galaxy spectra and 2D host galaxy spatial profiles.
@@ -846,13 +873,18 @@ class SpecModel:
             GP objects for the 1D and 2D host galaxy.
         """
         params_1d, params_2d = _init_params(params)
-        try:
-            params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False)
-        except:
-            raise ValueError("Invalid parameter limits")
+        if params_limit is None:
+            params_limit_1d, params_limit_2d = {}, {}
+        else:
+            try:
+                params_limit_1d, params_limit_2d = _init_params(params_limit, require_all=False)
+            except Exception as e:
+                breakpoint()
+                raise ValueError(f"Invalid parameter limits: {e}")
 
         f_1d = self.f_host_1d
-        f_1d_mask = np.isfinite(f_1d.y)
+        assert f_1d.y is not None and f_1d.yerr is not None, "Please run the Gaussian Process model first."
+        f_1d_mask = jnp.isfinite(f_1d.y)
         gp_1d = GP(
             kernel_type="1D",
             X=f_1d.X[f_1d_mask],
@@ -863,7 +895,8 @@ class SpecModel:
         )
 
         f_2d = self.dist_host_batch_2d
-        f_2d_mask = np.isfinite(f_2d.y)
+        assert f_2d.y is not None and f_2d.yerr is not None, "Please run the Gaussian Process model first."
+        f_2d_mask = jnp.isfinite(f_2d.y)
         gp_2d = GP(
             kernel_type="2D",
             emission_lines=self.emission_lines,
@@ -878,10 +911,10 @@ class SpecModel:
 
     def _get_host_neg_log_probability(
         self,
-        params_2d: dict = None,
-        params_1d: dict = None,
-        params: tuple[dict, dict] = None,
-        params_limit: tuple[dict, dict] = None,
+        params_2d: Optional[dict] = None,
+        params_1d: Optional[ dict ]=None,
+        params: Optional[tuple[dict, dict]] = None,
+        params_limit: Optional[tuple[dict, dict]] = None,
     ) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
@@ -902,8 +935,15 @@ class SpecModel:
         float
             The negative log probability of the host flux.
         """
-        if params is None:
-            params = (params_1d, params_2d)
+        assert self.f_host.y is not None and self.f_host.yerr is not None
+        assert self.f_host_1d.y is not None and self.f_host_1d.yerr is not None
+        assert self.dist_host_batch_2d.y is not None and self.dist_host_batch_2d.yerr is not None
+        assert self.f_host_prior.y is not None and self.f_host_prior.yerr is not None
+
+        params_1d = params_1d if params_1d is not None else {}
+        params_2d = params_2d if params_2d is not None else {}
+        params = (params_1d, params_2d) if params is None else params
+
         params_1d, params_2d = _init_params(_transform_unbound_to_bound(params, params_limit))
 
         @jax.jit
@@ -940,6 +980,7 @@ class SpecModel:
             y_host_1d = gp_1d.predict(X_test=f_X[:, 1:])
             y_host_2d = gp_2d.predict(X_test=f_X) + f_mean
             y_host = y_host_1d * y_host_2d
+            assert isinstance(y_host, Array), "Invalid host galaxy flux."
             log_prob_obs = jnp.nansum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
 
             # jax.debug.print("{}", params_1d)
@@ -949,12 +990,13 @@ class SpecModel:
             # jax.debug.print("Observed log-probability: {}", log_prob_obs)
             # jax.debug.print("Log posterior: {}", log_prob_1d + log_prob_2d + log_prob_obs)
 
-            return -(log_prob_1d + log_prob_2d + log_prob_obs)
+            return -(log_prob_1d + log_prob_2d + log_prob_obs).item()
 
         # Only include finite values in the observation
-        obs_mask = np.isfinite(self.f_host.y)
-        f_1d_mask = np.isfinite(self.f_host_1d.y)
-        f_2d_mask = np.isfinite(self.dist_host_batch_2d.y)
+
+        obs_mask = jnp.isfinite(self.f_host.y)
+        f_1d_mask = jnp.isfinite(self.f_host_1d.y)
+        f_2d_mask = jnp.isfinite(self.dist_host_batch_2d.y)
 
         return _neg_log_probability(
             params_1d=params_1d,
@@ -995,13 +1037,13 @@ class SpecModel:
         """
         if X.shape[-1] != 2:
             raise ValueError("Invalid input grids: the last dimension of X must be 2 (spat & spec coordinates).")
-        if (X.ndim == 3):
+        if X.ndim == 3:
             n_spat = X.shape[0]
             # Input for the 1D GP: (n_spat, 1)
             X_1d = X[0, :, 1:]
             # Input for the 2D GP: (n_spat * n_spec, 2)
             X_2d = X.reshape(-1, 2)
-        elif (X.ndim == 2):
+        elif X.ndim == 2:
             n_spat = 1
             # Already flattened
             X_1d = X[:, 1:]
@@ -1031,7 +1073,7 @@ class SpecModel:
 
             return y_1d, y_2d, y
 
-    def _get_gp_params(self) -> dict:
+    def _get_gp_params(self) -> tuple[dict, dict]:
         """
         Get the Gaussian Process parameters.
 
@@ -1051,8 +1093,8 @@ class SpecModel:
 
     def get_normalized_batch_spec(
         self,
-        spat_batch_idx: ArrayLike,
-        spec_batch_idx: ArrayLike,
+        spat_batch_idx: list,
+        spec_batch_idx: list,
         f_2d: SpecWrapper,
         f_1d_norm: SpecWrapper,
         nan_threshold: float = 0.1,
@@ -1078,6 +1120,11 @@ class SpecModel:
         SpecWrapper
             The batched 2D spectrum.
         """
+
+        assert f_2d.y is not None and f_2d.yerr is not None
+        assert f_2d.Y is not None and f_2d.Yerr is not None
+        assert f_1d_norm.y is not None and f_1d_norm.yerr is not None
+        assert f_1d_norm.Y is not None and f_1d_norm.Yerr is not None
 
         # New coordinates: mean of the batch
         shape_batch_2d = (len(spat_batch_idx), len(spec_batch_idx))
@@ -1125,7 +1172,7 @@ class SpecModel:
             values_err=values_err_batch_2d,
         )
 
-    def _get_spat_batches(self) -> tuple[list[list[int]], Array]:
+    def _get_spat_batches(self) -> tuple:
         """
         Get the batch indices for the spatial direction.
 
@@ -1205,9 +1252,9 @@ class SpecModel:
         self,
         find_host_emission: bool = True,
         p_value: float = 0.05,
-        kernel_wid: int = None,
-        z: float = None,
-        z_err: float = None,
+        kernel_wid: Optional[int] = None,
+        z: Optional[float] = None,
+        z_err: Optional[float] = None,
     ) -> tuple[Array, Array]:
         """
         Find the edges of the host galaxy emission using the 1D spectrum.
@@ -1236,8 +1283,9 @@ class SpecModel:
         from astropy.table import Table
 
         from importlib import resources
-        from pathlib import Path
 
+        assert self.f_host.y is not None and self.f_host.yerr is not None
+        assert self.f_host.Y is not None and self.f_host.Yerr is not None
         if not find_host_emission:
             return jnp.array([], dtype=int), jnp.array([], dtype=float)
 
@@ -1342,7 +1390,7 @@ class SpecModel:
 
         return jnp.asarray(emission_lines_idx_updated), jnp.asarray(emission_lines, dtype=float)
 
-    def _find_batch_edges(self, left: int = None, right: int = None) -> ArrayLike:
+    def _find_batch_edges(self, left: Optional[int] = None, right: Optional[int] = None) -> ArrayLike:
         """
         Find the edges of the batches with adaptive sizes for the 2D spectrum.
 
@@ -1386,7 +1434,7 @@ class SpecModel:
         # The left edge is the beginning of the spectrum
         # The right edge is a narrow line
         elif left == left_edge:
-            right = min(right + min_batch_size / 2, right_edge)  # Ending at the right edge of the narrow line
+            right = min(right + min_batch_size // 2, right_edge)  # Ending at the right edge of the narrow line
 
             check_spectrum_length(left, right)
 
@@ -1417,7 +1465,7 @@ class SpecModel:
         # The left edge is a narrow line
         # The right edge is the end of the spectrum
         elif right == right_edge:
-            left = max(left - min_batch_size / 2, left_edge)
+            left = max(left - min_batch_size // 2, left_edge)
 
             check_spectrum_length(left, right)
 
@@ -1447,8 +1495,8 @@ class SpecModel:
 
         # Both edges are narrow lines
         else:
-            left = max(left - min_batch_size / 2, left_edge)
-            right = min(right + min_batch_size / 2, right_edge)
+            left = max(left - min_batch_size // 2, left_edge)
+            right = min(right + min_batch_size // 2, right_edge)
 
             if right - left <= min_batch_size * 2:
                 return np.array([(left + right) / 2], dtype=int)
@@ -1495,9 +1543,14 @@ class SpecModel:
     @show_and_save
     def _plot_raw(self) -> Axes:
         from scipy.interpolate import interp1d
-        from astropy.stats import mad_std
+        
+        assert self.f_obs.y is not None and self.f_obs.yerr is not None
+        assert self.f_sky_sub.y is not None and self.f_sky_sub.yerr is not None
+        assert self.f_batch_2d.y is not None and self.f_batch_2d.Y is not None
+        assert self.f_host_1d.y is not None and self.f_host_1d.yerr is not None
+        assert self.f_sky_1d.y is not None and self.f_sky_1d.yerr is not None
 
-        cmap_sci = plt.cm.gray
+        cmap_sci = cm.get_cmap("gray") if np.nanmean(self.f_obs.y) > 0 else cm.get_cmap("gray_r")
         cmap_sci.set_bad("red")
 
         _, ax = plt.subplots(4, 1, figsize=(15, 15), constrained_layout=True)
@@ -1526,7 +1579,7 @@ class SpecModel:
             kind="linear",
             fill_value="extrapolate",
         )
-        norm = plt.Normalize(np.nanmin(self.f_batch_2d.y), np.nanmax(self.f_batch_2d.y))
+        norm = Normalize(np.nanmin(self.f_batch_2d.y), np.nanmax(self.f_batch_2d.y))
         cmap = plt.cm.get_cmap("gray") if np.nanmean(self.f_host_1d.y) > 0 else plt.cm.get_cmap("gray_r")
         cmap.set_bad("red")
 
@@ -1544,7 +1597,7 @@ class SpecModel:
 
                 c_raw = cmap(norm(self.f_batch_2d.Y[x, y]))
                 ax[2].add_patch(
-                    plt.Rectangle(
+                    Rectangle(
                         (spec_min, spat_min),
                         spec_max - spec_min,
                         spat_max - spat_min,
@@ -1630,6 +1683,10 @@ class SpecModel:
     def _plot_host_profile_prior(self) -> Axes:
         if not hasattr(self, "host_prior"):
             raise ValueError("Please model the host galaxy first.")
+        assert self.f_batch_2d.Y is not None and self.f_batch_2d.Yerr is not None
+        assert self.f_batch_prior.Y is not None and self.f_batch_prior.Yerr is not None
+        assert self.f_batch_2d.spat is not None and self.f_batch_2d.spec is not None
+
         _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 2), constrained_layout=True, sharex=True)
 
         raw = self.f_batch_2d.Y
@@ -1677,6 +1734,9 @@ class SpecModel:
     def _plot_host_profile_pred(self) -> Axes:
         if not hasattr(self, "_gp_2d"):
             raise ValueError("Please model the host galaxy first.")
+        assert self.dist_batch_2d.Y is not None and self.dist_batch_2d.Yerr is not None
+        assert self.dist_batch_2d.spat is not None and self.dist_batch_2d.spec is not None
+
         _, ax = plt.subplots(figsize=(6, len(self.f_host_batch_2d.spec) / 2), constrained_layout=True, sharex=True)
 
         raw = self.dist_batch_2d.Y
@@ -1724,10 +1784,13 @@ class SpecModel:
     def _plot_pred(self) -> Axes:
         if not hasattr(self, "_f_pred"):
             raise ValueError("Please model the host galaxy first.")
+        assert self.f_sky_sub.y is not None and self.f_sky_sub.yerr is not None
+        assert self.f_host.y is not None and self.f_host.yerr is not None
+        assert isinstance(self._f_pred, Array) and isinstance(self._f_1d_pred, Array) and isinstance(self._f_2d_pred, Array)
 
-        cmap_sci = plt.cm.gray
+        cmap_sci = cm.get_cmap("gray") if np.nanmean(self.f_sky_sub.y) > 0 else cm.get_cmap("gray_r")
         cmap_sci.set_bad("red")
-        cmap_res = plt.cm.RdBu_r
+        cmap_res = cm.get_cmap("RdBu_r")
         cmap_res.set_bad("0.5")
 
         source_params = dict(

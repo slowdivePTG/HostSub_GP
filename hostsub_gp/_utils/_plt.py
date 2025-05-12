@@ -1,7 +1,5 @@
 # hostsub_gp/_plt.py
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MultipleLocator
-from matplotlib.axes import Axes
 
 from typing import Callable, Optional
 

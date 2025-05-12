@@ -61,10 +61,10 @@ class ArchivalImage:
             else:
                 msgs.warning(f"Loading original file (WCS not calibrated by Astrometry.net): {file}")
             try:
-                with fits.open(file) as hdulist:
-                    data_list.append(hdulist[0].data)
-                    header_list.append(hdulist[0].header)
-                    filters.append(flt)
+                hdulist = fits.open(file)
+                data_list.append(hdulist[0].data)
+                header_list.append(hdulist[0].header)
+                filters.append(flt)
             except FileNotFoundError:
                 msgs.warning(f"File {file} not found.")
             except Exception as e:
@@ -90,7 +90,7 @@ class ArchivalImage:
         query_astrometry_net_wcs(self.path, overwrite=overwrite)
 
 
-    def download(self, overwrite: bool = False):
+    def download(self, overwrite: bool = True):
         """
         Download images from the archival service
         """
@@ -102,7 +102,7 @@ class PS1Image(ArchivalImage):
     Class to load images from the PS1 Image Cutout Service
     """
 
-    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout", size: int = 720):
+    def __init__(self, ra: float, dec: float, filters: str = "grizy", path: str = "./ps1_cutout", size: int = 2400):
         super().__init__(ra, dec, filters, path)
         self.size = size
         self.wv_eff_dict = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
@@ -189,9 +189,11 @@ class SDSSImage(ArchivalImage):
 
         # Get the images
         os.makedirs(self.path, exist_ok=True)
-        for k, flt in enumerate(self.filters):
+        for flt in self.filters:
             img = SDSS.get_images(matches=result, band=flt)
-            if len(img) == 0:
+            if img is None:
+                continue
+            elif len(img) == 0:
                 continue
             fitspath = f"{self.path}/{flt}.fits"
             if os.path.exists(fitspath) and not overwrite:
@@ -210,7 +212,7 @@ class LSImage(ArchivalImage):
         self.wv_eff_dict = dict(g=4730, r=6420, i=7840, z=9260)
 
         self.pixel_scale = 0.25
-        self.size = 3  # arcmin
+        self.size = 10  # arcmin
 
     def download(self, overwrite: bool = False):
         """
@@ -232,7 +234,7 @@ class LSImage(ArchivalImage):
             hdu = fits.open(f"{self.path}/dummy.fits")
             hdu_header = hdu[0].header
 
-            for k, f in enumerate([*hdu_header["bands"]]):
+            for k, f in enumerate([*str( hdu_header["bands"] )]):
                 hdu_header["FILTER"] = f
                 hdu_header["GAIN"] = 100
                 fits.writeto(
@@ -270,9 +272,9 @@ class LSImage(ArchivalImage):
                 subprocess.run(["wget", url, "-O", outfile], check=True)
                 return True
             except HTTPError as e:
-                print(f"Failed attempt {attempt} to download {outfile} with an HTTPError")
+                print(f"Failed attempt {attempt} to download {outfile} with an HTTPError: {e}")
             except URLError as e:
-                print(f"Failed attempt {attempt} to download {outfile} with a URLError")
+                print(f"Failed attempt {attempt} to download {outfile} with a URLError: {e}")
             time.sleep(1)
 
         print(f"Failed to download image {outfile}")
