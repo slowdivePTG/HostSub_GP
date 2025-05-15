@@ -18,11 +18,12 @@ from jax._src.typing import ArrayLike, Array
 from typing import Optional
 
 from ._utils._par import (
-    _transform_unbound_to_bound,
-    _transform_bound_to_unbound,
-    _init_params,
-    _check_params,
-    _print_params,
+    # _transform_unbound_to_bound,
+    # _transform_bound_to_unbound,
+    init_params,
+    init_params_limit,
+    check_params,
+    print_params,
 )
 from ._utils import msgs
 
@@ -75,28 +76,16 @@ class GP:
         self.params_limit = params_limit if params_limit is not None else {}
         if optimization:
             try:
-                self.params_init = _init_params(params_init)
+                self.params_init = init_params(params_init)
             except Exception as e:
                 raise ValueError("Optimization: " + str(e))
-            assert isinstance(
-                self.params_init, dict
-            ), "params_init must be a dictionary"
-            self.params_init_unbound = _transform_bound_to_unbound(
-                self.params_init, self.params_limit
+            assert isinstance(self.params_init, dict), (
+                "params_init must be a dictionary"
             )
-
-            self.params_unbound = self._optimize(self.X, self.y, self.yerr)
-            self.params = _transform_unbound_to_bound(
-                self.params_unbound, self.params_limit
-            )
-            _print_params(self.params)
+            self.params = self._optimize(self.X, self.y, self.yerr)
+            print_params(self.params)
         else:
             self.params = params
-            self.params_unbound = _transform_bound_to_unbound(
-                self.params, self.params_limit
-            )
-
-        assert isinstance(self.params, dict), "params must be a dictionary"
 
         # Build the GP
         self.gp = _build_gp(self.params, self.X, self.yerr)(
@@ -104,13 +93,12 @@ class GP:
         )
 
     def _optimize(self, X: Array, y: Array, yerr: Array) -> dict:
-        """Optimize the hyperparameters of the Gaussian Process with jaxopt.ScipyMinimize."""
+        """Optimize the hyperparameters of the Gaussian Process with jaxopt.ScipyBoundMinimize."""
         valid = jnp.isfinite(y)
 
         # Check if the initial parameters are valid
         neg_log_prob_init = _neg_log_prob(
-            self.params_init_unbound,
-            params_limit=self.params_limit,
+            self.params_init,
             X=X[valid],
             y=y[valid],
             yerr=yerr[valid],
@@ -119,27 +107,28 @@ class GP:
         if ~jnp.isfinite(neg_log_prob_init):
             msgs.error("Initial log-probability is infinite.")
             msgs.info("Initial parameters:")
-            _print_params(self.params_init)
+            print_params(self.params_init)
             msgs.info("Parameter limits:")
-            _print_params(self.params_limit)
+            print_params(self.params_limit)
             raise ValueError("Invalid initial parameters: please check the limits.")
 
-        solver = jaxopt.ScipyMinimize(
+        solver = jaxopt.ScipyBoundedMinimize(
             fun=partial(
                 _neg_log_prob,
-                params_limit=self.params_limit,
                 X=X[valid],
                 y=y[valid],
                 yerr=yerr[valid],
                 kernel_type=self.kernel_type,
             ),
-            method="SLSQP",
+            method="L-BFGS-B",
         )
-        soln = solver.run(self.params_init_unbound)
-        params_unbound = soln.params
+        soln = solver.run(
+            self.params_init,
+            bounds=init_params_limit(self.params_init, self.params_limit),
+        )
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
-        return params_unbound
+        return soln.params
 
     def predict(
         self, X_test: Array, return_var: bool = False
@@ -162,12 +151,13 @@ class GP:
 
 @partial(jax.jit, static_argnames=("kernel_type",))
 def _neg_log_prob(
-    params: dict, params_limit: dict, X: Array, y: Array, yerr: Array, kernel_type: str
+    params: dict, X: Array, y: Array, yerr: Array, kernel_type: str
 ) -> JAXArray:
     """Negative log-probability of the Gaussian Process."""
-    params_bound = _transform_unbound_to_bound(params, params_limit)
-    assert isinstance(params_bound, dict), "params must be a dictionary"
-    gp = _build_gp(params_bound, X, yerr)(kernel_type=kernel_type)
+    # params_bound = _transform_unbound_to_bound(params, params_limit)
+    # assert isinstance(params_bound, dict), "params must be a dictionary"
+    # gp = _build_gp(params_bound, X, yerr)(kernel_type=kernel_type)
+    gp = _build_gp(params, X, yerr)(kernel_type=kernel_type)
     neg_log_prob = -gp.log_probability(y)
     return neg_log_prob
 
@@ -178,7 +168,7 @@ class _build_gp:
     def __init__(self, params: dict, X: Array, yerr: Array):
         # Check if necessary parameters are provided
         try:
-            _check_params(params)
+            check_params(params)
         except ValueError as e:
             raise ValueError("Building GP: " + str(e))
 
@@ -277,34 +267,34 @@ class _build_gp:
     def _build_1D_composite_kernel(amp: Array, scale: Array) -> kernels.Kernel:
         """
         Build a composite kernel for 1D data.
-        Kernel (quasiseparable) = ExpSquared + Matern52
+        Kernel (quasiseparable) = Matern52 + Matern32
         """
         if amp.shape != (2,):
             raise ValueError(f"Invalid amplitude shape {amp.shape}: expected (2,)")
         # kernel1 : Exp - long-term variations (continuum)
-        kernel_exp = amp[0] * kernels.quasisep.Exp(scale=scale[0])
+        kernel_exp = amp[0] * kernels.quasisep.Matern52(scale=scale[0])
         # kernel2 : Matern - short-term variations (sky lines, emission lines)
-        kernel_matern = amp[1] * kernels.quasisep.Matern52(scale=scale[1])
+        kernel_matern = amp[1] * kernels.quasisep.Matern32(scale=scale[1])
         return kernel_exp + kernel_matern
 
     @staticmethod
     def _build_2D_single_kernel(amp: Array, scale: Array) -> kernels.Kernel:
         """
         Build a single kernel for 2D grid data.
-        Kernel = Matern52
+        Kernel = Matern32
         """
         if amp.shape != ():
             raise ValueError(f"Invalid amplitude shape {amp.shape}: expected ()")
         # Use transforms.Linear to handle anisotropic kernels
         return amp * transforms.Linear(
-            1 / scale, kernel=kernels.Matern52(distance=L2Distance())
+            1 / scale, kernel=kernels.Matern32(distance=L2Distance())
         )
 
     @staticmethod
     def _build_2D_composite_kernel(amp: Array, scale: Array) -> kernels.Kernel:
         """
         Build a composite kernel for 2D grid data.
-        Kernel = (ExpSquared + Matern52) x (ExpSquared + Matern52)
+        Kernel = (ExpSquared + Matern32) x (ExpSquared + Matern32)
         """
         # TODO: only 3 free parameters in amp
         if amp.shape != (2, 2):
@@ -313,14 +303,14 @@ class _build_gp:
         # Spatially varying parameters
         # kernel1 : Exp - long-term variations (continuum)
         # Evaluate the kernel only on the spatial coordinates
-        kernel_spat_exp = amp[0, 0] * kernels.Exp(scale=scale[0, 0])
+        kernel_spat_exp = amp[0, 0] * kernels.ExpSquared(scale=scale[0, 0])
         # kernel2 : Matern - short-term variations (sky lines, emission lines)
-        kernel_spat_matern = amp[0, 1] * kernels.Matern52(scale=scale[0, 1])
+        kernel_spat_matern = amp[0, 1] * kernels.Matern32(scale=scale[0, 1])
         kernel_spat = OneDKernel(kernel=kernel_spat_exp + kernel_spat_matern, axis=0)
 
         # spectral varying parameters
         # kernel1 : ExpSquared - long-term variations (continuum)
-        kernel_spec_exp = amp[1, 0] * kernels.Exp(scale=scale[1, 0])
+        kernel_spec_exp = amp[1, 0] * kernels.ExpSquared(scale=scale[1, 0])
         # kernel2 : Matern - short-term variations
         kernel_spec_matern = amp[1, 1] * kernels.Matern52(scale=scale[1, 1])
         kernel_spec = OneDKernel(kernel=kernel_spec_exp + kernel_spec_matern, axis=1)

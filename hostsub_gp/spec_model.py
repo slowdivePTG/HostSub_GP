@@ -15,10 +15,11 @@ from functools import partial
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
 from ._utils._par import (
-    _transform_unbound_to_bound,
-    _transform_bound_to_unbound,
-    _init_params,
-    _print_params,
+    # _transform_unbound_to_bound,
+    # _transform_bound_to_unbound,
+    init_params,
+    init_params_limit,
+    print_params,
 )
 from .gp import GP
 from .host_model import HostProfile
@@ -303,7 +304,7 @@ class SpecModel:
     def construct_spec_wrapper(
         self,
         f_obs: SpecWrapper,
-        batch_2d: tuple[int, int] = (2, 64),
+        batch_2d: tuple[int, int] = (1, 64),
         host_emission_cfg: Optional[dict] = None,
         sigma_clip: float = 5.0,
         show: bool = False,
@@ -458,8 +459,7 @@ class SpecModel:
         if params_limit is None:
             params_limit = ({}, {})
         else:
-            params_limit = _init_params(params_limit, require_all=False)
-        assert isinstance(params_limit, list)
+            params_limit = init_params(params_limit, require_all=False)
         if optimization:
             # Initialize the limits for the parameters
             params_limit_1d = self._set_params_limit(params_limit[0], ndim=1)
@@ -778,9 +778,9 @@ class SpecModel:
         dict
             The initial parameters for the Gaussian Process model.
         """
-        assert (
-            self.f_host_1d.y is not None
-        ), "Please build the host galaxy spectrum first."
+        assert self.f_host_1d.y is not None, (
+            "Please build the host galaxy spectrum first."
+        )
         # 1D spectrum of the host galaxy
         if ndim == 1:
             log_amp_est = np.log10(((self.f_host_1d.y) ** 2).max())
@@ -820,7 +820,7 @@ class SpecModel:
                 if k not in params_init:
                     params_init[k] = v
 
-        params_init_res = _init_params(params_init, require_all=True)
+        params_init_res = init_params(params_init, require_all=True)
         assert isinstance(params_init_res, dict)
         return params_init_res
 
@@ -908,7 +908,7 @@ class SpecModel:
                     params_limit_default.pop(key)
             params_limit = {**params_limit_default, **params_limit}
 
-        return _init_params(params_limit, require_all=False)
+        return init_params(params_limit, require_all=False)
 
     ###############################################################################
     ############################ Host Galaxy Modeling #############################
@@ -937,7 +937,6 @@ class SpecModel:
             optimization=True,
         ).params
 
-        assert isinstance(params_1d, dict)
         return params_1d
 
     @msgs.timer
@@ -948,40 +947,38 @@ class SpecModel:
         Optimize the Gaussian process model of the host using jaxopt.ScipyMinimize solver.
         Only the 2D spatial profile is optimized in this step.
         """
-        params_init_unbound = _transform_bound_to_unbound(params_init, params_limit)
         msgs.info("Optimizing the host galaxy model...")
         neg_log_prob_init = self._get_host_neg_log_probability(
-            params=params_init_unbound, params_limit=params_limit
+            params_1d=params_init[0], params_2d=params_init[1]
         )
         msgs.info(f"Initial negative log-probability: {neg_log_prob_init:.1f}")
+
         if ~np.isfinite(neg_log_prob_init):
-            self._get_host_neg_log_probability(
-                params=params_init_unbound, params_limit=params_limit
-            )
             msgs.error("Initial log-probability is infinite.")
             msgs.info("Initial parameters:")
-            _print_params(params_init)
+            print_params(params_init)
             msgs.info("Parameter limits:")
-            _print_params(params_limit)
+            print_params(params_limit)
             raise ValueError("Invalid initial parameters: please check the limits.")
 
-        solver = jaxopt.ScipyMinimize(
+        solver = jaxopt.ScipyBoundedMinimize(
             fun=partial(
                 self._get_host_neg_log_probability,
-                params_1d=params_init_unbound[0],
-                params_limit=params_limit,
+                params_1d=params_init[0],
             ),
-            method="SLSQP",
+            method="L-BFGS-B",
             **kwargs,
         )
-        soln = solver.run(params_init_unbound[1])
+        soln = solver.run(
+            init_params=params_init[1],
+            bounds=init_params_limit(params_init[1], params_limit[1]),
+        )
         if soln.state.status != 0:
             msgs.warning(f"Optimization failed with status {soln.state.status}.")
-        params = _transform_unbound_to_bound(soln.params, params_limit[1])
-        assert isinstance(params, dict)
+        params = soln.params
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         msgs.info("Final parameters:")
-        _print_params(params)
+        print_params(params)
         return (params_init[0], params)
 
     def _build_host_gp(
@@ -1004,12 +1001,12 @@ class SpecModel:
         tuple[GP, GP]
             GP objects for the 1D and 2D host galaxy.
         """
-        params_1d, params_2d = _init_params(params)
+        params_1d, params_2d = init_params(params)
         if params_limit is None:
             params_limit_1d, params_limit_2d = {}, {}
         else:
             try:
-                params_limit_1d, params_limit_2d = _init_params(
+                params_limit_1d, params_limit_2d = init_params(
                     params_limit, require_all=False
                 )
             except Exception as e:
@@ -1017,9 +1014,9 @@ class SpecModel:
                 raise ValueError(f"Invalid parameter limits: {e}")
 
         f_1d = self.f_host_1d
-        assert (
-            f_1d.y is not None and f_1d.yerr is not None
-        ), "Please run the Gaussian Process model first."
+        assert f_1d.y is not None and f_1d.yerr is not None, (
+            "Please run the Gaussian Process model first."
+        )
         f_1d_mask = jnp.isfinite(f_1d.y)
         gp_1d = GP(
             kernel_type="1D",
@@ -1031,9 +1028,9 @@ class SpecModel:
         )
 
         f_2d = self.dist_host_batch_2d
-        assert (
-            f_2d.y is not None and f_2d.yerr is not None
-        ), "Please run the Gaussian Process model first."
+        assert f_2d.y is not None and f_2d.yerr is not None, (
+            "Please run the Gaussian Process model first."
+        )
         f_2d_mask = jnp.isfinite(f_2d.y)
         gp_2d = GP(
             kernel_type="2D",
@@ -1051,8 +1048,6 @@ class SpecModel:
         self,
         params_2d: Optional[dict] = None,
         params_1d: Optional[dict] = None,
-        params: Optional[tuple[dict, dict]] = None,
-        params_limit: Optional[tuple[dict, dict]] = None,
     ) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
@@ -1083,11 +1078,6 @@ class SpecModel:
 
         params_1d = params_1d if params_1d is not None else {}
         params_2d = params_2d if params_2d is not None else {}
-        params = (params_1d, params_2d) if params is None else params
-
-        params_1d, params_2d = _init_params(
-            _transform_unbound_to_bound(params, params_limit)
-        )
 
         @jax.jit
         def _neg_log_probability(
@@ -1135,13 +1125,13 @@ class SpecModel:
             # jax.debug.print("Observed log-probability: {}", log_prob_obs)
             # jax.debug.print("Log posterior: {}", log_prob_1d + log_prob_2d + log_prob_obs)
 
-            return -(log_prob_1d + log_prob_2d + log_prob_obs).item()
+            return -(log_prob_1d + log_prob_2d + log_prob_obs)
 
         # Only include finite values in the observation
 
-        obs_mask = jnp.isfinite(self.f_host.y)
-        f_1d_mask = jnp.isfinite(self.f_host_1d.y)
-        f_2d_mask = jnp.isfinite(self.dist_host_batch_2d.y)
+        obs_mask = np.isfinite(self.f_host.y)
+        f_1d_mask = np.isfinite(self.f_host_1d.y)
+        f_2d_mask = np.isfinite(self.dist_host_batch_2d.y)
 
         return _neg_log_probability(
             params_1d=params_1d,
@@ -1239,7 +1229,7 @@ class SpecModel:
         """
         if not hasattr(self, "gp_params"):
             raise AttributeError("Please model the host galaxy first.")
-        _print_params(self.gp_params)
+        print_params(self.gp_params)
         return self.gp_params
 
     ###############################################################################
@@ -1625,7 +1615,6 @@ class SpecModel:
         # No narrow lines in the spectrum
         # Use the largest possible batch size
         if (left == left_edge) and (right == right_edge):
-
             check_spectrum_length(left, right)
 
             # The number of batches is determined such that by dividing the spectrum into n_batch (n_batch > 2) nearly equal bins,

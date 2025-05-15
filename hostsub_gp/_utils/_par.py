@@ -3,9 +3,9 @@
 __all__ = [
     "_transform_unbound_to_bound",
     "_transform_bound_to_unbound",
-    "_init_params",
-    "_check_params",
-    "_print_params",
+    "init_params",
+    "check_params",
+    "print_params",
 ]
 
 import jax
@@ -55,7 +55,7 @@ def sequence_input(
                 for k, item in enumerate(arg):
                     if verbose:
                         msgs.info(
-                            f"The {msgs.BLUE}{msgs.BOLD}{k+1}D{msgs.RESET} parameters"
+                            f"The {msgs.BLUE}{msgs.BOLD}{k + 1}D{msgs.RESET} parameters"
                         )
                     results.append(func(item, *args, **kwargs))
                 return tuple(results)
@@ -63,7 +63,9 @@ def sequence_input(
                 result = func(arg, *args, **kwargs)
                 return result
             else:
-                raise TypeError("Input must be a dictionary or tuple of dictionaries")
+                raise TypeError(
+                    f"Input must be a dictionary or tuple of dictionaries, but got {type(arg)}"
+                )
 
         return wrapper
 
@@ -71,7 +73,7 @@ def sequence_input(
 
 
 @sequence_input
-def _check_params(params: dict, require_all: bool = True) -> dict:
+def check_params(params: dict, require_all: bool = True) -> dict:
     """Check if the parameters are valid."""
     if require_all:
         key_required = ["log_amp", "log_scale", "mean"]
@@ -82,10 +84,10 @@ def _check_params(params: dict, require_all: bool = True) -> dict:
 
 
 @sequence_input
-def _init_params(params: dict, require_all: bool = True) -> dict:
+def init_params(params: dict, require_all: bool = True) -> dict:
     """Initialize the parameters with appropriate typing."""
 
-    _check_params(params, require_all=require_all)
+    check_params(params, require_all=require_all)
 
     def ensure_scalar_or_array(x):
         if not isinstance(x, jax.Array):
@@ -107,8 +109,31 @@ def _init_params(params: dict, require_all: bool = True) -> dict:
     return params_output
 
 
+@sequence_input
+def init_params_limit(params: dict, params_limit: dict) -> tuple[dict, dict]:
+    """Initialize the params_limit and resolve the upper and lower bounds"""
+
+    params_lower = {}
+    params_upper = {}
+
+    for key, value in params.items():
+        if key in params_limit:
+            params_lower[key] = params_limit[key][0]
+            params_upper[key] = params_limit[key][1]
+            assert params_lower[key].shape == params_upper[key].shape == value.shape, (
+                f"The shape of the lower {params_lower[key].shape}"
+                + f" and upper bounds {params_upper[key].shape}"
+                + f" must match the shape of the parameter {value.shape}"
+            )
+        else:
+            params_lower[key] = jnp.full_like(value, -jnp.inf)
+            params_upper[key] = jnp.full_like(value, jnp.inf)
+
+    return params_lower, params_upper
+
+
 @sequence_input(verbose=True)
-def _print_params(params: dict) -> dict:
+def print_params(params: dict) -> dict:
     """Print the parameters."""
 
     def _print_param(params, key, key_str):
@@ -130,7 +155,7 @@ def _print_params(params: dict) -> dict:
             )
 
     try:
-        _check_params(params, require_all=False)
+        check_params(params, require_all=False)
         _print_param(params, "log_amp", "Amp")
         _print_param(params, "log_scale", "Scale")
         _print_param(params, "mean", "Mean")

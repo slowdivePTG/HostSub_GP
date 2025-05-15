@@ -216,7 +216,7 @@ class HostProfile:
         from astropy.wcs import WCS
         from astropy.wcs.utils import proj_plane_pixel_scales
         from scipy.ndimage import gaussian_filter
-        from reproject import reproject_interp
+        from reproject import reproject_adaptive
 
         if spec_model is not None:
             center_ra = spec_model.center_ra
@@ -372,8 +372,8 @@ class HostProfile:
             wcs_target.wcs.equinox = 2000.0
 
             # Reproject the image to the slit-aligned WCS
-            data_reproj, _ = reproject_interp(
-                (data, wcs), wcs_target, shape_out=shape, order="bicubic"
+            data_reproj, _ = reproject_adaptive(
+                (data, wcs), wcs_target, shape_out=shape,
             )
 
             # Show testing plots

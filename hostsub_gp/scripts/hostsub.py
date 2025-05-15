@@ -408,11 +408,11 @@ class HostSub(ScriptBase):
     @staticmethod
     def _load_gp_params(
         par: dict,
-    ) -> tuple[dict[str, float], list[dict[str, tuple[float, float]]]]:
+    ) -> tuple[dict[str, float], tuple[dict[str, tuple[float, float]]]]:
         # Convert the initial parameters to the correct data type
         params_init_1d = {k: Float(v) for k, v in par.get("params_init_1d", {}).items()}
         params_init_2d = {k: Float(v) for k, v in par.get("params_init_2d", {}).items()}
-        params_init = [params_init_1d, params_init_2d]
+        params_init = (params_init_1d, params_init_2d)
 
         # Get limits for the parameters
         # Reset the key names
@@ -433,6 +433,6 @@ class HostSub(ScriptBase):
         params_limit_1d = _set_params_limit(par.get("params_limit_1d", {}))
         params_limit_2d = _set_params_limit(par.get("params_limit_2d", {}))
 
-        params_limit = [params_limit_1d, params_limit_2d]
+        params_limit = (params_limit_1d, params_limit_2d)
 
         return params_init, params_limit
