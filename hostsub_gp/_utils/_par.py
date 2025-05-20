@@ -167,6 +167,23 @@ def print_params(params: dict) -> dict:
 
     return params
 
+def merge_params(params_1d: dict, params_2d: dict) -> dict:
+    """Merge 1D and 2D parameters into a single dictionary."""
+    _params_1d = {key + "_1d": v for key, v in params_1d.items()}
+    _params_2d = {key + "_2d": v for key, v in params_2d.items()}
+    return {**_params_1d, **_params_2d}
+
+def separate_params(params: dict) -> tuple[dict, dict]:
+    """Separate the parameters into 1D and 2D dictionaries."""
+    assert all(["_1d" in key or "_2d" in key for key in params.keys()])
+    params_1d = {}
+    params_2d = {}
+    for key, value in params.items():
+        if "_1d" in key:
+            params_1d[key.replace("_1d", "")] = value
+        elif "_2d" in key:
+            params_2d[key.replace("_2d", "")] = value
+    return params_1d, params_2d
 
 def _transform_unbound_to_bound(
     params: dict | tuple[dict, dict],

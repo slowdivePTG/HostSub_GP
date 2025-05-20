@@ -67,9 +67,9 @@ class HostSub(ScriptBase):
         # Load the configuration file
         hostsubFile = HostSubInput.from_file(args.hostsub_file)
         assert hostsubFile.data is not None, "No data found in the configuration file."
-        assert (
-            hostsubFile.filenames is not None
-        ), "No files found in the configuration file."
+        assert hostsubFile.filenames is not None, (
+            "No files found in the configuration file."
+        )
         assert hostsubFile.config is not None
         par = hostsubFile.config
 
@@ -313,7 +313,9 @@ class HostSub(ScriptBase):
                 )
 
             # Update the SpecModel object
-            dseeing_opt = spec_model.update_seeing(dseeing, **seeing_match_cfg)
+            dseeing_opt, alpha_opt = spec_model.update_seeing(
+                dseeing, **seeing_match_cfg
+            )
 
             if dseeing_opt > 0:
                 msgs.info(
@@ -326,7 +328,7 @@ class HostSub(ScriptBase):
                 dseeing_wv = (
                     dseeing_opt
                     / spec_model.pixel_scale
-                    * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+                    * (spec_model.spec / spec_model.spec.mean()) ** (-alpha_opt)
                 )
                 spec_model.construct_spec_wrapper(
                     f_obs=spec_model.f_obs.fill_nan().convolve(dseeing_wv),

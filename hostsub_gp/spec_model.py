@@ -10,16 +10,15 @@ import jax.numpy as jnp
 # jax.config.update("jax_enable_x64", True)
 
 import jaxopt
-from functools import partial
 
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
 from ._utils._par import (
-    # _transform_unbound_to_bound,
-    # _transform_bound_to_unbound,
     init_params,
     init_params_limit,
     print_params,
+    merge_params,
+    separate_params,
 )
 from .gp import GP
 from .host_model import HostProfile
@@ -27,10 +26,13 @@ from .spec_wrapper import SpecWrapper
 
 from typing import Callable, Optional, Literal
 from jax._src.typing import ArrayLike, Array
+
 from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
 from matplotlib import cm
+
+from scipy.optimize import minimize
 
 
 class SpecModel:
@@ -475,7 +477,9 @@ class SpecModel:
                 params_init[1],
             )
 
-            msgs.info("Round 2: Fitting the 2D spatial profile")
+            msgs.info(
+                "Round 2: Fitting both the 1D spectrum and the 2D spatial profile"
+            )
             self.gp_params = self._model_host_2d_opt(
                 params_init=tuple(params_init),
                 params_limit=tuple(params_limit),
@@ -566,13 +570,12 @@ class SpecModel:
         return predict
 
     @msgs.timer
-    @show_and_save
     def _match_seeing(
         self,
         min_dseeing: float = 0.0,
         max_dseeing: float = 0.5,
         step_dseeing: float = 0.01,
-    ) -> Array:
+    ) -> tuple[float, float]:
         """
         Match the seeing of the host galaxy profile with the instrumental seeing.
         """
@@ -584,20 +587,19 @@ class SpecModel:
         _spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
         _spec_batch_2d_idx = self._get_spec_batches(find_host_emission=False)
 
-        chi2 = []
-
         # If the seeing of the archival images is worse than the spectra
         _f_obs_raw = self.f_obs.fill_nan()
-        dseeing_lst = (
-            np.arange(min_dseeing, max_dseeing, step=step_dseeing) + step_dseeing
-        )
+            
+        # Get the prior
+        prior_host_batch, _ = self.host_prior(self.f_host_batch_2d.X)
 
-        def _chi2(dseeing: float) -> Array:
-            # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/2.5)
+        @msgs.timer
+        def _chi2(params: list[float]) -> Array:
+            # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/5)
+            # Komogorov turbulence model
+            dseeing, alpha = params
             dseeing_spec = (
-                dseeing
-                / self.pixel_scale
-                * (self.spec / self.spec.mean()) ** (-1 / 2.5)
+                dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-alpha)
             )
             _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
 
@@ -618,12 +620,6 @@ class SpecModel:
                 _spat_batch_2d_idx_in_host
             )
 
-            assert (
-                _f_host_batch_2d.spat is not None and _f_host_batch_2d.spec is not None
-            )
-
-            # Get the prior
-            prior_host_batch, _ = self.host_prior(_f_host_batch_2d.X)
             _f_host_batch_prior = SpecWrapper(
                 points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
                 values=prior_host_batch.reshape(_f_host_batch_2d.shape),
@@ -632,31 +628,34 @@ class SpecModel:
             # Calculate the distance relative to the prior
             _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
-            assert (
-                _dist_host_batch_2d.y is not None
-                and _dist_host_batch_2d.yerr is not None
-            )
             # Calculate the chi2
-            return jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+            chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
-        chi2 = jax.vmap(_chi2)(jnp.array(dseeing_lst))
+            return chi2
 
-        # Find the best seeing
-        plt.figure(figsize=(6, 4), constrained_layout=True)
-        plt.plot(dseeing_lst, chi2, color="tab:blue")
-        plt.xlabel(r"$\Delta \mathrm{Seeing\ [arcsec]}$")
-        plt.ylabel(r"$\chi^2$")
+        # Find the best seeina by minimizing chi2
+        res = minimize(
+            fun=_chi2,
+            x0=[(min_dseeing + max_dseeing) / 2, 0.2],
+            bounds=[(min_dseeing + 1e-5, max_dseeing), (0.2, 0.5)],
+            method="L-BFGS-B",
+            options={"eps": 1e-5, "maxiter": 100},
+        )
 
-        best_dseeing = dseeing_lst[np.argmin(chi2)]
+        # best_dseeing = dseeing_lst[np.argmin(chi2)]
+        best_dseeing = res.x[0] if res.x[0] > 1e-5 else 0
+        alpha = res.x[1]
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
-        return best_dseeing
+        msgs.info(f"Best power-law index: {alpha:.2f}")
+        return best_dseeing, alpha
 
-    def update_seeing(self, dseeing: Optional[float] = None, **kwargs) -> float:
+    def update_seeing(self, dseeing: Optional[float] = None, **kwargs) -> tuple[float, float]:
         """
         Update the seeing of the host galaxy profile with the instrumental seeing.
         """
+        alpha = 0.2
         if dseeing is None:
-            dseeing = self._match_seeing(**kwargs)
+            dseeing, alpha = self._match_seeing(**kwargs)
             assert dseeing is not None
         if dseeing > 0:
             # Update the spatial resolution
@@ -670,7 +669,7 @@ class SpecModel:
             # Update the mask, sky, and host regions
             self._build_spat_filter()
 
-        return dseeing
+        return dseeing, alpha
 
     @show_and_save
     def extract_sci(
@@ -962,24 +961,24 @@ class SpecModel:
             raise ValueError("Invalid initial parameters: please check the limits.")
 
         solver = jaxopt.ScipyBoundedMinimize(
-            fun=partial(
-                self._get_host_neg_log_probability,
-                params_1d=params_init[0],
-            ),
+            fun=self._get_host_neg_log_probability,
             method="L-BFGS-B",
             **kwargs,
         )
         soln = solver.run(
-            init_params=params_init[1],
-            bounds=init_params_limit(params_init[1], params_limit[1]),
+            init_params=merge_params(params_init[0], params_init[1]),
+            bounds=init_params_limit(
+                merge_params(params_init[0], params_init[1]),
+                merge_params(params_limit[0], params_limit[1]),
+            ),
         )
         if soln.state.status != 0:
             msgs.warning(f"Optimization failed with status {soln.state.status}.")
-        params = soln.params
+        params = separate_params(soln.params)
         msgs.info(f"Final negative log-probability: {soln.state.fun_val:.1f}")
         msgs.info("Final parameters:")
         print_params(params)
-        return (params_init[0], params)
+        return params
 
     def _build_host_gp(
         self,
@@ -1046,18 +1045,22 @@ class SpecModel:
 
     def _get_host_neg_log_probability(
         self,
-        params_2d: Optional[dict] = None,
+        params: Optional[dict] = None,
         params_1d: Optional[dict] = None,
+        params_2d: Optional[dict] = None,
     ) -> float:
         """
         Calculate the negative log probability of the host flux given the parameters.
 
         Parameters
         ----------
-        params_2d : dict
-            Parameters for the 2D Gaussian Process.
-        params_1d : dict
+        params: dict, optional
+            Parameters for both the 1D and 2D Gaussian Processes.
+            If defined, override params_1d and params_2d.
+        params_1d : dict, optional
             Parameters for the 1D Gaussian Process.
+        params_2d : dict, optional
+            Parameters for the 2D Gaussian Process.
         params : tuple[dict, dict]
             A tuple of parameters for the 1D and 2D Gaussian Processes.
         params_limit : dict, optional
@@ -1075,6 +1078,10 @@ class SpecModel:
             and self.dist_host_batch_2d.yerr is not None
         )
         assert self.f_host_prior.y is not None and self.f_host_prior.yerr is not None
+
+        if params is not None:
+            # If params is defined, override params_1d and params_2d
+            params_1d, params_2d = separate_params(params)
 
         params_1d = params_1d if params_1d is not None else {}
         params_2d = params_2d if params_2d is not None else {}
@@ -1271,8 +1278,7 @@ class SpecModel:
         assert f_1d_norm.y is not None and f_1d_norm.yerr is not None
         assert f_1d_norm.Y is not None and f_1d_norm.Yerr is not None
 
-        # New coordinates: mean of the batch
-        shape_batch_2d = (len(spat_batch_idx), len(spec_batch_idx))
+        # Precompute arrays for spatial and spectral axes batching
         spat_batch_2d = jnp.array(
             [jnp.mean(jnp.array(self.spat)[idx]) for idx in spat_batch_idx]
         )
@@ -1280,46 +1286,56 @@ class SpecModel:
             [jnp.mean(jnp.array(self.spec)[idx]) for idx in spec_batch_idx]
         )
 
-        # New values: mean of the batch
-        values_batch_2d = jnp.empty(shape_batch_2d)
-        values_err_batch_2d = jnp.empty(shape_batch_2d)
+        n_spat = jnp.array([len(idx) for idx in spat_batch_idx])
+        n_spec = jnp.array([len(idx) for idx in spec_batch_idx])
+        n_x, n_y = len(spat_batch_idx), len(spec_batch_idx)
 
+        # Preallocate output
+        values_batch_2d = jnp.empty((n_x, n_y))
+        values_err_batch_2d = jnp.empty((n_x, n_y))
+
+        # Stack all selected indices for vectorized access
+        # For each batch, extract the subarrays and process them
         for y, idx_spec in enumerate(spec_batch_idx):
-            n_spec = len(idx_spec)
-            # Get the 1D spectrum within the spectral batch
             Y_1d = f_1d_norm.Y[idx_spec]
             Y_err_1d = f_1d_norm.Yerr[idx_spec]
-            # Get the 2D spectrum within the spectral batch
-            Y_2d_spec = f_2d.Y[:, idx_spec]
+            Y_2d_spec = f_2d.Y[:, idx_spec]  # (n_spat, n_spec)
             Y_err_2d_spec = f_2d.Yerr[:, idx_spec]
 
-            for x, idx_spat in enumerate(spat_batch_idx):
-                # Step 0: Calculate NaN fraction
-                n_spat = len(idx_spat)
-                nan_fraction = jnp.sum(~jnp.isfinite(Y_2d_spec[idx_spat])) / (
-                    n_spat * n_spec
-                )
-                # Step 1: Bin along the spatial axis
-                Y_2d = jnp.nanmean(Y_2d_spec[idx_spat], axis=0)
-                Y_err_2d = (
-                    jnp.nanmean(Y_err_2d_spec[idx_spat] ** 2, axis=0) / n_spat
-                ) ** 0.5
+            # Stack all spatial batches at once
+            spat_stack = jnp.stack(
+                [Y_2d_spec[idx_spat] for idx_spat in spat_batch_idx]
+            )  # (n_x, ?, n_spec)
+            spat_err_stack = jnp.stack(
+                [Y_err_2d_spec[idx_spat] for idx_spat in spat_batch_idx]
+            )
 
-                # Step 2: Estimate the flux ratios (normalized profiles)
-                Y_2d_1d = Y_2d / Y_1d
-                Y_err_2d_1d = (
-                    Y_2d_1d * ((Y_err_2d / Y_2d) ** 2 + (Y_err_1d / Y_1d) ** 2) ** 0.5
-                )
+            # Compute nan fractions for each batch
+            nan_fractions = jnp.sum(~jnp.isfinite(spat_stack), axis=(1, 2)) / (
+                n_spat * n_spec[y]
+            )
 
-                # Step 3: Bin along the spectral axis
-                values_batch_2d = values_batch_2d.at[x, y].set(jnp.nanmedian(Y_2d_1d))
-                values_err_batch_2d = values_err_batch_2d.at[x, y].set(
-                    jnp.where(
-                        nan_fraction > nan_threshold,
-                        jnp.nan,
-                        jnp.nanmean(Y_err_2d_1d**2 / len(spec_batch_idx[y])) ** 0.5,
-                    )
+            # Bin along spatial axis (mean over axis=1)
+            Y_2d = jnp.nanmean(spat_stack, axis=1)
+            Y_err_2d = (jnp.nanmean(spat_err_stack**2, axis=1) / n_spat[:, None]) ** 0.5
+
+            # Normalize
+            Y_2d_1d = Y_2d / Y_1d
+            Y_err_2d_1d = (
+                Y_2d_1d * ((Y_err_2d / Y_2d) ** 2 + (Y_err_1d / Y_1d) ** 2) ** 0.5
+            )
+
+            # Bin along spectral axis (median and error)
+            values_batch_2d = values_batch_2d.at[:, y].set(
+                jnp.nanmedian(Y_2d_1d, axis=1)
+            )
+            values_err_batch_2d = values_err_batch_2d.at[:, y].set(
+                jnp.where(
+                    nan_fractions > nan_threshold,
+                    jnp.nan,
+                    jnp.nanmean(Y_err_2d_1d**2, axis=1) ** 0.5,
                 )
+            )
 
         return SpecWrapper(
             points=(spat_batch_2d, spec_batch_2d),
