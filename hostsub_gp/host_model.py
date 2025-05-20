@@ -262,9 +262,9 @@ class HostProfile:
             data, header = image.load()
             # Convolve the images with a Gaussian kernel
             if dseeing > 0:
-                assert (
-                    spec_model is not None
-                ), "SpecModel is required for dseeing correction"
+                assert spec_model is not None, (
+                    "SpecModel is required for dseeing correction"
+                )
                 for k in range(len(data)):
                     dseeing_wv = dseeing * (
                         image.wv_eff_dict[image.filters[k]] / spec_model.spec.mean()
@@ -373,7 +373,9 @@ class HostProfile:
 
             # Reproject the image to the slit-aligned WCS
             data_reproj, _ = reproject_adaptive(
-                (data, wcs), wcs_target, shape_out=shape,
+                (data, wcs),
+                wcs_target,
+                shape_out=shape,
             )
 
             # Show testing plots
@@ -464,10 +466,16 @@ class HostProfile:
 
         # No prior photometric data
         if len(self.filters) == 0:
-            host_prior = lambda _: (
-                jnp.array(1 / self.host_wid, dtype=jnp.float32),
-                jnp.array(0, dtype=jnp.float32),
-            )  # constant, variance = 0
+
+            def host_prior_flat(
+                x: Array,
+            ) -> tuple[Array, Array]:  # constant, variance = 0
+                return jnp.array(1 / self.host_wid, dtype=jnp.float32), jnp.array(
+                    0, dtype=jnp.float32
+                )
+
+            host_prior = host_prior_flat
+
         # Single band - no wavelength dependence
         elif len(self.filters) == 1:
             params = dict(
@@ -485,9 +493,12 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = lambda x: gp_host_prior.predict(
-                X_test=x[:, :1], return_var=True
-            )
+
+            def host_prior_single(x: Array) -> tuple[Array, Array]:
+                return gp_host_prior.predict(X_test=x[:, :1], return_var=True)
+
+            host_prior = host_prior_single
+
         # Multiple bands - wavelength dependence
         else:
             params = dict(
@@ -518,7 +529,11 @@ class HostProfile:
                 params_limit=params_limit,
                 optimization=True,
             )
-            host_prior = lambda x: gp_host_prior.predict(X_test=x, return_var=True)
+
+            def host_prior_multi(x: Array) -> tuple[Array, Array]:
+                return gp_host_prior.predict(X_test=x, return_var=True)
+
+            host_prior = host_prior_multi
 
         self._plot_host_profile(host_prior, **kwargs)
 

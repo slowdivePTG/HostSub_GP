@@ -557,15 +557,19 @@ class SpecModel:
 
         # Scale the host flux prior to the observed data
         # All pixels on the host region summed along the spatial axis = 1
-        scale = lambda X: jnp.interp(
-            X[..., 1].ravel(),
-            self.spec,
-            jnp.sum(self._host_prior_gp(_f_host.X)[0].reshape(_f_host.shape), axis=0),
-        )
+        def _scale(X: Array) -> Array:
+            return jnp.interp(
+                X[..., 1].ravel(),
+                self.spec,
+                jnp.sum(
+                    self._host_prior_gp(_f_host.X)[0].reshape(_f_host.shape), axis=0
+                ),
+            )
 
         def predict(X: Array) -> tuple[Array, Array]:
             prior = self._host_prior_gp(X)
-            return prior[0] / scale(X), prior[1] ** 0.5 / scale(X)
+            scale = _scale(X)
+            return prior[0] / scale, prior[1] ** 0.5 / scale
 
         return predict
 
@@ -574,7 +578,6 @@ class SpecModel:
         self,
         min_dseeing: float = 0.0,
         max_dseeing: float = 0.5,
-        step_dseeing: float = 0.01,
     ) -> tuple[float, float]:
         """
         Match the seeing of the host galaxy profile with the instrumental seeing.
@@ -589,7 +592,7 @@ class SpecModel:
 
         # If the seeing of the archival images is worse than the spectra
         _f_obs_raw = self.f_obs.fill_nan()
-            
+
         # Get the prior
         prior_host_batch, _ = self.host_prior(self.f_host_batch_2d.X)
 
@@ -649,7 +652,9 @@ class SpecModel:
         msgs.info(f"Best power-law index: {alpha:.2f}")
         return best_dseeing, alpha
 
-    def update_seeing(self, dseeing: Optional[float] = None, **kwargs) -> tuple[float, float]:
+    def update_seeing(
+        self, dseeing: Optional[float] = None, **kwargs
+    ) -> tuple[float, float]:
         """
         Update the seeing of the host galaxy profile with the instrumental seeing.
         """

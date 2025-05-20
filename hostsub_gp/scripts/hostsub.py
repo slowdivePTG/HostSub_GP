@@ -272,9 +272,6 @@ class HostSub(ScriptBase):
         seeing_match_cfg["min_dseeing"] = Float(
             par_seeing_match.get("min_dseeing", 0.0)
         )
-        seeing_match_cfg["step_dseeing"] = Float(
-            par_seeing_match.get("step_dseeing", 0.05)
-        )
         seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
         if seeing_match_cfg["dseeing"] == 0:
             seeing_match_cfg["dseeing"] = None
