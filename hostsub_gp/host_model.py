@@ -4,14 +4,15 @@ __all__ = ["HostProfile"]
 
 import numpy as np
 
+import jax
 import jax.numpy as jnp
 
 # jax.config.update("jax_enable_x64", True)
 
-from astropy.stats import mad_std
 
 from .gp import GP
 from .host_image import PS1Image, SDSSImage, LSImage
+from .host_image import ImageProduct
 from ._utils import plt, msgs
 from ._utils._plt import show_and_save
 
@@ -174,10 +175,9 @@ class HostProfile:
 
         return wrapper
 
-    @classmethod
+    @staticmethod
     @_suppress_fitsfixed_warning
-    def from_archival(
-        cls,
+    def load_archival_images(
         spec_model: Optional[SpecModelP] = None,
         center_ra: Optional[float] = None,
         center_dec: Optional[float] = None,
@@ -186,37 +186,11 @@ class HostProfile:
         position_angle: Optional[float] = None,
         filters: Optional[str | list] = None,
         survey: Literal["PS1", "LS", "any"] = "PS1",
-        noise_smooth_kernel: Optional[int] = None,
-        dseeing: Optional[float] = None,
-    ):
+    ) -> list[ImageProduct]:
         """
-        Load archival images from PS1 and SDSS and estimate the host galaxy spatial profile.
-
-        Parameters
-        ----------
-        spec_model : any, optional
-            SpecModel object.
-        center_ra : float, optional
-            Right ascension of the object.
-        center_dec : float, optional
-            Declination of the object.
-        slit_len : float, optional
-            Slit length in arcsec.
-        slit_wid : float, optional
-            Slit width in arcsec.
-        position_angle : float, optional
-            Position angle of the slit.
-        filters : str or list, optional
-            Filters to load the images.
-        survey : str, optional
-            Survey to use for loading images. Options are 'PS1' or 'LS'.
-        noise_smooth_kernel : int, optional
-            Kernel size for smoothing the noise.
+        Load, rotate, and resample archival images from PS1, LS, and SDSS
         """
-        from astropy.wcs import WCS
-        from astropy.wcs.utils import proj_plane_pixel_scales
-        from scipy.ndimage import gaussian_filter
-        from reproject import reproject_adaptive
+        from operator import attrgetter
 
         if spec_model is not None:
             center_ra = spec_model.center_ra
@@ -236,17 +210,8 @@ class HostProfile:
             # Load all filters
             filters = "grizy"
 
-        # Seeing correction
-        if dseeing is None:
-            dseeing = 0.0
-        else:
-            dseeing = np.abs(dseeing)  # By default, dseeing is negative
-        assert isinstance(dseeing, float), "dseeing is not properly assigned"
-
         # Data
-        data_list, header_list = [], []
-        wv_eff = []
-        flts = []
+        img_product_list = []
 
         def _load_images(
             image_class: Type[SDSSImage | LSImage | PS1Image],
@@ -259,28 +224,34 @@ class HostProfile:
             """
             image = image_class(ra=center_ra, dec=center_dec, filters=filters)
             image.get_cutout()
-            data, header = image.load()
-            # Convolve the images with a Gaussian kernel
-            if dseeing > 0:
-                assert spec_model is not None, (
-                    "SpecModel is required for dseeing correction"
+            imgs, headers = image.load()
+
+            img_products = []
+
+            for k in range(len(image.filters)):
+                img, header = imgs[k], headers[k]
+                flt = image.filters[k]
+                wv_eff = image.wv_eff_dict[flt]
+                img_products.append(
+                    ImageProduct(
+                        center_ra=center_ra,
+                        center_dec=center_dec,
+                        slit_len=slit_len,
+                        slit_wid=slit_wid,
+                        position_angle=position_angle,
+                        img=img,
+                        header=header,
+                        flt=flt,
+                        wv_eff=wv_eff,
+                    )
                 )
-                for k in range(len(data)):
-                    dseeing_wv = dseeing * (
-                        image.wv_eff_dict[image.filters[k]] / spec_model.spec.mean()
-                    ) ** (-1 / 2.5)
-                    data[k] = gaussian_filter(
-                        data[k], sigma=dseeing_wv / spec_model.pixel_scale / 2.355
-                    )
-                    msgs.info(
-                        f"Convolving {image.filters[k]} with a dseeing = {dseeing_wv:.2f} arcsec kernel (sigma = {dseeing_wv / spec_model.pixel_scale / 2.355:.2f} pixels)"
-                    )
-            if len(data) == 0:
+
+            # No images found
+            if len(img_products) == 0:
                 return False
-            data_list.extend(data)
-            header_list.extend(header)
-            flts.extend(image.filters)
-            wv_eff.extend(np.array([image.wv_eff_dict[flt] for flt in image.filters]))
+
+            img_product_list.extend(img_products)
+
             return True
 
         # Try to load SDSS u-band image
@@ -313,118 +284,97 @@ class HostProfile:
 
         # TODO: Load acquisition images (optional)
 
-        # Order data_list and header_list by wavelength
-        data_list = [data for _, data in sorted(zip(wv_eff, data_list))]
-        header_list = [header for _, header in sorted(zip(wv_eff, header_list))]
-        flts = [flt for _, flt in sorted(zip(wv_eff, flts))]
-        wv_eff = sorted(wv_eff)
+        return sorted(img_product_list, key=attrgetter("wv_eff"))
+
+    @classmethod
+    @_suppress_fitsfixed_warning
+    def from_archival(
+        cls,
+        img_products: list[ImageProduct],
+        spec_model: Optional[SpecModelP] = None,
+        slit_len: Optional[float] = None,
+        slit_wid: Optional[float] = None,
+        pixel_scale: Optional[float] = None,
+        dseeing: Optional[float] = None,
+        alpha: Optional[float] = 0.2,
+        verbose: bool = False,
+    ):
+        """
+        Load archival images from PS1 and SDSS and estimate the host galaxy spatial profile.
+
+        Parameters
+        ----------
+        spec_model : any, optional
+            SpecModel object.
+        center_ra : float, optional
+            Right ascension of the object.
+        center_dec : float, optional
+            Declination of the object.
+        slit_len : float, optional
+            Slit length in arcsec.
+        slit_wid : float, optional
+            Slit width in arcsec.
+        pixel_scale : float, optional
+            Pixel scale in arcsec of the 2D spectrum (not the archival images)
+        position_angle : float, optional
+            Position angle of the slit.
+        filters : str or list, optional
+            Filters to load the images.
+        survey : str, optional
+            Survey to use for loading images. Options are 'PS1' or 'LS'.
+        dseeing : float, optional
+        alpha: float, optional, default = 0.2
+        """
+        from scipy.ndimage import gaussian_filter
+
+        if spec_model is not None:
+            slit_wid = spec_model.slit_wid
+            slit_len = (
+                spec_model.spat_edges["slit"][1] - spec_model.spat_edges["slit"][0]
+            )
+            pixel_scale = spec_model.pixel_scale
+        else:
+            assert slit_len is not None and slit_wid is not None
+            assert pixel_scale is not None
+
+        # Seeing correction
+        if dseeing is None:
+            dseeing = 0.0
+        else:
+            dseeing = np.abs(dseeing)  # By default, dseeing is negative
+        assert isinstance(dseeing, float), "dseeing is not properly assigned"
 
         # Spatial coordinates along the slit
-        spat_slit = []
+        spat_slit = [img_product.spat_slit for img_product in img_products]
         # Counts along the slit
         counts_slit, counts_err_slit = [], []
 
-        # Read the images and estimate the spatial profile
-        for data, header in zip(data_list, header_list):
-            # Load FITS image and WCS info
-            wcs = WCS(header)
-
-            # Step 1. Get the position angle and pixel scale of the image cutout
-            # Get the CD or PC matrix from WCS
-            if wcs.wcs.has_cd():  # Check if CD matrix is present
-                # cd = wcs.wcs.cd
-                pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
-            else:  # Otherwise, use PC matrix with CDELT
-                # cd = wcs.wcs.pc * wcs.wcs.cdelt
-                pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
-            # pa_img = jnp.arctan2(-cd[0, 1], cd[1, 1])  # Arctangent of the y-x ratio
-
-            # Step 2. Resample the image to the slit with a given position angle
-            # Define the rectangle size in pixels or arcminutes (angular size)
-            slit_len_pix = slit_len / pixel_scale  # Slit length in pixels
-            slit_wid_pix = slit_wid / pixel_scale  # Slit width in pixels
-            shape = (
-                int(np.ceil(slit_len_pix / 2)) * 2,
-                int(np.ceil(slit_wid_pix / 2)) * 2,
-            )
-
-            # Define the target wcs
-            wcs_target = WCS(naxis=2)
-            wcs_target.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-            wcs_target.wcs.crval = [center_ra, center_dec]
-            wcs_target.wcs.crpix = [(shape[1] + 1) / 2, (shape[0] + 1) / 2]
-
-            # Include rotation in CD matric
-            # Add 90 degrees to the position angle to align slit with the x-axis - w.r.t. the west
-            theta = np.deg2rad(position_angle) + np.pi
-            wcs_target.wcs.cd = (
-                np.array(
-                    [
-                        [-pixel_scale * np.cos(theta), -pixel_scale * np.sin(theta)],
-                        [pixel_scale * np.sin(theta), -pixel_scale * np.cos(theta)],
-                    ]
+        for img_product in img_products:
+            if dseeing > 0:
+                # Convolve the images with a Gaussian kernel
+                assert spec_model is not None, (
+                    "SpecModel is required for dseeing correction"
                 )
-                / 3600
-            )
+                dseeing_wv = dseeing * (
+                    img_product.wv_eff / spec_model.spec.mean()
+                ) ** (-alpha)
+                img = gaussian_filter(
+                    img_product.img, sigma=dseeing_wv / spec_model.pixel_scale / 2.355
+                )
+                if verbose:
+                    msgs.info(
+                        f"Convolving {img_product.flt} with a {dseeing_wv:.2f} arcsec kernel "
+                        + f"(sigma = {dseeing_wv / spec_model.pixel_scale / 2.355:.2f} pixels)"
+                    )
+            else:
+                img = img_product.img
 
-            # Set additional required WCS parameters
-            wcs_target.wcs.radesys = "ICRS"
-            wcs_target.wcs.equinox = 2000.0
-
-            # Reproject the image to the slit-aligned WCS
-            data_reproj, _ = reproject_adaptive(
-                (data, wcs),
-                wcs_target,
-                shape_out=shape,
-            )
-
-            # Show testing plots
-            # plt.subplot(projection=wcs)
-            # plt.imshow(data, cmap="gray", vmin=np.nanpercentile(data, 1), vmax=np.nanpercentile(data, 99))
-
-            # grid = np.meshgrid(range(shape[1]), range(shape[0]))
-            # coords = wcs_target.pixel_to_world(grid[0].ravel(), grid[1].ravel())
-            # pixels = wcs.world_to_pixel(coords)
-
-            # plt.scatter(pixels[0], pixels[1], s=1, color="red", alpha=0.5)
-            # coord_center = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
-            # center_x, center_y = wcs.world_to_pixel(coord_center)
-            # plt.scatter(center_x, center_y, s=100, color="blue", marker="x", label="Target center")
-            # plt.show()
-
-            # plt.subplot(projection=wcs_target)
-            # plt.imshow(data_reproj, cmap="gray", vmin=np.nanpercentile(data_reproj, 1), vmax=np.nanpercentile(data_reproj, 99), aspect="auto")
-            # grid = np.meshgrid(range(shape[1]), range(shape[0]))
-            # plt.scatter(grid[0], grid[1], s=1, color="red", alpha=0.5)
-            # coord_center = SkyCoord(ra=center_ra * u.deg, dec=center_dec * u.deg, frame="icrs")
-            # center_x, center_y = wcs_target.world_to_pixel(coord_center)
-            # plt.scatter(center_x, center_y, s=100, color="blue", marker="x", label="Target center")
-
-            # plt.show()
-
-            # Obtain the pixel coordinates of the slit
-            spat_slit.append(
-                (np.arange(shape[0]) + 1 - wcs_target.wcs.crpix[1]) * pixel_scale
-            )
-            # Estimate the counts: average along the slit width
-            spat_slit_wid = (
-                np.arange(-np.ceil(slit_wid_pix / 2), np.ceil(slit_wid_pix / 2)) + 0.5
-            ) * pixel_scale
             counts_slit.append(
-                np.array(
-                    [
-                        bound_mean(
-                            spat_slit_wid, d, x_bound=(-slit_wid / 2, slit_wid / 2)
-                        )
-                        for d in data_reproj
-                    ]
+                bound_mean_img(
+                    img_product.spat_slit_wid,
+                    img,
+                    x_bound=(-slit_wid / 2, slit_wid / 2),
                 )
-            )
-            # Estimate the error based on the sky regions
-            err = (
-                mad_std(data[np.isfinite(data) & (data < np.nanpercentile(data, 50))])
-                / np.sqrt(slit_wid_pix)
-                / np.sqrt(1 - 2 / np.pi)
             )
             # # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
             # err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
@@ -432,11 +382,14 @@ class HostProfile:
             # if noise_smooth_kernel is not None:
             #     err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
             # counts_err_slit.append(err)
-            counts_err_slit.append(np.ones_like(counts_slit[-1]) * err)
+            counts_err_slit.append(np.ones_like(counts_slit[-1]) * img_product.err)
+
+        flts = [img_product.flt for img_product in img_products]
+        wv_effs = [img_product.wv_eff for img_product in img_products]
 
         return cls(
             filters=flts,
-            wv_eff=wv_eff,
+            wv_eff=wv_effs,
             spat_slit=spat_slit,
             counts_slit=counts_slit,
             counts_err_slit=counts_err_slit,
@@ -447,7 +400,7 @@ class HostProfile:
 
     @msgs.timer
     def model_host_profile_prior(
-        self, spat_resln: float = 1.0, **kwargs
+        self, spat_resln: float = 1.0, params_init: Optional[dict] = None, **kwargs
     ) -> Callable[[Any], Array | tuple[Array, Array]]:
         """
         Model the host galaxy spatial profile using Gaussian Process regression.
@@ -462,7 +415,11 @@ class HostProfile:
         host_prior : Callable[[Array], tuple[Array, Array]]
             A function that returns the mean and variance of the host profile.
         """
-        large_scale = 1e10
+
+        if params_init is not None:
+            assert "log_scale" in params_init, "log_scale is required in params_init"
+            assert "log_amp" in params_init, "log_amp is required in params_init"
+            assert "mean" in params_init, "mean is required in params_init"
 
         # No prior photometric data
         if len(self.filters) == 0:
@@ -474,25 +431,29 @@ class HostProfile:
                     0, dtype=jnp.float32
                 )
 
+            self._gp_params = {}
             host_prior = host_prior_flat
 
         # Single band - no wavelength dependence
         elif len(self.filters) == 1:
-            params = dict(
-                log_amp=np.float64(-3),
-                log_scale=np.log10(spat_resln),
-                mean=np.float64(1 / self.host_wid),
-            )
-            params_limit = dict(log_scale=np.log10([spat_resln / 2.355, large_scale]))
+            if params_init is None:
+                params_init = dict(
+                    log_amp=np.float64(-3),
+                    log_scale=np.log10(spat_resln),
+                    mean=np.float64(1 / self.host_wid),
+                )
+
+            params_limit = dict(log_scale=np.log10([spat_resln / 2.355, np.inf]))
             gp_host_prior = GP(
                 kernel_type="HostProfie",
                 X=self.X[:, :1],  # Spatial coordinate only
                 y=self.prof,
                 yerr=self.prof_err,
-                params_init=params,
+                params_init=params_init,
                 params_limit=params_limit,
                 optimization=True,
             )
+            self._gp_params = gp_host_prior.params
 
             def host_prior_single(x: Array) -> tuple[Array, Array]:
                 return gp_host_prior.predict(X_test=x[:, :1], return_var=True)
@@ -501,11 +462,13 @@ class HostProfile:
 
         # Multiple bands - wavelength dependence
         else:
-            params = dict(
-                log_amp=np.ones((2, 2)) * -2,
-                log_scale=np.log10([[spat_resln, spat_resln], [1e5, 1e4]]),
-                mean=np.float64(1 / self.host_wid),
-            )
+            if params_init is None:
+                params_init = dict(
+                    log_amp=np.ones((2, 2)) * -2,
+                    log_scale=np.log10([[spat_resln, spat_resln], [1e5, 1e4]]),
+                    mean=np.float64(1 / self.host_wid),
+                )
+
             params_limit = dict(
                 log_scale=np.log10(
                     [
@@ -514,8 +477,8 @@ class HostProfile:
                             [1e3, 1e3],
                         ],  # lower bound
                         [
-                            [large_scale, spat_resln * 2],
-                            [large_scale, large_scale],
+                            [np.inf, spat_resln * 2],
+                            [np.inf, np.inf],
                         ],  # upper bound
                     ]
                 )
@@ -525,10 +488,11 @@ class HostProfile:
                 X=self.X,
                 y=self.prof,
                 yerr=self.prof_err,
-                params_init=params,
+                params_init=params_init,
                 params_limit=params_limit,
                 optimization=True,
             )
+            self._gp_params = gp_host_prior.params
 
             def host_prior_multi(x: Array) -> tuple[Array, Array]:
                 return gp_host_prior.predict(X_test=x, return_var=True)
@@ -628,3 +592,10 @@ def bound_mean(x: Array, y: Array, x_bound: tuple) -> float:
     Compute the sum in a bounded region.
     """
     return bound_sum(x, y, x_bound) / (x_bound[1] - x_bound[0])
+
+
+def bound_mean_img(x: Array, y_img: Array, x_bound: tuple) -> Array:
+    """
+    Apply bound_mean to each row of the image.
+    """
+    return jax.vmap(lambda y: bound_mean(x, y, x_bound))(y_img)

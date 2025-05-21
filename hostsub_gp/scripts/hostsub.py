@@ -35,12 +35,6 @@ class HostSub(ScriptBase):
             action="store_true",
             help="Re-do the rectification and overwrite the fits files.",
         )
-        # parser.add_argument(
-        #     "--par_outfile",
-        #     type=str,
-        #     default="hostsub.par",
-        #     help="Name of output file to save the parameters used by the GP.",
-        # )
         parser.add_argument(
             "--skip_seeing_match",
             default=False,
@@ -266,11 +260,11 @@ class HostSub(ScriptBase):
         # Parameters for matching the seeing of the host and science spectra
         par_seeing_match = par_hostsub.get("seeing_match", {})
         seeing_match_cfg = {}
-        seeing_match_cfg["max_dseeing"] = Float(
-            par_seeing_match.get("max_dseeing", 1.0)
+        seeing_match_cfg["dseeing_upper"] = Float(
+            par_seeing_match.get("dseeing_upper", 1.0)
         )
-        seeing_match_cfg["min_dseeing"] = Float(
-            par_seeing_match.get("min_dseeing", 0.0)
+        seeing_match_cfg["dseeing_lower"] = Float(
+            par_seeing_match.get("dseeing_lower", 0.0)
         )
         seeing_match_cfg["dseeing"] = Float(par_seeing_match.get("dseeing", None))
         if seeing_match_cfg["dseeing"] == 0:

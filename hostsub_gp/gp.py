@@ -312,7 +312,7 @@ class _build_gp:
         # kernel1 : ExpSquared - long-term variations (continuum)
         kernel_spec_exp = amp[1, 0] * kernels.ExpSquared(scale=scale[1, 0])
         # kernel2 : Matern - short-term variations
-        kernel_spec_matern = amp[1, 1] * kernels.Matern52(scale=scale[1, 1])
+        kernel_spec_matern = amp[1, 1] * kernels.Matern32(scale=scale[1, 1])
         kernel_spec = OneDKernel(kernel=kernel_spec_exp + kernel_spec_matern, axis=1)
         return kernel_spat * kernel_spec
 

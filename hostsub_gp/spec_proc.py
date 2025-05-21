@@ -66,22 +66,31 @@ class SpecData:
             self.flux_ivar_rect = jnp.asarray(flux_ivar_rect)
         else:
             assert dist is not None, "Distance array is not available."
-            assert (
-                flux is not None and flux_ivar is not None
-            ), "Flux and ivar arrays are not available."
+            assert flux is not None and flux_ivar is not None, (
+                "Flux and ivar arrays are not available."
+            )
 
             if self.sky_offset is None:
-                host_prior = HostProfile.from_archival(
-                    center_ra=self.center_ra,
-                    center_dec=self.center_dec,
-                    slit_len=min(
+                slit_len = (
+                    min(
                         self.spat_rect.max().item() - self.spat_rect.min().item(),
                         30 // self.pixel_scale * self.pixel_scale,
-                    )  # slit_len <= 30 arcsec
-                    + self.pixel_scale,
+                    )
+                    + self.pixel_scale
+                )
+                img_products = HostProfile.load_archival_images(
+                    center_ra=self.center_ra,
+                    center_dec=self.center_dec,
+                    slit_len=slit_len,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,
                     survey="PS1",
+                )
+                host_prior = HostProfile.from_archival(
+                    img_products=img_products,
+                    slit_len=slit_len,
+                    slit_wid=self.slit_wid,
+                    pixel_scale=self.pixel_scale,
                 ).model_host_profile_prior()
 
                 self.sky_offset = self._get_offset(
@@ -216,9 +225,10 @@ class SpecData:
 
             if ra is None or dec is None:
                 # RA and DEC in the header are in the format of 'HH:MM:SS.SS' and 'DD:MM:SS.SS'
-                ra_str, dec_str = str(raw_header["CATRA"]).strip("'"), str(
-                    raw_header["CATDEC"]
-                ).strip("'")
+                ra_str, dec_str = (
+                    str(raw_header["CATRA"]).strip("'"),
+                    str(raw_header["CATDEC"]).strip("'"),
+                )
                 coord = SkyCoord(ra_str, dec_str, unit=(u.hourangle, u.deg))
                 ra, dec = coord.ra.deg, coord.dec.deg
 
@@ -639,7 +649,7 @@ class SpecData:
             ax[k].imshow(
                 diff[k], cmap=cmap, origin="lower", aspect="auto", vmin=-5, vmax=5
             )
-            ax[k].set_title(f"Object {k+1} - Mean")
+            ax[k].set_title(f"Object {k + 1} - Mean")
             ax[k].set_ylabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax[-1].imshow(
             flux_rect,
@@ -859,9 +869,9 @@ class SpecData:
         hdul_rect.close()
 
         # The global sky subtracted after the rectification
-        assert (
-            spec_model.f_sky_1d.y is not None
-        ), "The global sky model is not available."
+        assert spec_model.f_sky_1d.y is not None, (
+            "The global sky model is not available."
+        )
         global_sky_post = Interp1D_Grid(
             points=spec_model.f_sky_1d.X.ravel(),
             values=spec_model.f_sky_1d.y,
@@ -1040,9 +1050,9 @@ class SpecData:
 
                 # Apply sigma clipping to the values in the bin
                 y_clipped = sigma_clip(y_in_bin, stdfunc="mad_std", **kwargs)
-                assert isinstance(
-                    y_clipped, np.ma.MaskedArray
-                ), "Clipped values are not a masked array."
+                assert isinstance(y_clipped, np.ma.MaskedArray), (
+                    "Clipped values are not a masked array."
+                )
                 # Compute the statistic (e.g., mean) of the clipped values (requires at least 80% valid data)
                 if (~y_clipped.mask).sum() > 0.80 * len(y_clipped):
                     obs[i] = np.nanmean(y_clipped[~y_clipped.mask])

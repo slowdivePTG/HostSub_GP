@@ -60,7 +60,6 @@ class SpecWrapper:
                 ((values.ndim == 1) | (values.ndim == 2))
                 & (values.shape == self.spec_img.shape)
             ):
-                breakpoint()
                 raise ValueError("Invalid shape of the input values.")
             if values_err is not None:
                 if values.shape != values_err.shape:

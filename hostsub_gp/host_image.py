@@ -2,18 +2,121 @@
 
 __all__ = ["PS1Image", "SDSSImage"]
 
-import numpy
+import numpy as np
 
 from astropy.io import fits
 from astropy import units as u
 from astropy.table import Table
 from astropy.coordinates import SkyCoord
+from astropy.stats import mad_std
 
 import subprocess
 import os
 
 from ._utils import msgs
 from ._utils._astronometry import query_astrometry_net_wcs
+
+from numpy.typing import NDArray
+
+
+class ImageProduct:
+    """
+    Class to save main data products after resampling an archival image onto the slit
+    """
+
+    def __init__(
+        self,
+        center_ra: float,
+        center_dec: float,
+        slit_len: float,
+        slit_wid: float,
+        position_angle: float,
+        img: NDArray,
+        header: fits.Header,
+        flt: str,
+        wv_eff: float,
+    ):
+        from astropy.wcs import WCS
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        from reproject import reproject_adaptive
+
+        self.flt = flt
+        self.wv_eff = wv_eff
+
+        # Load FITS image and WCS info
+        wcs = WCS(header)
+
+        # Step 1. Get the position angle and pixel scale of the image cutout
+        if wcs.wcs.has_cd():
+            pixel_scale = proj_plane_pixel_scales(wcs)[0] * 3600  # arcsec/pixel
+        else:
+            pixel_scale = wcs.wcs.cdelt[0] * 3600  # arcsec/pixel
+
+        # Step 2. Resample the image to the slit with a given position angle
+
+        slit_len_pix = slit_len / pixel_scale  # Slit length in pixels
+        slit_wid_pix = slit_wid / pixel_scale  # Slit width in pixels
+        shape = (
+            int(np.ceil(slit_len_pix / 2)) * 2,
+            int(np.ceil(slit_wid_pix / 2))
+            * 2
+            * 10,  # 10 times the width - room for blurring
+        )
+
+        # Define the target wcs
+        wcs_target = WCS(naxis=2)
+        wcs_target.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        wcs_target.wcs.crval = [center_ra, center_dec]
+        wcs_target.wcs.crpix = [(shape[1] + 1) / 2, (shape[0] + 1) / 2]
+
+        # Include rotation in CD matric
+        # Add 90 degrees to the position angle to align slit with the x-axis - w.r.t. the west
+        theta = np.deg2rad(position_angle) + np.pi
+        wcs_target.wcs.cd = (
+            np.array(
+                [
+                    [
+                        -pixel_scale * np.cos(theta),
+                        -pixel_scale * np.sin(theta),
+                    ],
+                    [pixel_scale * np.sin(theta), -pixel_scale * np.cos(theta)],
+                ]
+            )
+            / 3600
+        )
+
+        # Set additional required WCS parameters
+        wcs_target.wcs.radesys = "ICRS"
+        wcs_target.wcs.equinox = 2000.0
+
+        # Reproject the image to the slit-aligned WCS
+        data_reproj, _ = reproject_adaptive(
+            (img, wcs),
+            wcs_target,
+            shape_out=shape,
+        )
+
+        self.img = data_reproj
+        self.err = mad_std(
+            self.img[
+                np.isfinite(self.img) & (self.img < np.nanpercentile(self.img, 50))
+            ]
+        ) / np.sqrt(1 - 2 / np.pi)
+        self.pixel_scale = pixel_scale
+        self.shape = shape
+        self.slit_len_pix = slit_len_pix
+        self.slit_wid_pix = slit_wid_pix
+        self.wcs = wcs_target
+
+        # Obtain the pixel coordinates along the slit
+        self.spat_slit = (
+            np.arange(self.shape[0]) + 1 - self.wcs.wcs.crpix[1]
+        ) * self.pixel_scale
+
+        # Obtain the pixel coordinates perpendicular to the slit
+        self.spat_slit_wid = (
+            np.arange(self.shape[1]) + 1 - self.wcs.wcs.crpix[0]
+        ) * self.pixel_scale
 
 
 class ArchivalImage:
@@ -51,7 +154,6 @@ class ArchivalImage:
         filters = []
 
         for flt in self.filters:
-
             file = f"{self.path}/{flt}.fits"
             file_wcs = f"{self.path}/{flt}_wcs.fits"
             if os.path.exists(file_wcs):
@@ -158,7 +260,7 @@ class PS1Image(ArchivalImage):
         )
         # sort filters from red to blue
         flist = ["grizy".find(x) for x in table["filter"]]
-        table = table[numpy.argsort(flist)]
+        table = table[np.argsort(flist)]
         urlbase = url + "&red="
         url = []
         for filename in table["filename"]:

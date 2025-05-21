@@ -392,7 +392,7 @@ class SpecModel:
 
         # Construct the prior of the host galaxy from images
         msgs.info("Building the host flux prior")
-        self.host_prior = self._get_host_prior()
+        self.host_prior = self.get_host_prior()
 
         assert self.f_obs.spat is not None and self.f_obs.spec is not None
         assert self.f_batch_2d.spat is not None and self.f_batch_2d.spec is not None
@@ -503,27 +503,34 @@ class SpecModel:
         self,
         filters: str | list[str] = "grizy",
         survey: Literal["PS1", "LS"] = "PS1",
-        noise_smooth_kernel: Optional[int] = None,
         from_archival: bool = True,
         wv_eff: Optional[list[float]] = None,
         spat_slit: Optional[list[Array]] = None,
         counts_slit: Optional[list[Array]] = None,
         counts_err_slit: Optional[list[Array]] = None,
         dseeing: Optional[float] = None,
+        alpha: float = 0.2,
+        verbose: bool = False,
         **kwargs,
-    ):
+    ) -> Callable[[Array], tuple[Array, Array]]:
         """
         Build the prior of the host galaxy using Gaussian Process regression.
         """
         msgs.info("Building the host flux prior")
         if from_archival:
             # Load the archival photometric data (PS1, SDSS)
+            if not hasattr(self, "img_products"):
+                self.img_products = HostProfile.load_archival_images(
+                    spec_model=self,
+                    filters=filters,
+                    survey=survey,
+                )
             host_prof = HostProfile.from_archival(
+                img_products=self.img_products,
                 spec_model=self,
-                filters=filters,
-                survey=survey,
-                noise_smooth_kernel=noise_smooth_kernel,
                 dseeing=dseeing,
+                alpha=alpha,
+                verbose=verbose,
             )
         elif (
             (wv_eff is None)
@@ -544,121 +551,178 @@ class SpecModel:
                 counts_slit=counts_slit,
                 counts_err_slit=counts_err_slit,
             )
-        self._host_prior_gp = host_prof.model_host_profile_prior(
-            spat_resln=self.spat_resln, **kwargs
+        if not hasattr(self, "_gp_host_params"):
+            self._gp_host_params = None
+
+        host_prior_gp = host_prof.model_host_profile_prior(
+            spat_resln=self.spat_resln, params_init=self._gp_host_params, **kwargs
         )
 
-    def _get_host_prior(self) -> Callable[[Array], tuple[Array, Array]]:
-        """
-        Get the host flux prior model.
-        """
+        # A temporary solution - to be normalized
+        self._host_prior_gp = host_prior_gp
+        self._gp_host_params = host_prof._gp_params
 
-        _f_host = self.f_obs.apply_spatial_filter(self.spat_filter["host"])
+        return host_prior_gp
+
+    def get_host_prior(
+        self, host_prior_gp: Optional[Callable[[Array], tuple[Array, Array]]] = None
+    ) -> Callable[[Array], tuple[Array, Array]]:
+        """
+        Normalize the GP solution of the prior
+        """
+        if host_prior_gp is None:
+            assert hasattr(self, "_host_prior_gp"), "Please build the host prior first."
+            host_prior_gp = self._host_prior_gp
+        else:
+            host_prior_gp = host_prior_gp
 
         # Scale the host flux prior to the observed data
         # All pixels on the host region summed along the spatial axis = 1
-        def _scale(X: Array) -> Array:
-            return jnp.interp(
+        def predict(X: Array) -> tuple[Array, Array]:
+            prior = host_prior_gp(X)
+            scale = jnp.interp(
                 X[..., 1].ravel(),
                 self.spec,
                 jnp.sum(
-                    self._host_prior_gp(_f_host.X)[0].reshape(_f_host.shape), axis=0
+                    host_prior_gp(self.f_host.X)[0].reshape(self.f_host.shape),
+                    axis=0,
                 ),
             )
-
-        def predict(X: Array) -> tuple[Array, Array]:
-            prior = self._host_prior_gp(X)
-            scale = _scale(X)
             return prior[0] / scale, prior[1] ** 0.5 / scale
 
         return predict
 
     @msgs.timer
     def _match_seeing(
-        self,
-        min_dseeing: float = 0.0,
-        max_dseeing: float = 0.5,
+        self, dseeing_lower: float = 0.0, dseeing_upper: float = 0.5
     ) -> tuple[float, float]:
         """
         Match the seeing of the host galaxy profile with the instrumental seeing.
         """
-        # Version 0.1: assuming the seeing of the archival images is worse than the spectra
+        assert dseeing_lower * dseeing_upper >= 0, (
+            "Cannot handle the case where the seeing in the spectrum can be either better or worse than the archival images."
+        )
+        # When the seeing of the archival images is worse than the spectra
         # Make sure the host flux prior is built
         if not hasattr(self, "host_prior"):
             raise ValueError("Please build the host flux prior first.")
 
-        _spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
-        _spec_batch_2d_idx = self._get_spec_batches(find_host_emission=False)
+        DSEEING = 1e-2
 
-        # If the seeing of the archival images is worse than the spectra
-        _f_obs_raw = self.f_obs.fill_nan()
+        if dseeing_upper > 0:
+            # Fix the host galaxy prior from archival images
+            # Vary the spectrum
+            _spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
+            _spec_batch_2d_idx = self._get_spec_batches(find_host_emission=False)
 
-        # Get the prior
-        prior_host_batch, _ = self.host_prior(self.f_host_batch_2d.X)
+            # If the seeing of the archival images is worse than the spectra
+            _f_obs_raw = self.f_obs.fill_nan()
 
-        @msgs.timer
-        def _chi2(params: list[float]) -> Array:
-            # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/5)
-            # Komogorov turbulence model
-            dseeing, alpha = params
-            dseeing_spec = (
-                dseeing / self.pixel_scale * (self.spec / self.spec.mean()) ** (-alpha)
-            )
-            _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
-
-            # Sky subtraction
-            _f_sky = _f_obs.apply_spatial_filter(self.spat_filter["sky"])
-            _f_sky_sub = _f_obs.subtract(_f_sky.marginalize(margin_type="mean"))
-            _f_host = _f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
-            _f_host_1d = _f_host.marginalize(margin_type="sum")
-
-            # Batch the 2D spectrum
-            _f_batch_2d = self.get_normalized_batch_spec(
-                _spat_batch_2d_idx,
-                _spec_batch_2d_idx,
-                f_2d=_f_sky_sub,
-                f_1d_norm=_f_host_1d,
-            )
-            _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(
-                _spat_batch_2d_idx_in_host
-            )
-
+            # Get the prior
+            _prior_host_batch, _ = self.host_prior(self.f_host_batch_2d.X)
             _f_host_batch_prior = SpecWrapper(
-                points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
-                values=prior_host_batch.reshape(_f_host_batch_2d.shape),
+                points=(self.f_host_batch_2d.spat, self.f_host_batch_2d.spec),
+                values=_prior_host_batch.reshape(self.f_host_batch_2d.shape),
             )
 
-            # Calculate the distance relative to the prior
-            _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
+            def _chi2(params: list[float]) -> Array:
+                msgs.info(f"Iteration {iter}")
+                # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/5)
+                # Komogorov turbulence model
+                dseeing, alpha = params
+                dseeing_spec = (
+                    dseeing
+                    / self.pixel_scale
+                    * (self.spec / self.spec.mean()) ** (-alpha)
+                )
+                _f_obs = _f_obs_raw.convolve(kernel_wid=dseeing_spec)
 
-            # Calculate the chi2
-            chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+                # Sky subtraction
+                _f_sky = _f_obs.apply_spatial_filter(self.spat_filter["sky"])
+                _f_sky_sub = _f_obs.subtract(_f_sky.marginalize(margin_type="mean"))
+                _f_host = _f_sky_sub.apply_spatial_filter(self.spat_filter["host"])
+                _f_host_1d = _f_host.marginalize(margin_type="sum")
 
-            return chi2
+                # Batch the 2D spectrum
+                _f_batch_2d = self.get_normalized_batch_spec(
+                    _spat_batch_2d_idx,
+                    _spec_batch_2d_idx,
+                    f_2d=_f_sky_sub,
+                    f_1d_norm=_f_host_1d,
+                )
+                _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(
+                    _spat_batch_2d_idx_in_host
+                )
 
-        # Find the best seeina by minimizing chi2
+                # Calculate the distance relative to the prior
+                _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
+
+                # Calculate the chi2
+                chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+                
+                msgs.info(f"dseeing: {dseeing:.2f} arcsec")
+                msgs.info(f"alpha: {alpha:.2f}")
+                msgs.info(f"chi2: {chi2:.2f}")
+
+                return chi2
+
+            dseeing_lower += DSEEING
+
+        elif dseeing_lower < 0:
+            # Fix the spectrum
+            # Vary the host galaxy prior
+
+            def _chi2(params: list[float]) -> Array:
+                # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/5)
+                # Komogorov turbulence model
+                dseeing, alpha = params
+
+                host_prior = self.get_host_prior(
+                    self.build_host_prior(
+                        from_archival=True, dseeing=dseeing, alpha=alpha, verbose=False
+                    )
+                )
+                _prior_host_batch, _ = host_prior(self.f_host_batch_2d.X)
+
+                _f_host_batch_prior = SpecWrapper(
+                    points=(self.f_host_batch_2d.spat, self.f_host_batch_2d.spec),
+                    values=_prior_host_batch.reshape(self.f_host_batch_2d.shape),
+                )
+                # Calculate the distance relative to the prior
+                _dist_host_batch_2d = self.f_host_batch_2d.subtract(_f_host_batch_prior)
+                # Calculate the chi2
+                chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+
+                msgs.info(f"dseeing: {dseeing:.2f} arcsec")
+                msgs.info(f"alpha: {alpha:.2f}")
+                msgs.info(f"chi2: {chi2:.2f}")
+
+                return chi2
+
+            dseeing_upper -= DSEEING
+
+        # Find the best seeing by minimizing chi2
         res = minimize(
             fun=_chi2,
-            x0=[(min_dseeing + max_dseeing) / 2, 0.2],
-            bounds=[(min_dseeing + 1e-5, max_dseeing), (0.2, 0.5)],
+            x0=[(dseeing_lower + dseeing_upper) / 2, 0.2],
+            bounds=[(dseeing_lower, dseeing_upper), (0.2, 0.5)],
             method="L-BFGS-B",
             options={"eps": 1e-5, "maxiter": 100},
+            tol=1e-3,
         )
 
-        # best_dseeing = dseeing_lst[np.argmin(chi2)]
-        best_dseeing = res.x[0] if res.x[0] > 1e-5 else 0
+        best_dseeing = res.x[0] if np.abs(res.x[0]) > DSEEING else 0
         alpha = res.x[1]
         msgs.info(f"Best delta seeing: {best_dseeing:.2f} arcsec")
         msgs.info(f"Best power-law index: {alpha:.2f}")
         return best_dseeing, alpha
 
     def update_seeing(
-        self, dseeing: Optional[float] = None, **kwargs
+        self, dseeing: Optional[float] = None, alpha: Optional[float] = 0.2, **kwargs
     ) -> tuple[float, float]:
         """
         Update the seeing of the host galaxy profile with the instrumental seeing.
         """
-        alpha = 0.2
         if dseeing is None:
             dseeing, alpha = self._match_seeing(**kwargs)
             assert dseeing is not None
@@ -1014,7 +1078,6 @@ class SpecModel:
                     params_limit, require_all=False
                 )
             except Exception as e:
-                breakpoint()
                 raise ValueError(f"Invalid parameter limits: {e}")
 
         f_1d = self.f_host_1d

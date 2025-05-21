@@ -1,7 +1,9 @@
 # hostsub_gp/_plt.py
 import matplotlib.pyplot as plt
 
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar, Any, cast
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 plt.rcParams.update(
     {
@@ -21,7 +23,7 @@ plt.rcParams.update(
 )
 
 
-def show_and_save(f: Callable) -> Callable:
+def show_and_save(f: F) -> F:
     """
     A decorator that adds common plotting options (show and save) to any plotting function.
     By default, the plot is not shown or saved.
@@ -58,4 +60,4 @@ def show_and_save(f: Callable) -> Callable:
 
         return result
 
-    return wrapper
+    return cast(F, wrapper) 

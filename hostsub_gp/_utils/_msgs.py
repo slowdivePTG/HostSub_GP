@@ -1,7 +1,8 @@
 # hostsub_gp/_utils/_msgs.py
 
-from typing import Callable, Any
+from typing import Callable, Any, TypeVar, cast
 
+F = TypeVar("F", bound=Callable[..., Any])
 
 class msgs:
     """Class to print messages of multiple types."""
@@ -31,7 +32,7 @@ class msgs:
         print(f"{msgs.BLUE}{msgs.BOLD}[PARAM]   :: {msgs.RESET}" + message)
 
     @staticmethod
-    def timer(func: Callable) -> Callable:
+    def timer(func: F) -> F:
         """
         A decorator that times how long a function takes to run.
         """
@@ -46,4 +47,4 @@ class msgs:
             msgs.info(f"{func.__name__} completed in {end - start:.2f} seconds")
             return result
 
-        return wrapper
+        return cast(F, wrapper)
