@@ -171,6 +171,8 @@ cython_debug/
 *.ipynb
 *.ipynb_checkpoints
 playground/SN*/
+playground/ASASSN*/*
+playground/AT*/
 playground/mock/
 playground/MUSE/NGC0628*/*
 *.out

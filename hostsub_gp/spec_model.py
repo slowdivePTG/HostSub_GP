@@ -614,19 +614,27 @@ class SpecModel:
             # Vary the spectrum
             _spat_batch_2d_idx, _spat_batch_2d_idx_in_host = self._get_spat_batches()
             _spec_batch_2d_idx = self._get_spec_batches(find_host_emission=False)
+            _f_batch_2d = self.get_normalized_batch_spec(
+                _spat_batch_2d_idx,
+                _spec_batch_2d_idx,
+                f_2d=self.f_sky_sub,
+                f_1d_norm=self.f_host_1d,
+            )
+            _f_host_batch_2d = _f_batch_2d.apply_spatial_filter(
+                _spat_batch_2d_idx_in_host
+            )
 
             # If the seeing of the archival images is worse than the spectra
             _f_obs_raw = self.f_obs.fill_nan()
 
             # Get the prior
-            _prior_host_batch, _ = self.host_prior(self.f_host_batch_2d.X)
+            _prior_host_batch, _ = self.host_prior(_f_host_batch_2d.X)
             _f_host_batch_prior = SpecWrapper(
-                points=(self.f_host_batch_2d.spat, self.f_host_batch_2d.spec),
-                values=_prior_host_batch.reshape(self.f_host_batch_2d.shape),
+                points=(_f_host_batch_2d.spat, _f_host_batch_2d.spec),
+                values=_prior_host_batch.reshape(_f_host_batch_2d.shape),
             )
 
             def _chi2(params: list[float]) -> Array:
-                msgs.info(f"Iteration {iter}")
                 # Empirical wavelength dependence of the seeing: FWHM ~ lambda^(-1/5)
                 # Komogorov turbulence model
                 dseeing, alpha = params
@@ -659,7 +667,7 @@ class SpecModel:
 
                 # Calculate the chi2
                 chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
-                
+
                 msgs.info(f"dseeing: {dseeing:.2f} arcsec")
                 msgs.info(f"alpha: {alpha:.2f}")
                 msgs.info(f"chi2: {chi2:.2f}")

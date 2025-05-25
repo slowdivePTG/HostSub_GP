@@ -71,6 +71,7 @@ class AstrometryNetSolver:
             )
 
             if wcs_header:
+                print()
                 msgs.info("Successfully solved field!")
 
                 # Create new FITS file with WCS solution
@@ -82,7 +83,7 @@ class AstrometryNetSolver:
                 # Update the original FITS file with WCS solution
                 hdul[0].header.update(wcs_header)
                 # Save the updated file
-                hdul.writeto(fits_path, overwrite=True)
+                hdul.writeto(output_path, overwrite=True)
                 hdul.close()
 
                 msgs.info(f"WCS solution saved to: {output_path}")
@@ -177,7 +178,7 @@ def query_astrometry_net_wcs(directory, overwrite=False, **kwargs):
         if not overwrite and any(fits_path.stem in str(wcs) for wcs in wcs_list):
             msgs.info(f"File {fits_path} already processed. Skipping.")
             continue
-        msgs.info(f"\nProcessing: {fits_path}")
+        msgs.info(f"Processing: {fits_path}")
         solved_path = solver.solve_field(str(fits_path), **kwargs)
         if solved_path:
             msgs.info(f"Successfully processed {fits_path}")
