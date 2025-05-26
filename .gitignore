@@ -174,7 +174,8 @@ playground/SN*/
 playground/ASASSN*/*
 playground/AT*/
 playground/mock/
-playground/MUSE/NGC0628*/*
+playground/MUSE/spiral*
+playground/MUSE/elliptical*
 *.out
 *.sh
 test/

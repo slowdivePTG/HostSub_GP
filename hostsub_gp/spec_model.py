@@ -502,8 +502,8 @@ class SpecModel:
     def build_host_prior(
         self,
         filters: str | list[str] = "grizy",
-        survey: Literal["PS1", "LS"] = "PS1",
         from_archival: bool = True,
+        survey: Literal["PS1", "LS"] = "PS1",
         wv_eff: Optional[list[float]] = None,
         spat_slit: Optional[list[Array]] = None,
         counts_slit: Optional[list[Array]] = None,

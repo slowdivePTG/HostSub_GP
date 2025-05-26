@@ -1,0 +1,46 @@
+# HEADER.toml
+
+[basic]
+# Instrument specific parameters (MUSE)
+pixel_scale = 0.2 # arcsec/pixel
+spec_resln = 2.7  # Angstroms
+slit_len = 45.0   # arcsec
+slit_wid = 1.0    # arcsec
+# Model specific parameters
+host_wid = 8.0 # arcsec
+mask_wid = 2.5 # in spat_resln
+position_angle = 90.0 # degrees
+spec_range = [
+    5500,
+    9200,
+] # Angstroms - Edge (throughput = half maximum) of the PS1 r and z filters
+
+[basic.spiral]
+PI = "Blanc"
+program_id = "098.C-0484(A)"
+object = "NGC0628"
+z = 0.002192
+
+[spec_model.spiral]
+spat_resln = 0.70
+sky_region = [-10, inf]
+
+[slit_range.spiral]
+row = [190, 240]
+col = [200, 230]
+mask_offset = [0, 50]
+
+[basic.elliptical]
+PI = "Johnston"
+program_id = "099.B-0411(A)"
+object = "J205050.78-004350.85"
+z = 0.0571
+
+[spec_model.elliptical]
+spat_resln = 0.78
+sky_region = [-10, 10]
+
+[slit_range.elliptical]
+row = [120, 180]
+col = [135, 160]
+mask_offset = [0, 10]

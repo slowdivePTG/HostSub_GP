@@ -2,34 +2,135 @@ import numpy as np
 import glob
 import os
 
-import jax.numpy as jnp
-import jax
+# import jax.numpy as jnp
+# import jax
 
 # jax.config.update("jax_enable_x64", True)
 
 from astropy.io import fits
+from astropy.stats import mad_std
 
+from hostsub_gp import SpecModel, SpecData
 from hostsub_gp._utils import plt, msgs
 
-from hostsub_gp import SpecModel, SpecData, HostProfile
-from hostsub_gp.spec_wrapper import SpecWrapper
+from numpy.typing import NDArray
 
-from numpy.typing import ArrayLike, NDArray
+import argparse
+
+HDR_FILE = "./HEADER.toml"
+GALAXY_TYPES = ["elliptical", "spiral"]
+MODEL_TYPES = ["raw", "bad_phot", "bad_phot_match", "bad_spec", "bad_spec_match"]
+
+WV_EFF = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
+FLTS = "riz"
+
+parser = argparse.ArgumentParser(
+    description="Test the HostSub_GP package on MUSE data cube."
+)
+parser.add_argument(
+    "galaxy_type",
+    type=str,
+    choices=GALAXY_TYPES,
+    help="Type of the galaxy (also used as the directory name).",
+)
+parser.add_argument(
+    "--model_type",
+    type=str,
+    default="raw",
+    choices=MODEL_TYPES,
+    help="Type of the model to run.",
+)
+parser.add_argument(
+    "--overwrite",
+    "-o",
+    default=False,
+    action="store_true",
+    help="Overwrite the output files.",
+)
+parser.add_argument(
+    "--clean",
+    "-c",
+    default=False,
+    action="store_true",
+    help="Remove all previous results.",
+)
+parser.add_argument("--n_trials", type=int, default=1, help="Number of trials to run.")
+parser.add_argument(
+    "--kernel_width",
+    type=float,
+    default=1.0,
+    help="Gaussian kernel width to downgrade the spatial resolution of the data.",
+)
+
+# Define args as a global variable
+args = parser.parse_args()
+
+PATH = f"{args.galaxy_type}/{args.model_type}/QA"
+
+
+def decode_toml() -> dict[str, dict]:
+    """Decode a TOML string into a dictionary."""
+    import tomllib
+
+    with open(HDR_FILE, "rb") as f:
+        hdr = tomllib.load(f)
+
+    assert args.galaxy_type in hdr["basic"], (
+        f"Galaxy type {args.galaxy_type} not found in {HDR_FILE}"
+    )
+
+    # Configuration for host subtraction modeling
+    spec_model_gal_cfg = hdr["spec_model"].get(args.galaxy_type, None)
+    assert spec_model_gal_cfg is not None, (
+        f"Spec model configuration for {args.galaxy_type} not found in {HDR_FILE}"
+    )
+
+    spec_model_cfg = {
+        **{k: v for k, v in hdr["basic"].items() if not k in GALAXY_TYPES},
+        **spec_model_gal_cfg,
+    }
+
+    # Configuration for how the slits are randomly placed
+    slit_range_cfg = hdr["slit_range"].get(args.galaxy_type, None)
+    assert slit_range_cfg is not None, (
+        f"Slit range configuration for {args.galaxy_type} not found in {HDR_FILE}"
+    )
+
+    # Basic information of the galaxy
+    galaxy_cfg = hdr["basic"].get(args.galaxy_type, None)
+    assert galaxy_cfg is not None, (
+        f"Galaxy configuration for {args.galaxy_type} not found in {HDR_FILE}"
+    )
+
+    return {
+        "spec_model": spec_model_cfg,
+        "slit_range": slit_range_cfg,
+        "galaxy": galaxy_cfg,
+    }
 
 
 def pack_2d_spectrum(
     dat: NDArray,
     dat_var: NDArray,
-    ra: ArrayLike,
-    dec: ArrayLike,
-    wv: ArrayLike,
+    ra: NDArray,
+    dec: NDArray,
+    wv: NDArray,
+    targetid: str,
+    *,
+    # For SpecData & SpecModel
     row: int,
     col: int,
     mask_offset_pix: int,
-    slit_len: float,
     pixel_scale: float,
+    slit_len: float,
+    slit_wid: float,
+    position_angle: float,
+    spat_resln: float,
+    spec_resln: float,
+    spec_range: tuple[float, float],
+    host_wid: float,
+    mask_wid: float,
     sky_region: tuple[float, float],
-    targetid: str,
 ) -> "SpecModel":
     """Pack the 2D spectrum into a SpecModel object."""
     mask_offset = mask_offset_pix * pixel_scale
@@ -37,25 +138,29 @@ def pack_2d_spectrum(
     center_dec = dec[row]
     ra_offset = (ra - center_ra) * 3600
 
+    # Bin the data cube along both spatial and spectral axes
+    # 2 pixels in the spatial direction and 5 pixels in the spectral direction
     flux_rect = np.nanmean(
-        dat[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape((dat.shape[0]) // 2, 2, 5, -1),
+        dat[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape(
+            (dat.shape[0]) // 2, 2, 5, -1
+        ),
         axis=(1, 2),
     )[:, ::-1]
     flux_ivar_rect = np.nansum(
-        dat_var[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape((dat.shape[0]) // 2, 2, 5, -1),
+        dat_var[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape(
+            (dat.shape[0]) // 2, 2, 5, -1
+        ),
         axis=(1, 2),
-    )[:, ::-1] ** -1 * (
-        2 * 5  # 2 pixels in the spatial direction and 5 pixels in the spectral direction
-    )
+    )[:, ::-1] ** -1 * (2 * 5)
 
     spec_data = SpecData(
         pixel_scale=pixel_scale,
         center_ra=center_ra,
         center_dec=center_dec,
-        slit_wid=1.0,
-        position_angle=90,
-        spat_resln=0.73,  # Seeing FWHM = 0.73 arcsec
-        spec_resln=2.7,  # Spectral resolution of MUSE
+        slit_wid=slit_wid,
+        position_angle=position_angle,
+        spat_resln=spat_resln,
+        spec_resln=spec_resln,
         spat_rect=ra_offset[np.abs(ra_offset) <= slit_len / 2][::-1],
         spec_rect=wv,
         flux_rect=np.asarray(flux_rect, dtype=float).T,
@@ -64,9 +169,9 @@ def pack_2d_spectrum(
 
     spec_model = spec_data.to_SpecModel(
         slit_len=slit_len,
-        spec_range=(5500, 9200),  # Edge (throughput = half maximum) of the PS1 r and z filters
-        host_wid=8,
-        mask_wid=1.2,
+        spec_range=spec_range,
+        host_wid=host_wid,
+        mask_wid=mask_wid,
         mask_offset=mask_offset,
         sky_region=sky_region,
     )
@@ -116,77 +221,172 @@ def pack_2d_spectrum(
     ax[1].set_xlabel("Wavelength (Angstrom)")
     ax[1].set_ylabel("RA offset (arcsec)")
 
-    plt.savefig(f"{args.galaxy}/QA/{targetid}_image.pdf")
+    plt.savefig(f"{PATH}/{targetid}_image.pdf")
     plt.close()
 
     return spec_model
 
 
 def model_host_prior(
-    spec_model: "SpecModel", row: int, col: int, mask_offset_pix: int, syn_flux: dict, slit_len: float, targetid: str
+    spec_model: "SpecModel",
+    row: int,
+    col: int,
+    mask_offset_pix: int,
+    syn_flux: dict,
+    syn_flux_var: dict,
+    slit_len: float,
+    targetid: str,
 ) -> "SpecModel":
     """Model the host prior."""
 
     mask_offset = mask_offset_pix * spec_model.pixel_scale
-
-    wv_eff_dict = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
-    flts = "riz"
 
     counts_slit = []
     counts_err_slit = []
     spat_slit = []
 
     on_slit = np.abs(spec_model.ra_offset - mask_offset) <= slit_len / 2
-    for flt in flts:
-        counts_slit.append(np.nanmean(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1])
-        # counts_err_slit.append(np.nanstd(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1] / 5**0.5)
-        counts_slit_left_off = np.nanmean(syn_flux[flt][row - 3 : row + 2], axis=0)[on_slit][::-1]
-        counts_slit_right_off = np.nanmean(syn_flux[flt][row - 1 : row + 4], axis=0)[on_slit][::-1]
-        counts_err_slit.append(
-            (np.abs(counts_slit_right_off - counts_slit[-1]) + np.abs(counts_slit_left_off - counts_slit[-1])) / 4
+    for flt in FLTS:
+        counts_slit.append(
+            np.nanmean(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
         )
+        counts_err_slit.append(
+            np.nanmean(syn_flux_var[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
+            ** 0.5
+        )
+        # counts_err_slit.append(np.nanstd(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1] / 5**0.5)
+
+        # counts_slit_left_off = np.nanmean(syn_flux[flt][row - 3 : row + 2], axis=0)[
+        #     on_slit
+        # ][::-1]
+        # counts_slit_right_off = np.nanmean(syn_flux[flt][row - 1 : row + 4], axis=0)[
+        #     on_slit
+        # ][::-1]
+        # counts_err_slit.append(
+        # (
+        #     np.abs(counts_slit_right_off - counts_slit[-1])
+        #     + np.abs(counts_slit_left_off - counts_slit[-1])
+        # )
+        # / 4
+        # )
         spat_slit.append(spec_model.ra_offset[on_slit][::-1])
 
     spec_model.build_host_prior(
-        filters=flts,
-        wv_eff=[wv_eff_dict[flt] for flt in flts],
+        filters=FLTS,
+        from_archival=False,
+        wv_eff=[WV_EFF[flt] for flt in FLTS],
         spat_slit=spat_slit,
         counts_slit=counts_slit,
         counts_err_slit=counts_err_slit,
-        from_archival=False,
-        save=f"{args.galaxy}/QA/{targetid}_host_prior.pdf",
+        save=f"{PATH}/{targetid}_host_prior.pdf",
     )
 
     return spec_model
 
 
-def plot_QA(spec_model: "SpecModel", targetid: str):
+def plot_QA(
+    spec_model: "SpecModel",
+    targetid: str,
+) -> None:
     """Plot the QA figures."""
     # Prior and posterior of the host profiles
-    spec_model._plot_host_profile_prior(save=f"{args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
-    msgs.info(f"Saving the prior of the host profiles to {args.galaxy}/QA/{targetid}_host_profile_prior.pdf")
+    spec_model._plot_host_profile_prior(
+        save=f"{PATH}/{targetid}_host_profile_prior.pdf"
+    )
+    msgs.info(
+        f"Saving the prior of the host profiles to {PATH}/{targetid}_host_profile_prior.pdf"
+    )
 
-    spec_model._plot_host_profile_pred(save=f"{args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
-    msgs.info(f"Saving the posterior of the host profiles to {args.galaxy}/QA/{targetid}_host_profile_pred.pdf")
+    spec_model._plot_host_profile_pred(save=f"{PATH}/{targetid}_host_profile_pred.pdf")
+    msgs.info(
+        f"Saving the posterior of the host profiles to {PATH}/{targetid}_host_profile_pred.pdf"
+    )
 
     # Raw, model, and residual
-    spec_model._plot_pred(save=f"{args.galaxy}/QA/{targetid}_pred.pdf")
-    msgs.info(f"Saving the raw, model, and residual to {args.galaxy}/QA/{targetid}_pred.pdf")
+    spec_model._plot_pred(save=f"{PATH}/{targetid}_pred.pdf")
+    msgs.info(f"Saving the raw, model, and residual to {PATH}/{targetid}_pred.pdf")
 
     # Extract the science spectrum
-    spec_model.extract_sci(save=f"{args.galaxy}/QA/{targetid}_sci.pdf")
-    msgs.info(f"Saving the science spectrum to {args.galaxy}/QA/{targetid}_sci.pdf")
+    spec_model.extract_sci(save=f"{PATH}/{targetid}_sci.pdf")
+    msgs.info(f"Saving the science spectrum to {PATH}/{targetid}_sci.pdf")
 
     # Save the 1D spectra
     dat = np.array(
-        [spec_model.spec, spec_model.f_sci_pred_1d.y, spec_model.f_sci_pred_1d.yerr, spec_model.f_sci_classic_1d.y, spec_model.f_sci_classic_1d.yerr]
+        [
+            spec_model.spec,
+            spec_model.f_sci_pred_1d.y,
+            spec_model.f_sci_pred_1d.yerr,
+            spec_model.f_sci_classic_1d.y,
+            spec_model.f_sci_classic_1d.yerr,
+        ]
     ).T
-    np.savetxt(f"{args.galaxy}/QA/{targetid}_sci.dat", dat)
+    np.savetxt(f"{PATH}/{targetid}_sci.dat", dat)
 
 
-def range_to_random_ints(range_str: str, n: int) -> ArrayLike:
+def get_synthetic_flux(
+    dat: NDArray, dat_var: NDArray, wv: NDArray
+) -> tuple[dict[str, NDArray], dict[str, NDArray]]:
+    """Compute (or load) synthetic flux for a given filter."""
+    from scipy.ndimage import gaussian_filter
+
+    syn_flux = {}
+    syn_flux_var = {}
+
+    for flt in FLTS:
+        thpt = np.loadtxt(f"./PS1_filters/PAN-STARRS_PS1.{flt}.dat")
+        wv_low = thpt[thpt[:, 1] >= 0.5 * thpt[:, 1].max(), 0][0]
+        wv_high = thpt[thpt[:, 1] >= 0.5 * thpt[:, 1].max(), 0][-1]
+        msgs.info(
+            f"Computed wavelength range for the {flt}-band filter: {wv_low:.1f} - {wv_high:.1f} Angstrom"
+        )
+
+        flt_file = data_cube_file[0].split("/")[-1].replace(".fits", f".PS1_{flt}.npy")
+        flt_path = f"{args.galaxy_type}/{args.model_type}/{flt_file}"
+
+        # Check if the synthetic flux file already exists
+        if args.overwrite or not os.path.exists(flt_path):
+            msgs.info(f"Computing synthetic photometry for the {flt}-band filter...")
+            cube = np.where(np.isfinite(dat), dat, 0)
+            cube_var = np.where(np.isfinite(dat_var), dat_var, 0)
+            band_throuput = np.interp(wv, thpt[:, 0], thpt[:, 1])
+            syn_flux[flt] = np.trapezoid(
+                cube * band_throuput[:, np.newaxis, np.newaxis], wv, axis=0
+            )
+            syn_flux_var[flt] = np.trapezoid(
+                cube_var * band_throuput[:, np.newaxis, np.newaxis] ** 2, wv, axis=0
+            )
+            msgs.info(
+                f"Saving synthetic photometry for the {flt}-band filter to {flt_file}..."
+            )
+            syn_flux_var[flt][syn_flux[flt] <= 0] = np.nan
+            syn_flux[flt][syn_flux[flt] <= 0] = np.nan
+            np.save(flt_path, [syn_flux[flt], syn_flux_var[flt]])
+
+            # If we want to downgrade the spatial resolution
+            if "bad_phot" in args.model_type:
+                msgs.info(
+                    f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {args.kernel_width} pixels..."
+                )
+                kernel_size = (
+                    args.kernel_width / 2.355 / spec_model.pixel_scale
+                )  # Convert FWHM to sigma in pixels
+                syn_flux[flt] = gaussian_filter(
+                    syn_flux[flt], sigma=kernel_size, mode="nearest"
+                )
+                syn_flux_var[flt] = gaussian_filter(
+                    syn_flux_var[flt], sigma=kernel_size, mode="nearest"
+                )
+
+        # If the file exists, load it
+        else:
+            msgs.info(f"Loading synthetic photometry for the {flt}-band filter...")
+            syn_flux[flt], syn_flux_var[flt] = np.load(flt_path)
+
+    return syn_flux, syn_flux_var
+
+
+def range_to_random_ints(range_tuple: tuple, n: int) -> NDArray:
     """Convert a range string to a list of random integers."""
-    range_tuple = tuple(map(int, range_str.split(":")))
     if range_tuple[1] > range_tuple[0]:
         return np.random.randint(*range_tuple, size=n)
     elif range_tuple[1] < range_tuple[0]:
@@ -196,31 +396,34 @@ def range_to_random_ints(range_str: str, n: int) -> ArrayLike:
 
 
 if __name__ == "__main__":
-    import argparse
+    if args.clean:
+        if os.path.exists(PATH):
+            msgs.info(f"Removing the directory {PATH} and its contents.")
+            for file in glob.glob(f"{PATH}/*"):
+                os.remove(file)
+            os.rmdir(PATH)
+        else:
+            msgs.info(f"The directory {PATH} does not exist, nothing to clean.")
+    if not os.path.exists(PATH):
+        os.makedirs(PATH)
+        msgs.info(f"Created directory {PATH} for output files.")
 
-    parser = argparse.ArgumentParser(description="Test the HostSub_GP package on MUSE data cube.")
-    parser.add_argument("galaxy", type=str, help="Name of the galaxy (used as the directory name).")
-    parser.add_argument("-z", type=float, default=0.0, help="Redshift of the galaxy.")
-    parser.add_argument("--overwrite", "-o", default=False, action="store_true", help="Overwrite the output files.")
-    parser.add_argument(
-        "--row_range", type=str, default="180:220", help="Range of possible row (RA) indices for the slit center."
-    )
-    parser.add_argument(
-        "--col_range", type=str, default="180:220", help="Range of possible column (Dec) indices for the slit center."
-    )
-    parser.add_argument("--mask_offset_range", type=str, default="0:0", help="Range of offsets from the slit center.")
-    parser.add_argument("--n_trials", type=int, default=1, help="Number of trials to run.")
-    parser.add_argument("--match_seeing", default=False, action="store_true", help="Match the seeing.")
-    args = parser.parse_args()
+    # Load the configuration from the TOML file
+    hdr = decode_toml()
+    spec_model_cfg = hdr["spec_model"]
+    slit_range_cfg = hdr["slit_range"]
+    galaxy_cfg = hdr["galaxy"]
 
     # Load the MUSE data cube
-    data_cube_file = glob.glob(f"{args.galaxy}/*.fits")
+    data_cube_file = glob.glob(f"{args.galaxy_type}/*.fits")
     if len(data_cube_file) == 0:
-        raise FileNotFoundError(f"No fits file found in the directory {args.galaxy}")
+        raise FileNotFoundError(
+            f"No fits file found in the directory {args.galaxy_type}"
+        )
     elif len(data_cube_file) > 1:
-        raise FileNotFoundError(f"Multiple fits files found in the directory {args.galaxy}")
-    if not os.path.exists(f"{args.galaxy}/QA"):
-        os.mkdir(f"{args.galaxy}/QA")
+        raise FileNotFoundError(
+            f"Multiple fits files found in the directory {args.galaxy_type}"
+        )
 
     msgs.info(f"Loading the data cube from {data_cube_file[0]}...")
     hdul = fits.open(data_cube_file[0])
@@ -228,46 +431,36 @@ if __name__ == "__main__":
     dat_var = hdul[2].data
 
     # Load the wavelength and bin along the spectral axis
-    wv = hdul[1].header["CRVAL3"] + hdul[1].header["CD3_3"] * np.arange(hdul[1].header["NAXIS3"])
+    wv = hdul[1].header["CRVAL3"] + hdul[1].header["CD3_3"] * np.arange(
+        hdul[1].header["NAXIS3"]
+    )
+
+    if hdul[1].header["NAXIS3"] % 2 == 1:
+        # If the number of spectral pixels is odd, we remove the last pixel
+        msgs.warning("The number of spectral pixels is odd, removing the last pixel.")
+        wv = wv[:-1]
+        dat = dat[:-1]
+        dat_var = dat_var[:-1]
+
     wv_bin = np.mean(wv.reshape(-1, 2), axis=1)
 
     # Load the WCS
     ref_ra = hdul[1].header["CRVAL1"]
     ref_dec = hdul[1].header["CRVAL2"]
 
-    ra = ref_ra + hdul[1].header["CD1_1"] * (np.arange(hdul[1].header["NAXIS1"]) - (hdul[1].header["CRPIX1"] - 1))
-    dec = ref_dec + hdul[1].header["CD2_2"] * (np.arange(hdul[1].header["NAXIS2"]) - (hdul[1].header["CRPIX2"] - 1))
-
-    pixel_scale = np.abs(hdul[1].header["CD1_1"]) * 3600
-
-    # Compute (or load) the synthetic photometry
-    wv_range = {}
-    syn_flux = {}
-    for flt in "riz":
-        thpt = np.loadtxt(f"./PS1_filters/PAN-STARRS_PS1.{flt}.dat")
-        wv_low = thpt[thpt[:, 1] >= 0.5 * thpt[:, 1].max(), 0][0]
-        wv_high = thpt[thpt[:, 1] >= 0.5 * thpt[:, 1].max(), 0][-1]
-        wv_range[flt] = (wv_low, wv_high)
-        msgs.info(f"Computed wavelength range for the {flt}-band filter: {wv_low:.1f} - {wv_high:.1f} Angstrom")
-
-        flt_file = data_cube_file[0].replace(".fits", f".PS1_{flt}.dat")
-        if args.overwrite or not os.path.exists(flt_file):
-            msgs.info(f"Computing synthetic photometry for the {flt}-band filter...")
-            cube = np.where(np.isfinite(dat), dat, 0)
-            band_throuput = np.interp(wv, thpt[:, 0], thpt[:, 1])
-            flux_integrated = np.trapz(cube * band_throuput[:, np.newaxis, np.newaxis], wv, axis=0)
-            syn_flux[flt] = flux_integrated
-            msgs.info(f"Saving synthetic photometry for the {flt}-band filter to {flt_file}...")
-            np.savetxt(flt_file, syn_flux[flt])
-        else:
-            msgs.info(f"Loading synthetic photometry for the {flt}-band filter...")
-            syn_flux[flt] = np.loadtxt(flt_file)
+    ra = ref_ra + hdul[1].header["CD1_1"] * (
+        np.arange(hdul[1].header["NAXIS1"]) - (hdul[1].header["CRPIX1"] - 1)
+    )
+    dec = ref_dec + hdul[1].header["CD2_2"] * (
+        np.arange(hdul[1].header["NAXIS2"]) - (hdul[1].header["CRPIX2"] - 1)
+    )
 
     np.random.seed(42)
-    col = range_to_random_ints(args.col_range, args.n_trials)
-    row = range_to_random_ints(args.row_range, args.n_trials)
-    mask_offset_pix = range_to_random_ints(args.mask_offset_range, args.n_trials)
+    col = range_to_random_ints(slit_range_cfg["col"], args.n_trials)
+    row = range_to_random_ints(slit_range_cfg["row"], args.n_trials)
+    mask_offset_pix = range_to_random_ints(slit_range_cfg["mask_offset"], args.n_trials)
 
+    # Seeing matching
     dseeing_opt_list = []
 
     for i in range(args.n_trials):
@@ -281,14 +474,14 @@ if __name__ == "__main__":
             ra,
             dec,
             wv_bin,
+            targetid,
             row=row[i],
             col=col[i],
             mask_offset_pix=mask_offset_pix[i],
-            slit_len=60,
-            pixel_scale=pixel_scale,
-            sky_region=(-15, None),
-            targetid=targetid,
+            **spec_model_cfg,
         )
+
+        syn_flux, syn_flux_var = get_synthetic_flux(dat=dat, dat_var=dat_var, wv=wv)
 
         # Model the host prior
         spec_model = model_host_prior(
@@ -297,44 +490,88 @@ if __name__ == "__main__":
             col=col[i],
             mask_offset_pix=mask_offset_pix[i],
             syn_flux=syn_flux,
-            slit_len=60,
+            syn_flux_var=syn_flux_var,
+            slit_len=spec_model_cfg["slit_len"],
             targetid=targetid,
         )
 
         spec_model.construct_spec_wrapper(
             f_obs=spec_model.f_obs,
-            batch_2d=(2, 256),
-            host_emission_cfg={"find_host_emission": True, "z": args.z, "z_err": 0.001, "p_value": 0.05},
+            batch_2d=(1, 256),
+            host_emission_cfg={
+                "find_host_emission": args.galaxy_type == "spiral",
+                "z": galaxy_cfg["z"],
+                "z_err": 0.0001,
+                "p_value": 0.05,
+            },
             sigma_clip=None,
-            save=f"{args.galaxy}/QA/{targetid}_raw.pdf",
+            save=f"{PATH}/{targetid}_raw.pdf",
         )
 
-        if args.match_seeing:
+        if "match" in args.model_type:
             dseeing_opt = spec_model.update_seeing(dseeing=None, max_dseeing=1.5)
             dseeing_opt_list.append(dseeing_opt)
 
-            dseeing_wv = dseeing_opt / spec_model.pixel_scale * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+            dseeing_wv = (
+                dseeing_opt
+                / spec_model.pixel_scale
+                * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+            )
             spec_model.construct_spec_wrapper(
                 f_obs=spec_model.f_obs.convolve(dseeing_wv),
-                batch_2d=(2, 128),
-                host_emission_cfg={"find_host_emission": True, "z": args.z, "z_err": 0.001, "p_value": 0.05},
+                batch_2d=(1, 128),
+                host_emission_cfg={
+                    "find_host_emission": True,
+                    "z": args.z,
+                    "z_err": 0.001,
+                    "p_value": 0.05,
+                },
                 sigma_clip=None,
-                save=f"{args.galaxy}/QA/{targetid}_conv.pdf",
+                save=f"{PATH}/{targetid}_conv.pdf",
             )
 
         # Get the initial parameters
-        # params_init_1d = None
-        # params_init_2d = {}
-        # params_init_2d["mean"] = np.array([0.0])
-        # params_init_2d["log_amp"] = np.array([-3.0])
-        # params_init_2d["log_scale"] = np.log10([spec_model.spat_resln, 1e3])
-        params_init = [None, None]
+        log_amp_est = np.log10(((spec_model.f_host_1d.y) ** 2).max())
+        mean_est = np.nanmean(spec_model.f_host_1d.y)
+        params_init_1d = dict(
+            log_amp=(
+                log_amp_est,  # ExpSquared: Logarithm of the maximum squared value of the 1D spectrum
+                log_amp_est - 2,  # Matern: Somewhat smaller
+            ),
+            log_scale=(
+                2,  # ExpSquared: 100 Angstrom
+                np.log10(
+                    spec_model.spec_resln / 2.355
+                ),  # Matern: Spectral resolution / 2.355
+            ),
+            mean=mean_est,  # Mean of the 1D spectrum
+        )
+        params_init_2d = params_init_default = dict(
+            log_amp=-4.0,
+            log_scale=(
+                np.log10(spec_model.spec_resln),  # Spatial scale ~ seeing
+                3,  # Spectral scale ~ 1000 Angstrom
+            ),
+            mean=0.0,
+            log_amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
+            scale_line=spec_model.spec_resln
+            / 2,  # Radius of the host lines: Half of the FWHM of the spectral resolution
+        )
+        params_init = (params_init_1d, params_init_2d)
 
         # Get limits for the parameters
         def _set_params_limit(params_limit_dict):
             """Integrate upper and lower limits of each parameter."""
-            upper = {k.replace("_upper", ""): v for k, v in params_limit_dict.items() if "upper" in k}
-            lower = {k.replace("_lower", ""): v for k, v in params_limit_dict.items() if "lower" in k}
+            upper = {
+                k.replace("_upper", ""): v
+                for k, v in params_limit_dict.items()
+                if "upper" in k
+            }
+            lower = {
+                k.replace("_lower", ""): v
+                for k, v in params_limit_dict.items()
+                if "lower" in k
+            }
             return {k: (lower[k], upper[k]) for k in lower}
 
         params_limit_1d = _set_params_limit({})
@@ -342,45 +579,50 @@ if __name__ == "__main__":
 
         params_limit_1d["log_scale"] = params_limit_1d.get(
             "log_scale",
-            np.array(
+            np.log10(
                 [
                     # log range of the slow varying component
-                    [1, 4],
+                    [spec_model.spec_resln / 2.355, np.inf],
                     # log range of the fast varying component
                     # typical scale = spectral resolution
-                    np.log10([spec_model.spec_resln / 2.355, spec_model.spec_resln * 1e4]),
+                    [spec_model.spec_resln / 2.355, spec_model.spec_resln * 2],
                 ]
             ).T,
         )
         params_limit_2d["log_scale"] = params_limit_2d.get(
             "log_scale",
-            np.array(
+            np.log10(
                 [
                     # log range of the spatial component
                     # typical scale = spatial resolution
-                    np.log10([spec_model.spat_resln / 2.355, spec_model.spat_resln * 1e4]),
+                    [spec_model.spat_resln / 2.355, np.inf],
                     # log range of the spectral component
                     # typical scale = spectral resolution
-                    np.log10([1e2, 1e5]),
+                    [spec_model.spec_resln / 2.355, np.inf],
                 ]
             ).T,
         )
         params_limit_2d["mean"] = params_limit_2d.get("mean", np.array([-1e-1, 1e-1]).T)
-        params_limit_2d["log_amp_line"] = params_limit_2d.get("log_amp_line", np.array([0, 5]).T)
-        params_limit_2d["scale_line"] = params_limit_2d.get("scale_line", np.array([2.7 / 2.355, 2.7 * 2]).T)
-        params_limit = [params_limit_1d, params_limit_2d]
+        params_limit_2d["log_amp_line"] = params_limit_2d.get(
+            "log_amp_line", np.array([0, 5]).T
+        )
+        params_limit_2d["scale_line"] = params_limit_2d.get(
+            "scale_line",
+            np.array([spec_model.spec_resln / 2.355, spec_model.spec_resln]).T,
+        )
+        params_limit = (params_limit_1d, params_limit_2d)
 
         # Model the host
         spec_model.model_host(
             params_init=params_init,
             params_limit=params_limit,
             optimization=True,
-            optimization_kwargs={"maxiter": 1000, "tol": 1e-2},
+            optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
         )
 
         # QA plots
         plot_QA(spec_model, targetid)
 
-    if args.match_seeing:
+    if "match" in args.model_type:
         dseeing_opt_list = np.array(dseeing_opt_list)
-        np.savetxt(f"{args.galaxy}/QA/dseeing_opt.dat", dseeing_opt_list)
+        np.savetxt(f"{PATH}/dseeing_opt.dat", dseeing_opt_list)
