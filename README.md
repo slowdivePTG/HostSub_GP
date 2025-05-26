@@ -23,6 +23,7 @@ Users are recommended to use `PypeIt` for basic image processing, and the `spec2
 ```shell
 git clone https://github.com/slowdivePTG/HostSub_GP.git
 cd HostSub_GP
+conda env create -f environment.yml
 pip install -e .
 ```
 
