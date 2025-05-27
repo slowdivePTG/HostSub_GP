@@ -137,21 +137,21 @@ def pack_2d_spectrum(
     center_ra = ra[col]
     center_dec = dec[row]
     ra_offset = (ra - center_ra) * 3600
+    dec_offset = (dec - center_dec) * 3600
 
-    # Bin the data cube along both spatial and spectral axes
-    # 2 pixels in the spatial direction and 5 pixels in the spectral direction
+    # Generate the synthetic 2D spectrum
     flux_rect = np.nanmean(
-        dat[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape(
-            (dat.shape[0]) // 2, 2, 5, -1
+        dat[:, np.abs(dec_offset) <= slit_len / 2, col - 2 : col + 3].reshape(
+            dat.shape[0], -1, 1, 5
         ),
-        axis=(1, 2),
-    )[:, ::-1]
+        axis=(2, 3),
+    )
     flux_ivar_rect = np.nanmean(
-        dat_var[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape(
-            (dat.shape[0]) // 2, 2, 5, -1
+        dat_var[:, np.abs(dec_offset) <= slit_len / 2, col - 2 : col + 3].reshape(
+            dat.shape[0], -1, 1, 5
         ),
-        axis=(1, 2),
-    )[:, ::-1] ** -1 * (2 * 5)
+        axis=(2, 3),
+    ) ** -1 * (1 * 5)
 
     spec_data = SpecData(
         pixel_scale=pixel_scale,
@@ -161,7 +161,7 @@ def pack_2d_spectrum(
         position_angle=position_angle,
         spat_resln=spat_resln,
         spec_resln=spec_resln,
-        spat_rect=ra_offset[np.abs(ra_offset) <= slit_len / 2][::-1],
+        spat_rect=dec_offset[np.abs(dec_offset) <= slit_len / 2],
         spec_rect=wv,
         flux_rect=np.asarray(flux_rect, dtype=float).T,
         flux_ivar_rect=np.asarray(flux_ivar_rect, dtype=float).T,
@@ -177,6 +177,7 @@ def pack_2d_spectrum(
     )
 
     spec_model.ra_offset = ra_offset
+    spec_model.dec_offset = dec_offset
 
     fig = plt.figure(figsize=(20, 4))
     gs = fig.add_gridspec(1, 2, width_ratios=[1, 3.5])
@@ -193,15 +194,15 @@ def pack_2d_spectrum(
     )
     ## The slit
     ax[0].plot(
+        [col, col],
         [
-            col - slit_len / 2 / pixel_scale,
-            col + slit_len / 2 / pixel_scale,
+            row - slit_len / 2 / pixel_scale,
+            row + slit_len / 2 / pixel_scale,
         ],
-        [row, row],
         color="red",
     )
     ## The center of the slit
-    ax[0].scatter(col - mask_offset_pix, row, color="red", s=100, marker="+")
+    ax[0].scatter(col, row - mask_offset_pix, color="red", s=100, marker="+")
     ax[0].set_xlabel("RA (pixels)")
     ax[0].set_ylabel("Dec (pixels)")
 
@@ -213,7 +214,7 @@ def pack_2d_spectrum(
         cmap="grey",
         vmin=np.nanpercentile(dat[:, row, :], 1),
         vmax=np.nanpercentile(dat[:, row, :], 95),
-        extent=(wv[0], wv[-1], ra_offset[0], ra_offset[-1]),
+        extent=(wv[0], wv[-1], dec_offset[0], dec_offset[-1]),
     )
     ax[1].set_aspect("auto")
     ax[1].set_ylim(-slit_len / 2, slit_len / 2)
@@ -245,32 +246,17 @@ def model_host_prior(
     counts_err_slit = []
     spat_slit = []
 
-    on_slit = np.abs(spec_model.ra_offset - mask_offset) <= slit_len / 2
+    on_slit = np.abs(spec_model.dec_offset - mask_offset) <= slit_len / 2
     for flt in FLTS:
         counts_slit.append(
-            np.nanmean(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
+            np.nanmean(syn_flux[flt][:, col - 2 : col + 3], axis=1)[on_slit]
         )
         counts_err_slit.append(
-            np.nansum(syn_flux_var[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
+            np.nanmean(syn_flux_var[flt][:, col - 2 : col + 3], axis=1)[on_slit]
             ** 0.5
-            / 5
+            / 5**0.5
         )
-        # counts_err_slit.append(np.nanstd(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1] / 5**0.5)
-
-        # counts_slit_left_off = np.nanmean(syn_flux[flt][row - 3 : row + 2], axis=0)[
-        #     on_slit
-        # ][::-1]
-        # counts_slit_right_off = np.nanmean(syn_flux[flt][row - 1 : row + 4], axis=0)[
-        #     on_slit
-        # ][::-1]
-        # counts_err_slit.append(
-        # (
-        #     np.abs(counts_slit_right_off - counts_slit[-1])
-        #     + np.abs(counts_slit_left_off - counts_slit[-1])
-        # )
-        # / 4
-        # )
-        spat_slit.append(spec_model.ra_offset[on_slit][::-1])
+        spat_slit.append(spec_model.dec_offset[on_slit])
     spec_model.build_host_prior(
         filters=FLTS,
         from_archival=False,
@@ -435,15 +421,6 @@ if __name__ == "__main__":
         hdul[1].header["NAXIS3"]
     )
 
-    if hdul[1].header["NAXIS3"] % 2 == 1:
-        # If the number of spectral pixels is odd, we remove the last pixel
-        msgs.warning("The number of spectral pixels is odd, removing the last pixel.")
-        wv = wv[:-1]
-        dat = dat[:-1]
-        dat_var = dat_var[:-1]
-
-    wv_bin = np.mean(wv.reshape(-1, 2), axis=1)
-
     # Load the WCS
     ref_ra = hdul[1].header["CRVAL1"]
     ref_dec = hdul[1].header["CRVAL2"]
@@ -473,7 +450,7 @@ if __name__ == "__main__":
             dat_var,
             ra,
             dec,
-            wv_bin,
+            wv,
             targetid,
             row=row[i],
             col=col[i],
@@ -497,7 +474,7 @@ if __name__ == "__main__":
 
         spec_model.construct_spec_wrapper(
             f_obs=spec_model.f_obs,
-            batch_2d=(1, 64),
+            batch_2d=(2, 256) if args.galaxy_type == "spiral" else (2, 128),
             host_emission_cfg={
                 "find_host_emission": args.galaxy_type == "spiral",
                 "z": galaxy_cfg["z"],

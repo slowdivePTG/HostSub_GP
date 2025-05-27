@@ -9,7 +9,7 @@ slit_wid = 1.0    # arcsec
 # Model specific parameters
 host_wid = 10.0 # arcsec
 mask_wid = 2.0 # in spat_resln
-position_angle = 90.0 # degrees
+position_angle = 0.0 # degrees
 spec_range = [
     5500,
     9200,
@@ -23,7 +23,7 @@ z = 0.002192
 
 [spec_model.spiral]
 spat_resln = 0.70
-sky_region = [-10, inf]
+sky_region = [-inf, 10]
 
 [slit_range.spiral]
 row = [190, 240]
@@ -41,6 +41,6 @@ spat_resln = 0.78
 sky_region = [-10, 10]
 
 [slit_range.elliptical]
-row = [120, 180]
-col = [135, 160]
-mask_offset = [0, 10]
+row = [140, 160]
+col = [150, 170]
+mask_offset = [0, 1]

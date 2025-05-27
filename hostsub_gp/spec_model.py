@@ -1339,6 +1339,21 @@ class SpecModel:
         assert f_1d_norm.y is not None and f_1d_norm.yerr is not None
         assert f_1d_norm.Y is not None and f_1d_norm.Yerr is not None
 
+        # Batch
+        def _pad_indices(batches, pad_value=-1):
+            """Pads a list of index arrays to form a 2D array."""
+            maxlen = max(len(b) for b in batches)
+            arr = jnp.full((len(batches), maxlen), pad_value)
+            for i, b in enumerate(batches):
+                arr = arr.at[i, : len(b)].set(jnp.array(b))
+            return arr
+
+        # Pad indices for spatial and spectral batches
+        spat_batch_idx_arr = _pad_indices(spat_batch_idx)  # (n_spat_batch, max_spat)
+        spec_batch_idx_arr = _pad_indices(spec_batch_idx)  # (n_spec_batch, max_spec)
+        n_spat_batch, max_spat = spat_batch_idx_arr.shape
+        n_spec_batch, max_spec = spec_batch_idx_arr.shape
+
         # Precompute arrays for spatial and spectral axes batching
         spat_batch_2d = jnp.array(
             [jnp.mean(jnp.array(self.spat)[idx]) for idx in spat_batch_idx]
@@ -1347,56 +1362,63 @@ class SpecModel:
             [jnp.mean(jnp.array(self.spec)[idx]) for idx in spec_batch_idx]
         )
 
-        n_spat = jnp.array([len(idx) for idx in spat_batch_idx])
-        n_spec = jnp.array([len(idx) for idx in spec_batch_idx])
-        n_x, n_y = len(spat_batch_idx), len(spec_batch_idx)
+        # Build 4D arrays for spatial and spectral batches: (n_spat_batch, max_spat, n_spec_batch, max_spec)
+        spat_batch_idx_pad = jnp.broadcast_to(
+            spat_batch_idx_arr[:, :, None, None],
+            (n_spat_batch, max_spat, n_spec_batch, max_spec),
+        )
+        spec_batch_idx_pad = jnp.broadcast_to(
+            spec_batch_idx_arr[None, None, :, :],
+            (n_spat_batch, max_spat, n_spec_batch, max_spec),
+        )
 
-        # Preallocate output
-        values_batch_2d = jnp.empty((n_x, n_y))
-        values_err_batch_2d = jnp.empty((n_x, n_y))
+        # Mask for valid indices
+        valid_mask = (spat_batch_idx_pad >= 0) & (spec_batch_idx_pad >= 0)
 
-        # Stack all selected indices for vectorized access
-        # For each batch, extract the subarrays and process them
-        for y, idx_spec in enumerate(spec_batch_idx):
-            Y_1d = f_1d_norm.Y[idx_spec]
-            Y_err_1d = f_1d_norm.Yerr[idx_spec]
-            Y_2d_spec = f_2d.Y[:, idx_spec]  # (n_spat, n_spec)
-            Y_err_2d_spec = f_2d.Yerr[:, idx_spec]
+        # Get data with invalid values set to NaN
+        Y_2d_batch = jnp.where(
+            valid_mask,
+            f_2d.Y[spat_batch_idx_pad, spec_batch_idx_pad],
+            jnp.nan,
+        )
+        Yerr_2d_batch = jnp.where(
+            valid_mask,
+            f_2d.Yerr[spat_batch_idx_pad, spec_batch_idx_pad],
+            jnp.nan,
+        )
 
-            # Stack all spatial batches at once
-            spat_stack = jnp.stack(
-                [Y_2d_spec[idx_spat] for idx_spat in spat_batch_idx]
-            )  # (n_x, ?, n_spec)
-            spat_err_stack = jnp.stack(
-                [Y_err_2d_spec[idx_spat] for idx_spat in spat_batch_idx]
-            )
+        # Bin along spatial axis
+        # (n_spat_batch, n_spec_batch)
+        Y_2d = jnp.nanmean(Y_2d_batch, axis=1)
+        Yerr_2d = (jnp.nanmean(Yerr_2d_batch**2, axis=1)) ** 0.5
 
-            # Compute nan fractions for each batch
-            nan_fractions = jnp.sum(~jnp.isfinite(spat_stack), axis=(1, 2)) / (
-                n_spat * n_spec[y]
-            )
+        # Get 1D normalization factors for each spectral batch, with padding
+        # (1, n_spat_batch, n_spec_batch)
+        Y_1d = jnp.where(
+            spec_batch_idx_arr >= 0, f_1d_norm.Y[spec_batch_idx_arr], jnp.nan
+        )[None, :, :]
+        Yerr_1d = jnp.where(
+            spec_batch_idx_arr >= 0, f_1d_norm.Yerr[spec_batch_idx_arr], jnp.nan
+        )[None, :, :]
 
-            # Bin along spatial axis (mean over axis=1)
-            Y_2d = jnp.nanmean(spat_stack, axis=1)
-            Y_err_2d = (jnp.nanmean(spat_err_stack**2, axis=1) / n_spat[:, None]) ** 0.5
+        # Normalization
+        Y_2d_1d = Y_2d / Y_1d
+        Yerr_2d_1d = Y_2d_1d * ((Yerr_2d / Y_2d) ** 2 + (Yerr_1d / Y_1d) ** 2) ** 0.5
 
-            # Normalize
-            Y_2d_1d = Y_2d / Y_1d
-            Y_err_2d_1d = (
-                Y_2d_1d * ((Y_err_2d / Y_2d) ** 2 + (Y_err_1d / Y_1d) ** 2) ** 0.5
-            )
+        # Bin along spectral axis
+        # (n_spat_b, n_spec_b)
+        values_batch_2d = jnp.nanmean(Y_2d_1d, axis=2)
+        values_err_batch_2d = (
+            jnp.nanmean(Yerr_2d_1d**2, axis=2) / jnp.sum(valid_mask, axis=3)[:, 0, :]
+        ) ** 0.5
 
-            # Bin along spectral axis (median and error)
-            values_batch_2d = values_batch_2d.at[:, y].set(
-                jnp.nanmedian(Y_2d_1d, axis=1)
-            )
-            values_err_batch_2d = values_err_batch_2d.at[:, y].set(
-                jnp.where(
-                    nan_fractions > nan_threshold,
-                    jnp.nan,
-                    jnp.nanmean(Y_err_2d_1d**2, axis=1) ** 0.5,
-                )
-            )
+        # Compute nan fractions for masking
+        n_valid = jnp.sum(valid_mask, axis=(1, 3))
+        n_nan = jnp.sum(jnp.isnan(Y_2d_batch) & valid_mask, axis=(1, 3))
+
+        values_err_batch_2d = jnp.where(
+            n_nan / n_valid > nan_threshold, jnp.nan, values_err_batch_2d
+        )
 
         return SpecWrapper(
             points=(spat_batch_2d, spec_batch_2d),
@@ -1576,7 +1598,7 @@ class SpecModel:
         distinct_prof, _ = find_peaks(
             prof_diff, height=chi2.ppf(1 - p_value, prof.shape[0]), distance=kernel_wid
         )
-        host_lines = jnp.argwhere(f_lines > mad_std(f_lines) * 5).ravel()
+        host_lines = jnp.argwhere(f_lines > mad_std(f_lines) * 3).ravel()
 
         emission_lines_idx = []
         for line in distinct_prof:
