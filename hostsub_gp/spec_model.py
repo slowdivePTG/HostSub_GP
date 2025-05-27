@@ -925,7 +925,7 @@ class SpecModel:
         ### Here we use a composite kernel
         ### ExpSquared - slow variation (>> spectral resolution)
         ### Matern - narrow features (~ spectral resolution)
-        if ndim == 1:  # TODO: modify the default limits with a configuration file
+        if ndim == 1:
             params_limit_default = dict(
                 log_scale=np.log10(
                     [
@@ -933,12 +933,7 @@ class SpecModel:
                             self.spec_resln / 2.355,  # Limit for the ExpSquared kernel
                             self.spec_resln / 2.355,  # Limit for the Matern kernel
                         ],
-                        [
-                            self.spec_resln
-                            * large_scale,  # Limit for the ExpSquared kernel
-                            self.spec_resln
-                            * large_scale,  # Limit for the Matern kernel
-                        ],
+                        [np.inf, np.inf],
                     ]
                 ),
             )
@@ -953,22 +948,12 @@ class SpecModel:
                     [
                         # lower bound
                         [
-                            # # spatial direction (slow & fast)
-                            # [self.spat_resln / 2.355, self.spat_resln / 2.355],
-                            # # spectral direction (slow & fast)
-                            # [self.spec_resln / 2.355, self.spec_resln / 2.355],
+                            # spectral direction (slow & fast)
                             self.spat_resln / 2.355,
                             self.spat_resln / 2.355,
                         ],
                         # upper bound
-                        [
-                            # # spatial direction (slow & fast)
-                            # [self.spat_resln * 2, self.spat_resln],
-                            # # spectral direction (slow & fast)
-                            # [1e4, 1e4],
-                            self.spat_resln * large_scale,
-                            self.spec_resln * large_scale,
-                        ],
+                        [np.inf, np.inf],
                     ]
                 ),
             )

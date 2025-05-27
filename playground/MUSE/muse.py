@@ -146,7 +146,7 @@ def pack_2d_spectrum(
         ),
         axis=(1, 2),
     )[:, ::-1]
-    flux_ivar_rect = np.nansum(
+    flux_ivar_rect = np.nanmean(
         dat_var[:, row - 2 : row + 3, np.abs(ra_offset) <= slit_len / 2].reshape(
             (dat.shape[0]) // 2, 2, 5, -1
         ),
@@ -251,8 +251,9 @@ def model_host_prior(
             np.nanmean(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
         )
         counts_err_slit.append(
-            np.nanmean(syn_flux_var[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
+            np.nansum(syn_flux_var[flt][row - 2 : row + 3], axis=0)[on_slit][::-1]
             ** 0.5
+            / 5
         )
         # counts_err_slit.append(np.nanstd(syn_flux[flt][row - 2 : row + 3], axis=0)[on_slit][::-1] / 5**0.5)
 
@@ -270,7 +271,6 @@ def model_host_prior(
         # / 4
         # )
         spat_slit.append(spec_model.ra_offset[on_slit][::-1])
-
     spec_model.build_host_prior(
         filters=FLTS,
         from_archival=False,
@@ -358,8 +358,8 @@ def get_synthetic_flux(
             msgs.info(
                 f"Saving synthetic photometry for the {flt}-band filter to {flt_file}..."
             )
-            syn_flux_var[flt][syn_flux[flt] <= 0] = np.nan
-            syn_flux[flt][syn_flux[flt] <= 0] = np.nan
+            # syn_flux_var[flt][syn_flux[flt] <= 0] = np.nan
+            # syn_flux[flt][syn_flux[flt] <= 0] = np.nan
             np.save(flt_path, [syn_flux[flt], syn_flux_var[flt]])
 
             # If we want to downgrade the spatial resolution
@@ -497,7 +497,7 @@ if __name__ == "__main__":
 
         spec_model.construct_spec_wrapper(
             f_obs=spec_model.f_obs,
-            batch_2d=(1, 256),
+            batch_2d=(1, 64),
             host_emission_cfg={
                 "find_host_emission": args.galaxy_type == "spiral",
                 "z": galaxy_cfg["z"],
@@ -546,10 +546,10 @@ if __name__ == "__main__":
             ),
             mean=mean_est,  # Mean of the 1D spectrum
         )
-        params_init_2d = params_init_default = dict(
+        params_init_2d = dict(
             log_amp=-4.0,
             log_scale=(
-                np.log10(spec_model.spec_resln),  # Spatial scale ~ seeing
+                np.log10(spec_model.spat_resln),  # Spatial scale ~ seeing
                 3,  # Spectral scale ~ 1000 Angstrom
             ),
             mean=0.0,
@@ -559,27 +559,9 @@ if __name__ == "__main__":
         )
         params_init = (params_init_1d, params_init_2d)
 
-        # Get limits for the parameters
-        def _set_params_limit(params_limit_dict):
-            """Integrate upper and lower limits of each parameter."""
-            upper = {
-                k.replace("_upper", ""): v
-                for k, v in params_limit_dict.items()
-                if "upper" in k
-            }
-            lower = {
-                k.replace("_lower", ""): v
-                for k, v in params_limit_dict.items()
-                if "lower" in k
-            }
-            return {k: (lower[k], upper[k]) for k in lower}
-
-        params_limit_1d = _set_params_limit({})
-        params_limit_2d = _set_params_limit({})
-
-        params_limit_1d["log_scale"] = params_limit_1d.get(
-            "log_scale",
-            np.log10(
+        # Set the limits for the parameters
+        params_limit_1d = dict(
+            log_scale=np.log10(
                 [
                     # log range of the slow varying component
                     [spec_model.spec_resln / 2.355, np.inf],
@@ -587,11 +569,10 @@ if __name__ == "__main__":
                     # typical scale = spectral resolution
                     [spec_model.spec_resln / 2.355, spec_model.spec_resln * 2],
                 ]
-            ).T,
+            ).T
         )
-        params_limit_2d["log_scale"] = params_limit_2d.get(
-            "log_scale",
-            np.log10(
+        params_limit_2d = dict(
+            log_scale=np.log10(
                 [
                     # log range of the spatial component
                     # typical scale = spatial resolution
@@ -601,14 +582,13 @@ if __name__ == "__main__":
                     [spec_model.spec_resln / 2.355, np.inf],
                 ]
             ).T,
-        )
-        params_limit_2d["mean"] = params_limit_2d.get("mean", np.array([-1e-1, 1e-1]).T)
-        params_limit_2d["log_amp_line"] = params_limit_2d.get(
-            "log_amp_line", np.array([0, 5]).T
-        )
-        params_limit_2d["scale_line"] = params_limit_2d.get(
-            "scale_line",
-            np.array([spec_model.spec_resln / 2.355, spec_model.spec_resln]).T,
+            mean=np.array([-1e-1, 1e-1]),  # Mean of the host profile
+            log_amp_line=np.array(
+                [0, np.inf]
+            ),  # Logarithm of the amplitude of the host lines
+            scale_line=np.array(
+                [spec_model.spec_resln / 2.355, spec_model.spec_resln]
+            ),  # Scale of the host lines
         )
         params_limit = (params_limit_1d, params_limit_2d)
 
@@ -617,7 +597,7 @@ if __name__ == "__main__":
             params_init=params_init,
             params_limit=params_limit,
             optimization=True,
-            optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
+            # optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
         )
 
         # QA plots
