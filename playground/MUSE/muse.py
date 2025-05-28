@@ -252,8 +252,7 @@ def model_host_prior(
             np.nanmean(syn_flux[flt][:, col - 2 : col + 3], axis=1)[on_slit]
         )
         counts_err_slit.append(
-            np.nanmean(syn_flux_var[flt][:, col - 2 : col + 3], axis=1)[on_slit]
-            ** 0.5
+            np.nanmean(syn_flux_var[flt][:, col - 2 : col + 3], axis=1)[on_slit] ** 0.5
             / 5**0.5
         )
         spat_slit.append(spec_model.dec_offset[on_slit])
@@ -433,9 +432,18 @@ if __name__ == "__main__":
     )
 
     np.random.seed(42)
-    col = range_to_random_ints(slit_range_cfg["col"], args.n_trials)
-    row = range_to_random_ints(slit_range_cfg["row"], args.n_trials)
-    mask_offset_pix = range_to_random_ints(slit_range_cfg["mask_offset"], args.n_trials)
+    has_identical_trials = True
+    while has_identical_trials:
+        col = range_to_random_ints(slit_range_cfg["col"], args.n_trials)
+        row = range_to_random_ints(slit_range_cfg["row"], args.n_trials)
+        mask_offset_pix = range_to_random_ints(
+            slit_range_cfg["mask_offset"], args.n_trials
+        )
+        # Check if the trials are identical
+        has_identical_trials = len(set(zip(col, row, mask_offset_pix))) < args.n_trials
+    msgs.info(
+        f"Randomly selected {args.n_trials} trials with unique (col, row, mask_offset_pix) pairs."
+    )
 
     # Seeing matching
     dseeing_opt_list = []
