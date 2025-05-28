@@ -83,6 +83,7 @@ class SpecWrapper:
             else:
                 raise ValueError("Y shape error")
 
+    @msgs.timer
     def sigma_clip(
         self,
         sigma: Optional[float] = None,
@@ -113,24 +114,6 @@ class SpecWrapper:
         if self.Y is None:
             raise ValueError("sigma_clip requires non-empty spectra.")
 
-        def clip(Y: Array, Yerr: Array) -> tuple[Array, Array]:
-            """
-            Sigma clipping for a batch of the spectrum.
-            """
-            from astropy.stats import mad_std
-
-            Y_meds = jnp.nanmedian(Y)
-            Y_stds = mad_std(Y[jnp.isfinite(Y)])
-
-            if clip_cr:  # Only remove positive outliers
-                sigma_mask = (Y - Y_meds) <= (sigma * Y_stds)
-            else:  # Remove both positive and negative outliers
-                sigma_mask = (jnp.abs(Y - Y_meds) <= (sigma * Y_stds)) & jnp.isfinite(Y)
-
-            Y_clipped = jnp.where(sigma_mask, Y, jnp.nan)
-            Yerr_clipped = jnp.where(sigma_mask, Yerr, jnp.nan)
-            return Y_clipped, Yerr_clipped
-
         Y_target = jnp.array(self.Y)
         masked_init = ~jnp.isfinite(self.Y)
         Yerr_target = jnp.array(self.Yerr)
@@ -143,39 +126,47 @@ class SpecWrapper:
                 # Calculate the means and standard deviations at each wavelength (for all spatial pixels)
                 batch_idx = (
                     [jnp.arange(self.shape[0])],
-                    [jnp.array(i) for i in jnp.arange(self.shape[1])],
+                    [jnp.atleast_1d(i) for i in jnp.arange(self.shape[1])],
                 )
 
         if self.Y.ndim == 1:
             for spec_idx in batch_idx[0]:
-                Y_target = Y_target.at[spec_idx].set(
-                    clip(self.Y[spec_idx], self.Yerr[spec_idx])[0]
+                Y_clipped, Yerr_clipped = _clip(
+                    self.Y[spec_idx],
+                    self.Yerr[spec_idx],
+                    sigma=sigma,
+                    clip_cr=clip_cr,
                 )
-                Yerr_target = Yerr_target.at[spec_idx].set(
-                    clip(self.Y[spec_idx], self.Yerr[spec_idx])[1]
-                )
+                Y_target = Y_target.at[spec_idx].set(Y_clipped)
+                Yerr_target = Yerr_target.at[spec_idx].set(Yerr_clipped)
         else:
             for spat_idx in batch_idx[0]:
                 for spec_idx in batch_idx[1]:
                     if (spat_idx.ndim == 1) & (spec_idx.ndim == 1):
                         # Both spat_idx and spec_idx are lists
-                        Y_clip, Yerr_clip = clip(
-                            self.Y[spat_idx, :][:, spec_idx],
-                            self.Yerr[spat_idx, :][:, spec_idx],
+                        Y_clipped, Yerr_clipped = _clip(
+                            self.Y[spat_idx, :][:, spec_idx].ravel(),
+                            self.Yerr[spat_idx, :][:, spec_idx].ravel(),
+                            sigma=sigma,
+                            clip_cr=clip_cr,
                         )
-                        Y_target = Y_target.at[jnp.ix_(spat_idx, spec_idx)].set(Y_clip)
+                        Y_target = Y_target.at[jnp.ix_(spat_idx, spec_idx)].set(
+                            Y_clipped.reshape(len(spat_idx), len(spec_idx))
+                        )
                         Yerr_target = Yerr_target.at[jnp.ix_(spat_idx, spec_idx)].set(
-                            Yerr_clip
+                            Yerr_clipped.reshape(len(spat_idx), len(spec_idx))
                         )
                     else:
                         # Either spat_idx or spec_idx is a scalar
-                        Y_clip, Yerr_clip = clip(
+                        Y_clipped, Yerr_clipped = _clip(
                             self.Y[spat_idx, :][:, spec_idx],
                             self.Yerr[spat_idx, :][:, spec_idx],
+                            sigma=sigma,
+                            clip_cr=clip_cr,
                         )
-                        Y_target = Y_target.at[(spat_idx, spec_idx)].set(Y_clip)
+                        Y_target = Y_target.at[(spat_idx, spec_idx)].set(Y_clipped)
                         Yerr_target = Yerr_target.at[(spat_idx, spec_idx)].set(
-                            Yerr_clip
+                            Yerr_clipped
                         )
 
         masked_final = ~jnp.isfinite(Y_target)
@@ -185,6 +176,7 @@ class SpecWrapper:
             points=(self.spat, self.spec), values=Y_target, values_err=Yerr_target
         )
 
+    @msgs.timer
     def fill_nan(self) -> "SpecWrapper":
         """
         Fill the NaN values in the spectrum by interpolation.
@@ -421,3 +413,40 @@ class SpecWrapper:
         return SpecWrapper(
             points=(self.spat, self.spec), values=Y_conv, values_err=Yerr_conv
         )
+
+
+@partial(jax.jit, static_argnames=["axis"])
+def mad_std(data: Array, axis: Optional[int] = None) -> Array:
+    """
+    Compute the Median Absolute Deviation (MAD) of the input data.
+    """
+    median = jnp.nanmedian(data, axis=axis, keepdims=True)
+    return jnp.nanmedian(jnp.abs(data - median), axis=axis, keepdims=True) * 1.4826
+
+
+@partial(jax.jit, static_argnames=["clip_cr"])
+def _clip(Y: Array, Yerr: Array, sigma: float, clip_cr: bool) -> tuple[Array, Array]:
+    """
+    Sigma clipping for a batch of the spectrum.
+    """
+
+    if Y.ndim == 1 and Yerr.ndim == 1:
+        Y_meds = jnp.nanmedian(Y, keepdims=True)
+        Y_stds = mad_std(Y)
+    elif Y.ndim == 2 and Yerr.ndim == 2:
+        # For 2D spectra, calculate median and MAD along the spatial axis
+        Y_meds = jnp.nanmedian(Y, axis=1, keepdims=True)
+        Y_stds = mad_std(Y, axis=1)
+    else:
+        raise ValueError(
+            f"Invalid shape of the input data: Y.shape={Y.shape}, Yerr.shape={Yerr.shape}"
+        )
+
+    if clip_cr:  # Only remove positive outliers
+        sigma_mask = ((Y - Y_meds) <= (sigma * Y_stds)) & jnp.isfinite(Y)
+    else:  # Remove both positive and negative outliers
+        sigma_mask = (jnp.abs(Y - Y_meds) <= (sigma * Y_stds)) & jnp.isfinite(Y)
+
+    Y_clipped = jnp.where(sigma_mask, Y, jnp.nan)
+    Yerr_clipped = jnp.where(sigma_mask, Yerr, jnp.nan)
+    return Y_clipped, Yerr_clipped

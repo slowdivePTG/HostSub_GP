@@ -26,9 +26,9 @@ spat_resln = 0.70
 sky_region = [-inf, 10]
 
 [slit_range.spiral]
-row = [190, 240]
-col = [200, 230]
-mask_offset = [0, 50]
+row = [215, 225]
+col = [130, 250]
+mask_offset = [-50, 0]
 
 [basic.elliptical]
 PI = "Johnston"

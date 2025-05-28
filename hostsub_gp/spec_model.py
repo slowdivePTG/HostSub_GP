@@ -363,6 +363,7 @@ class SpecModel:
         # The 2D sky-subtracted, sigma-clipped spectrum
         self.f_sky_sub = self.f_sky_sub.sigma_clip(
             sigma=sigma_clip,
+            clip_cr=True,
             batch_idx=(
                 jnp.array_split(
                     jnp.arange(self.shape[0]),

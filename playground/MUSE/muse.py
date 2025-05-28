@@ -202,7 +202,7 @@ def pack_2d_spectrum(
         color="red",
     )
     ## The center of the slit
-    ax[0].scatter(col, row - mask_offset_pix, color="red", s=100, marker="+")
+    ax[0].scatter(col, row + mask_offset_pix, color="red", s=100, marker="+")
     ax[0].set_xlabel("RA (pixels)")
     ax[0].set_ylabel("Dec (pixels)")
 
@@ -220,7 +220,7 @@ def pack_2d_spectrum(
     ax[1].set_ylim(-slit_len / 2, slit_len / 2)
     ax[1].axhline(mask_offset, color="red")
     ax[1].set_xlabel("Wavelength (Angstrom)")
-    ax[1].set_ylabel("RA offset (arcsec)")
+    ax[1].set_ylabel("Dec offset (arcsec)")
 
     plt.savefig(f"{PATH}/{targetid}_image.pdf")
     plt.close()

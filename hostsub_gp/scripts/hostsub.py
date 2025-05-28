@@ -365,7 +365,7 @@ class HostSub(ScriptBase):
             params_init=params_init,
             params_limit=params_limit,
             optimization=True,
-            optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
+            # optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
         )
 
         # QA plots
