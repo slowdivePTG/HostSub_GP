@@ -309,7 +309,7 @@ def plot_QA(
 
 
 def get_synthetic_flux(
-    dat: NDArray, dat_var: NDArray, wv: NDArray
+    dat: NDArray, dat_var: NDArray, wv: NDArray, overwrite: bool = False
 ) -> tuple[dict[str, NDArray], dict[str, NDArray]]:
     """Compute (or load) synthetic flux for a given filter."""
     from scipy.ndimage import gaussian_filter
@@ -329,7 +329,7 @@ def get_synthetic_flux(
         flt_path = f"{args.galaxy_type}/{args.model_type}/{flt_file}"
 
         # Check if the synthetic flux file already exists
-        if args.overwrite or not os.path.exists(flt_path):
+        if overwrite or not os.path.exists(flt_path):
             msgs.info(f"Computing synthetic photometry for the {flt}-band filter...")
             cube = np.where(np.isfinite(dat), dat, 0)
             cube_var = np.where(np.isfinite(dat_var), dat_var, 0)
@@ -448,9 +448,11 @@ if __name__ == "__main__":
     # Seeing matching
     dseeing_opt_list = []
 
-    for i in range(args.n_trials):
-        targetid = f"row_{row[i]}_col_{col[i]}_offset_{mask_offset_pix[i]}"
-        msgs.info(f"Running trial {i + 1}/{args.n_trials}...")
+    for n_trial in range(args.n_trials):
+        targetid = (
+            f"row_{row[n_trial]}_col_{col[n_trial]}_offset_{mask_offset_pix[n_trial]}"
+        )
+        msgs.info(f"Running trial {n_trial + 1}/{args.n_trials}...")
         msgs.info(f"Target ID: {targetid}")
         # Pack the 2D spectrum
         spec_model = pack_2d_spectrum(
@@ -460,20 +462,22 @@ if __name__ == "__main__":
             dec,
             wv,
             targetid,
-            row=row[i],
-            col=col[i],
-            mask_offset_pix=mask_offset_pix[i],
+            row=row[n_trial],
+            col=col[n_trial],
+            mask_offset_pix=mask_offset_pix[n_trial],
             **spec_model_cfg,
         )
 
-        syn_flux, syn_flux_var = get_synthetic_flux(dat=dat, dat_var=dat_var, wv=wv)
+        syn_flux, syn_flux_var = get_synthetic_flux(
+            dat=dat, dat_var=dat_var, wv=wv, overwrite=args.overwrite and n_trial == 0
+        )
 
         # Model the host prior
         spec_model = model_host_prior(
             spec_model,
-            row=row[i],
-            col=col[i],
-            mask_offset_pix=mask_offset_pix[i],
+            row=row[n_trial],
+            col=col[n_trial],
+            mask_offset_pix=mask_offset_pix[n_trial],
             syn_flux=syn_flux,
             syn_flux_var=syn_flux_var,
             slit_len=spec_model_cfg["slit_len"],
