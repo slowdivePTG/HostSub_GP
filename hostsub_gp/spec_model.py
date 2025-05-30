@@ -669,9 +669,9 @@ class SpecModel:
                 # Calculate the chi2
                 chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
-                msgs.info(f"dseeing: {dseeing:.2f} arcsec")
-                msgs.info(f"alpha: {alpha:.2f}")
-                msgs.info(f"chi2: {chi2:.2f}")
+                msgs.info(
+                    f"           {dseeing:>6.2f}           {alpha:>5.2f}    {chi2:>6.2f}"
+                )
 
                 return chi2
 
@@ -702,15 +702,16 @@ class SpecModel:
                 # Calculate the chi2
                 chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
-                msgs.info(f"dseeing: {dseeing:.2f} arcsec")
-                msgs.info(f"alpha: {alpha:.2f}")
-                msgs.info(f"chi2: {chi2:.2f}")
+                msgs.info(
+                    f"           {dseeing:>6.2f}           {alpha:>5.2f}    {chi2:>6.2f}"
+                )
 
                 return chi2
 
             dseeing_upper -= DSEEING
 
         # Find the best seeing by minimizing chi2
+        msgs.info("********** dseeing [arcsec]   alpha    chi^2 **********")
         res = minimize(
             fun=_chi2,
             x0=[(dseeing_lower + dseeing_upper) / 2, 0.2],
@@ -719,6 +720,7 @@ class SpecModel:
             options={"eps": 1e-5, "maxiter": 100},
             tol=1e-3,
         )
+        msgs.info("*******************************************************")
 
         best_dseeing = res.x[0] if np.abs(res.x[0]) > DSEEING else 0
         alpha = res.x[1]

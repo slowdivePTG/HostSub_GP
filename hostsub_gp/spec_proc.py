@@ -84,7 +84,7 @@ class SpecData:
                     slit_len=slit_len,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,
-                    survey="PS1",
+                    survey="LS",
                 )
                 host_prior = HostProfile.from_archival(
                     img_products=img_products,
@@ -804,6 +804,10 @@ class SpecData:
         import os
         from pypeit import spec2dobj
 
+        # https://pypeit.readthedocs.io/en/1.17.0/out_masks.html
+        BIT_CR = 2**1  # Cosmic rays
+        BIT_OFFSLIT = 2**4  # Off-slit pixels
+
         preproc_file = spec2d_file.replace(".fits", "_preproc.fits")
         rect_file = spec2d_file.replace(".fits", "_rect.fits")
         output_file = spec2d_file.replace(".fits", "_hostsub.fits")
@@ -847,7 +851,7 @@ class SpecData:
 
             # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
             mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
-            mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(2)
+            mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(BIT_CR)
 
             # Fit the interpolator with the rectified grid points and mask values
             interpolator.fit(points, mask_values)
@@ -867,6 +871,18 @@ class SpecData:
             # Update the mask in the PypeIt spec2d file
             sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
         hdul_rect.close()
+
+        # Mask the regions outside the wavelength/dist range
+        offslit = np.asarray(
+            np.where(
+                (waveimg < spec_model.spec.item(0))
+                | (waveimg > spec_model.spec.item(-1)),
+                BIT_OFFSLIT,
+                0,
+            ),
+            dtype=np.int16,
+        )
+        sci2d.bpmmask.mask = sci2d.bpmmask.mask | offslit.T
 
         # The global sky subtracted after the rectification
         assert spec_model.f_sky_1d.y is not None, (

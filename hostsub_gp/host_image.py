@@ -148,35 +148,51 @@ class ArchivalImage:
         """
         Load images from the path
         """
-
         data_list = []
         header_list = []
-        filters = []
+        loaded_filters = []
 
         for flt in self.filters:
             file = f"{self.path}/{flt}.fits"
-            file_wcs = f"{self.path}/{flt}_wcs.fits"
-            if os.path.exists(file_wcs):
-                # If WCS calibrated file exists, load it instead of the original
-                msgs.info(f"Loading WCS calibrated file: {file_wcs}")
-                file = file_wcs
-            else:
-                msgs.warning(
-                    f"Loading original file (WCS not calibrated by Astrometry.net): {file}"
-                )
             try:
-                hdulist = fits.open(file)
-                data_list.append(hdulist[0].data)
-                header_list.append(hdulist[0].header)
-                filters.append(flt)
+                # Check if the file exists and is not empty
+                data = fits.getdata(file)
+                if np.all(np.isnan(data)) or np.all(data == 0):
+                    msgs.warning(f"No data for filter {flt}.")
+                    self.filters = "".join([x for x in self.filters if x != flt])
+                    continue
             except FileNotFoundError:
                 msgs.warning(f"File {file} not found.")
+                continue
+            file_wcs = f"{self.path}/{flt}_wcs.fits"
+            file_orig = f"{self.path}/{flt}.fits"
+            
+            if os.path.exists(file_wcs):
+                file_to_load = file_wcs
+                msgs.info(f"Loading WCS calibrated file: {file_wcs}")
+            elif os.path.exists(file_orig):
+                file_to_load = file_orig
+                msgs.warning(f"Loading original file (WCS not calibrated by Astrometry.net): {file_orig}")
+            else:
+                msgs.warning(f"No file found for filter {flt}.")
+                continue
+
+            # Load the file
+            try:
+                data = fits.getdata(file_to_load)
+                header = fits.getheader(file_to_load)
+                
+                # Store successful load
+                data_list.append(data)
+                header_list.append(header)
+                loaded_filters.append(flt)
+                
             except Exception as e:
-                raise e
+                msgs.warning(f"Failed to load {file_to_load}: {e}")
+                continue
 
-        # Update filters with the files that were successfully loaded
-        self.filters = filters
-
+        # Update filters with successfully loaded ones
+        self.filters = loaded_filters
         return data_list, header_list
 
     def get_cutout(self, overwrite: bool = False):
@@ -354,13 +370,21 @@ class LSImage(ArchivalImage):
             for k, f in enumerate([*str(hdu_header["bands"])]):
                 hdu_header["FILTER"] = f
                 hdu_header["GAIN"] = 100
+                data = hdu[0].data[k, :, :]
+
                 fits.writeto(
                     f"{self.path}/{f}.fits",
-                    hdu[0].data[k, :, :],
+                    data,
                     hdu_header,
                     output_verify="silentfix",
                     overwrite=True,
                 )
+
+                # If the filter is missing, update the filters list
+                if np.all(np.isnan(data)) or np.all(data == 0):
+                    msgs.warning(f"No data for filter {f}.")
+                    self.filters = "".join([x for x in self.filters if x != f])
+                    continue
 
             # Remove the dummy file
             os.remove(f"{self.path}/dummy.fits")
