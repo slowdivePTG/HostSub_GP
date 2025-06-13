@@ -5,11 +5,12 @@ __all__ = ["SpecData"]
 import numpy as np
 import jax
 import jax.numpy as jnp
+import os
 
 # jax.config.update("jax_enable_x64", True)
 
 from jax._src.typing import ArrayLike, Array
-from typing import Callable, Optional
+from typing import Callable, Optional, Literal
 
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
@@ -47,6 +48,7 @@ class SpecData:
         flux_global_sky: Optional[Array] = None,
         flux_ivar: Optional[Array] = None,
         sky_offset: Optional[float] = None,
+        survey: Literal["PS1", "LS"] = "PS1",
         to_caches: Optional[bool] = False,
         cache_path: Optional[str] = None,
     ):
@@ -84,7 +86,7 @@ class SpecData:
                     slit_len=slit_len,
                     slit_wid=self.slit_wid,
                     position_angle=self.position_angle,
-                    survey="LS",
+                    survey=survey,
                 )
                 host_prior = HostProfile.from_archival(
                     img_products=img_products,
@@ -409,6 +411,11 @@ class SpecData:
 
         hdul = fits.HDUList([primary_hdu, hdu_dist, hdu_waveimg, hdu_global_sky])
         hdul.writeto(spec2d_file.replace(".fits", "_preproc.fits"), overwrite=True)
+
+        # Copy the spec1d fits file
+        os.system(
+            f"cp {spec1d_file} {spec1d_file.replace('.fits', '_hostsub.fits')}"
+        )
 
         # Remove spatial pixels outside the slit (all spat values are NaN)
         valid_spat = jnp.any(np.isfinite(dist), axis=1)
@@ -829,48 +836,6 @@ class SpecData:
         hdul_preproc.close()
 
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
-
-        # Update the bmpmask to include cosmic rays
-        hdul_rect = fits.open(rect_file)
-        if "CR_MASK" in hdul_rect:
-            mask_cr = jnp.argwhere(
-                ~jnp.array(hdul_rect["CR_MASK"].data, dtype=jnp.bool)
-            )
-            wave_rect = jnp.array(hdul_rect["SPEC"].data, dtype=jnp.float32)
-            dist_rect = jnp.array(hdul_rect["SPAT"].data, dtype=jnp.float32)
-
-            # The mask of the pixels with cosmic rays
-            coords_rect = jnp.meshgrid(dist_rect, wave_rect, indexing="ij")
-
-            # First create the interpolator object for the cosmic ray mask
-            interpolator = Interp2D_Scipy(method="nearest")
-
-            # Create the coordinates for the rectified grid
-            # coords_rect is already [wave_rect, dist_rect] from meshgrid
-            points = jnp.stack(coords_rect, axis=-1)
-
-            # Create the mask values (2 for cosmic rays, 0 for non-cosmic rays)
-            mask_values = jnp.zeros(points.shape[:-1], dtype=jnp.int32)
-            mask_values = mask_values.at[mask_cr[:, 0], mask_cr[:, 1]].set(BIT_CR)
-
-            # Fit the interpolator with the rectified grid points and mask values
-            interpolator.fit(points, mask_values)
-
-            # Create query points from the non-uniform grid
-            query_points = jnp.stack([dist, waveimg], axis=-1)
-            # Ensure the query points are finite
-            query_points = jnp.where(np.isfinite(query_points), query_points, 0)
-
-            # Interpolate the mask onto the non-uniform grid
-            mapped_cr_mask = np.asarray(
-                interpolator.predict(query_points.reshape(-1, 2)).reshape(
-                    waveimg.shape
-                ),
-                dtype=np.int16,
-            )
-            # Update the mask in the PypeIt spec2d file
-            sci2d.bpmmask.mask = sci2d.bpmmask.mask | mapped_cr_mask.T
-        hdul_rect.close()
 
         # Mask the regions outside the wavelength/dist range
         offslit = np.asarray(

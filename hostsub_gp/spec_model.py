@@ -667,7 +667,7 @@ class SpecModel:
                 _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
                 # Calculate the chi2
-                chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+                chi2 = jnp.nansum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
                 msgs.info(
                     f"           {dseeing:>6.2f}           {alpha:>5.2f}    {chi2:>6.2f}"
@@ -700,7 +700,7 @@ class SpecModel:
                 # Calculate the distance relative to the prior
                 _dist_host_batch_2d = self.f_host_batch_2d.subtract(_f_host_batch_prior)
                 # Calculate the chi2
-                chi2 = jnp.sum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+                chi2 = jnp.nansum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
 
                 msgs.info(
                     f"           {dseeing:>6.2f}           {alpha:>5.2f}    {chi2:>6.2f}"
@@ -921,7 +921,6 @@ class SpecModel:
         dict
             The merged parameters limits.
         """
-        large_scale = 1e4
 
         # 1D spectrum of the host galaxy
         ## scale >= spectral resolution / 2.355
@@ -957,6 +956,12 @@ class SpecModel:
                         ],
                         # upper bound
                         [np.inf, np.inf],
+                    ]
+                ),
+                scale_line=np.array(
+                    [
+                        self.spec_resln / 2.355,  # 1-sigma
+                        self.spec_resln / 2.355 * 1.5,  # 1.5-sigma
                     ]
                 ),
             )
@@ -1636,7 +1641,10 @@ class SpecModel:
                     )
                 )
             ccfs[k] = (f_lines * spec_lib_at_z).sum()
-        emission_lines_in_lib = wv_lib * (1 + zs[np.argmax(ccfs)])
+        z_opt = zs[np.argmax(ccfs)]
+        msgs.info(f"Redshift of the host galaxy: {z_opt:.4f} (z_err = {z_err})")
+        # Calculate the emission lines in the library at the redshift
+        emission_lines_in_lib = wv_lib * (1 + z_opt)
         # Match the found emission lines with the library
         emission_lines = []
         emission_lines_idx_updated = []

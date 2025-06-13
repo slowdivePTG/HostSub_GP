@@ -79,6 +79,8 @@ class HostSub(ScriptBase):
 
         # Loop over science files
         sci_idx = np.argwhere(hostsubFile.data["frametype"] == "science").ravel()
+        if len(sci_idx) == 0:
+            msgs.error("No science files found in the configuration file.")
         spec_data_list = []
         spat_rect, spec_rect = (
             None,
@@ -105,12 +107,14 @@ class HostSub(ScriptBase):
 
             # Get the parameters for host subtraction
             par_hostsub = par.get("hostsub", {})
+            par_host_prior = par_hostsub.get("host_prior", {})
             raw_dir = par_hostsub.get("raw_dir", None)
             spec_data_cfg = {}
             spec_data_cfg["ra"] = Float(par_hostsub.get("ra", None))
             spec_data_cfg["dec"] = Float(par_hostsub.get("dec", None))
             spec_data_cfg["sky_offset"] = Float(par_hostsub.get("sky_offset", None))
             spec_data_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
+            spec_data_cfg["survey"] = par_host_prior.get("survey", "PS1")
 
             # Run the host subtraction
             from_pypeit = args.overwrite or not os.path.exists(sci_rect_file)
@@ -228,13 +232,16 @@ class HostSub(ScriptBase):
         spec_model_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))
         spec_model_cfg["spec_resln"] = Float(par_hostsub.get("spec_resln", None))
 
+        par_host_emission = par_hostsub.get("host_emission", {})
+        par_seeing_match = par_hostsub.get("seeing_match", {})
+        par_host_prior = par_hostsub.get("host_prior", {})
+
         # Parameters for all the SpecWrapper attributes of the SpecModel object
         spec_wrapper_cfg = {}
         spec_wrapper_cfg["batch_2d"] = Int(par_hostsub.get("batch_2d", [2, 128]))
         spec_wrapper_cfg["sigma_clip"] = Float(par_hostsub.get("sigma_clip", 5.0))
 
         # Parameters for identifying host emission lines
-        par_host_emission = par_hostsub.get("host_emission", {})
         host_emission_cfg = {}
         host_emission_cfg["find_host_emission"] = par_host_emission.get(
             "find_host_emission", "True"
@@ -258,7 +265,6 @@ class HostSub(ScriptBase):
         )
 
         # Parameters for matching the seeing of the host and science spectra
-        par_seeing_match = par_hostsub.get("seeing_match", {})
         seeing_match_cfg = {}
         seeing_match_cfg["dseeing_upper"] = Float(
             par_seeing_match.get("dseeing_upper", 1.0)
@@ -271,7 +277,6 @@ class HostSub(ScriptBase):
             seeing_match_cfg["dseeing"] = None
 
         # Parameters for modeling the host prior
-        par_host_prior = par_hostsub.get("host_prior", {})
         host_prior_cfg = {}
         host_prior_cfg["filters"] = par_host_prior.get("filters", "grizy")
         host_prior_cfg["survey"] = par_host_prior.get("survey", "PS1")
