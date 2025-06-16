@@ -52,6 +52,7 @@ class AstrometryNetSolver:
         settings["scale_type"] = "ev"
         settings["scale_err"] = 5
         settings["scale_units"] = "arcsecperpix"
+        settings["crpix_center"] = True
 
         # Check if WCS is already present
         astrometry_dict = self.extract_wcs_info(fits_path)
