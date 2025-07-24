@@ -376,13 +376,19 @@ class HostProfile:
                     x_bound=(-slit_wid / 2, slit_wid / 2),
                 )
             )
-            # # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
-            # err = np.nanstd(data_slit - counts_slit[-1][:, None], axis=1, ddof=1) / np.sqrt(slit_wid_pix)
-            # # Smooth the error: convolution with a boxcar filter
-            # if noise_smooth_kernel is not None:
-            #     err = (np.convolve(err**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
-            # counts_err_slit.append(err)
-            counts_err_slit.append(np.ones_like(counts_slit[-1]) * img_product.err)
+            # Estimate the error: standard deviation of the residuals (count at each pixel - average count)
+            img_slit = img_product.img[
+                :, np.abs(img_product.spat_slit_wid) < slit_wid / 2
+            ]
+            # slit_wid_pix = int(np.round(slit_wid / img_product.pixel_scale))
+            err1 = np.nanstd(img_slit, axis=1, ddof=1) #/ np.sqrt(slit_wid_pix)
+            # Smooth the error: convolution with a boxcar filter
+            noise_smooth_kernel = 3
+            if noise_smooth_kernel is not None:
+                err1 = (np.convolve(err1**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
+            
+            err2 = np.ones_like(counts_slit[-1]) * img_product.err
+            counts_err_slit.append(np.where(err1 < err2, err1, err2))
 
         flts = [img_product.flt for img_product in img_products]
         wv_effs = [img_product.wv_eff for img_product in img_products]

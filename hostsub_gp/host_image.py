@@ -97,11 +97,24 @@ class ImageProduct:
         )
 
         self.img = data_reproj
+        # import matplotlib.pyplot as plt
+        # err = mad_std(
+        #     self.img[
+        #         np.isfinite(self.img) & (self.img < np.nanpercentile(self.img, 50))
+        #     ]
+        # ) / np.sqrt(1 - 2 / np.pi)
+        bins, bin_edges = np.histogram(
+            self.img[np.isfinite(self.img)],
+            bins=200,
+        )
+        bin_center = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+        mode = bin_center[np.argmax(bins)]
         self.err = mad_std(
             self.img[
-                np.isfinite(self.img) & (self.img < np.nanpercentile(self.img, 50))
+                np.isfinite(self.img)
+                & (self.img < mode)
             ]
-        ) / np.sqrt(1 - 2 / np.pi)
+        ) #/ np.sqrt(1 - 2 / np.pi)
         self.pixel_scale = pixel_scale
         self.shape = shape
         self.slit_len_pix = slit_len_pix

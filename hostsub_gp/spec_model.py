@@ -667,7 +667,9 @@ class SpecModel:
                 _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
                 # Calculate the chi2
-                chi2 = jnp.nansum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+                chi2 = jnp.nansum(
+                    _dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2
+                )
 
                 msgs.info(
                     f"           {dseeing:>6.2f}           {alpha:>5.2f}    {chi2:>6.2f}"
@@ -700,7 +702,9 @@ class SpecModel:
                 # Calculate the distance relative to the prior
                 _dist_host_batch_2d = self.f_host_batch_2d.subtract(_f_host_batch_prior)
                 # Calculate the chi2
-                chi2 = jnp.nansum(_dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2)
+                chi2 = jnp.nansum(
+                    _dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2
+                )
 
                 msgs.info(
                     f"           {dseeing:>6.2f}           {alpha:>5.2f}    {chi2:>6.2f}"
@@ -1955,7 +1959,7 @@ class SpecModel:
             np.arange(len(self.spec)) + 1,
             self.f_host_1d.y - self.f_host_1d.yerr,
             self.f_host_1d.y + self.f_host_1d.yerr,
-            alpha=0.5,
+            alpha=0.1,
         )
         ax[-1].set_ylim(
             np.nanpercentile(self.f_host_1d.y, 5) - np.nanstd(self.f_host_1d.y),
@@ -2086,7 +2090,7 @@ class SpecModel:
                 r + r_err - offset * k,
                 r - r_err - offset * k,
                 color=c_raw,
-                alpha=0.5,
+                alpha=0.1,
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{Counts + offset}$")
@@ -2098,7 +2102,7 @@ class SpecModel:
             zorder=100,
             alpha=0.75,
         )
-        ax.set_ylim(ylim)
+        ax.set_ylim(-offset * (k + 1), offset + np.nanmedian(raw[:, 0]))
         ax.set_yticks([])
         return ax
 
@@ -2164,7 +2168,7 @@ class SpecModel:
                 r + err - offset * k,
                 r - err - offset * k,
                 color=c_raw,
-                alpha=0.5,
+                alpha=0.1,
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
@@ -2176,7 +2180,7 @@ class SpecModel:
             zorder=100,
             alpha=0.75,
         )
-        ax.set_ylim(ylim)
+        ax.set_ylim(-offset * (k + 1), offset + np.nanmedian(raw[:, 0]))
         ax.set_yticks([])
         return ax
 

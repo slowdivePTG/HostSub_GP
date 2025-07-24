@@ -138,7 +138,7 @@ class HostSub(ScriptBase):
 
         if args.coadd2d:
             spec_data_coadd2d, spec_data_cr_mask = SpecData.coadd2d(
-                spec_data_list, show=from_pypeit
+                spec_data_list, #show=from_pypeit
             )  # Only show the plot after a new rectification
 
             # Write the cr_mask to the rectified files
