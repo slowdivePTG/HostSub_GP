@@ -841,7 +841,9 @@ class SpecData:
         offslit = np.asarray(
             np.where(
                 (waveimg < spec_model.spec.item(0))
-                | (waveimg > spec_model.spec.item(-1)),
+                | (waveimg > spec_model.spec.item(-1))
+                | (dist < spec_model.spat_edges["host"][0])
+                | (dist > spec_model.spat_edges["host"][1]),
                 BIT_OFFSLIT,
                 0,
             ),

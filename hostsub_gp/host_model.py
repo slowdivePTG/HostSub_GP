@@ -123,6 +123,8 @@ class HostProfile:
                 )
 
             else:  # No mask
+                host_left = (-slit_len / 2, 0)
+                host_right = (0, slit_len / 2)
                 xi = counts_slit[k] / np.sum(counts_slit[k]) / pixel_scale
                 xi_err = counts_err_slit[k] / np.sum(counts_slit[k]) / pixel_scale
                 prof_slit.append(xi)
@@ -138,7 +140,8 @@ class HostProfile:
 
         host_idx = [
             np.argwhere(
-                np.abs(spat_slit[k] - mask_offset) <= np.ceil(self.host_wid / 2)
+                (spat_slit[k] - mask_offset >= host_left[0])
+                & (spat_slit[k] - mask_offset <= host_right[1])
             ).ravel()
             for k in range(len(self.filters))
         ]
@@ -385,8 +388,14 @@ class HostProfile:
             # Smooth the error: convolution with a boxcar filter
             noise_smooth_kernel = 3
             if noise_smooth_kernel is not None:
-                err1 = (np.convolve(err1**2, np.ones(noise_smooth_kernel) / noise_smooth_kernel, mode="same")) ** 0.5
-            
+                err1 = (
+                    np.convolve(
+                        err1**2,
+                        np.ones(noise_smooth_kernel) / noise_smooth_kernel,
+                        mode="same",
+                    )
+                ) ** 0.5
+
             err2 = np.ones_like(counts_slit[-1]) * img_product.err
             counts_err_slit.append(np.where(err1 < err2, err1, err2))
 

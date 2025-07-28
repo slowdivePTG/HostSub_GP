@@ -138,7 +138,7 @@ class HostSub(ScriptBase):
 
         if args.coadd2d:
             spec_data_coadd2d, spec_data_cr_mask = SpecData.coadd2d(
-                spec_data_list, #show=from_pypeit
+                spec_data_list,  # show=from_pypeit
             )  # Only show the plot after a new rectification
 
             # Write the cr_mask to the rectified files
@@ -225,8 +225,16 @@ class HostSub(ScriptBase):
         spec_model_cfg["slit_len"] = Float(par_hostsub.get("slit_len", None))
         spec_model_cfg["slit_trim"] = Int(par_hostsub.get("slit_trim", [5, 5]))
         spec_model_cfg["spec_range"] = Float(par_hostsub.get("spec_range", None))
-        spec_model_cfg["host_wid"] = Float(par_hostsub.get("host_wid", 10.0))
         spec_model_cfg["mask_wid"] = Float(par_hostsub.get("mask_wid", 2.0))
+        # If only the host_wid is provided, the host region is centered at the transient trace
+        if ("host_wid" in par_hostsub) and ("host_region" not in par_hostsub):
+            host_wid = Float(par_hostsub.get("host_wid"))
+            spec_model_cfg["host_region"] = Float([-host_wid / 2, host_wid / 2])
+        # If the host_region is provided, use it directly
+        else:
+            spec_model_cfg["host_region"] = Float(
+                par_hostsub.get("host_region", [-5.0, 5.0])
+            )
         spec_model_cfg["sky_region"] = Float(par_hostsub.get("sky_region", [-5.0, 5.0]))
         spec_model_cfg["mask_offset"] = Float(par_hostsub.get("mask_offset", 0.0))
         spec_model_cfg["spat_resln"] = Float(par_hostsub.get("spat_resln", None))

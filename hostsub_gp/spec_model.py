@@ -137,9 +137,12 @@ class SpecModel:
         slit_len: Optional[float] = None,  # arcsec
         slit_trim: tuple[int, int] = (1, 1),  # pixels
         spec_range: Optional[tuple[float, float]] = None,  # Angstrom
-        host_wid: float = 10.0,  # in arcsec, host region used for the fitting
         mask_wid: float = 2.0,  # in seeing, mask the trace of the source
         mask_offset: float = 0.0,  # offset of the mask center (when the SN is not at the center)
+        host_region: tuple[float, float] = (
+            -5.0,
+            5.0,
+        ),  # in arcsec, host region used for the fitting
         sky_region: tuple[float, float] = (-5.0, 5.0),  # in arcsec, sky region
     ):
         # Load spectral configuration
@@ -184,9 +187,9 @@ class SpecModel:
         self.slit_wid = slit_wid
         # Attributes to be tweaked to match the pixel edges
         self._slit_len = slit_len
-        self._host_wid = host_wid
         self._mask_wid = mask_wid * self.spat_resln
         self._mask_offset = mask_offset
+        self._host_region = host_region
         self._sky_region = sky_region
         self._build_spat_filter()
 
@@ -280,9 +283,11 @@ class SpecModel:
 
         # Define the host galaxy pixels (outside the mask)
         spat_edges["host"] = (
-            (jnp.ceil(-self._host_wid / 2 / self.pixel_scale) - 0.5) * self.pixel_scale
+            (jnp.ceil(self._host_region[0] / self.pixel_scale) - 0.5)
+            * self.pixel_scale
             + mask_offset,
-            (jnp.floor(self._host_wid / 2 / self.pixel_scale) + 0.5) * self.pixel_scale
+            (jnp.floor(self._host_region[1] / self.pixel_scale) + 0.5)
+            * self.pixel_scale
             + mask_offset,
         )
         host_wid = spat_edges["host"][1] - spat_edges["host"][0]
