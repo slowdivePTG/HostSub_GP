@@ -52,6 +52,12 @@ class SpecData:
         to_caches: Optional[bool] = False,
         cache_path: Optional[str] = None,
     ):
+        assert np.all(spat_rect[1:] > spat_rect[:-1]), (
+            "Spatial coordinates must be in ascending order."
+        )
+        assert np.all(spec_rect[1:] > spec_rect[:-1]), (
+            "Spectral coordinates must be in ascending order."
+        )
         self.spat_rect = jnp.asarray(spat_rect)
         self.spec_rect = jnp.asarray(spec_rect)
         self.pixel_scale = pixel_scale
@@ -413,9 +419,7 @@ class SpecData:
         hdul.writeto(spec2d_file.replace(".fits", "_preproc.fits"), overwrite=True)
 
         # Copy the spec1d fits file
-        os.system(
-            f"cp {spec1d_file} {spec1d_file.replace('.fits', '_hostsub.fits')}"
-        )
+        os.system(f"cp {spec1d_file} {spec1d_file.replace('.fits', '_hostsub.fits')}")
 
         # Remove spatial pixels outside the slit (all spat values are NaN)
         valid_spat = jnp.any(np.isfinite(dist), axis=1)

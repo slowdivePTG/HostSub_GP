@@ -959,9 +959,8 @@ class SpecModel:
                     [
                         # lower bound
                         [
-                            # spectral direction (slow & fast)
                             self.spat_resln / 2.355,
-                            self.spat_resln / 2.355,
+                            self.spec_resln / 2.355,
                         ],
                         # upper bound
                         [np.inf, np.inf],

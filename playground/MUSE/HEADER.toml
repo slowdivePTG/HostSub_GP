@@ -9,7 +9,7 @@ slit_wid = 1.0    # arcsec
 # Model specific parameters
 host_wid = 10.0 # arcsec
 mask_wid = 2.0 # in spat_resln
-position_angle = 0.0 # degrees
+position_angle = 90.0 # degrees
 spec_range = [
     5500,
     9200,
@@ -22,13 +22,13 @@ object = "LCRS B110709.2-121854"
 z = 0.036932
 
 [spec_model.spiral]
-spat_resln = 0.70
+spat_resln = 0.68
 sky_region = [-10, 10]
 
 [slit_range.spiral]
-row = [130, 170]
-col = [130, 170]
-mask_offset = [-20, 20]
+row = [140, 200]
+col = [100, 200]
+mask_offset = [-5, 5]
 
 [basic.elliptical]
 PI = "Johnston"

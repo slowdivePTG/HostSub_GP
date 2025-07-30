@@ -140,19 +140,28 @@ def pack_2d_spectrum(
     dec_offset = (dec - center_dec) * 3600
 
     # Generate the synthetic 2D spectrum
+    # Check if ra_offset is sorted in ascending or descending order
+    ra_order = 1 if ra_offset[-1] > ra_offset[0] else -1
+    ra_mask = np.abs(ra_offset) <= slit_len / 2
+    
     flux_rect = np.nanmean(
-        dat[:, np.abs(dec_offset) <= slit_len / 2, col - 2 : col + 3].reshape(
-            dat.shape[0], -1, 1, 5
+        dat[:, row - 2 : row + 3, ra_mask].reshape(
+            dat.shape[0], 5, -1, 1
         ),
-        axis=(2, 3),
+        axis=(1, 3),
     )
     flux_ivar_rect = np.nanmean(
-        dat_var[:, np.abs(dec_offset) <= slit_len / 2, col - 2 : col + 3].reshape(
-            dat.shape[0], -1, 1, 5
+        dat_var[:, row - 2 : row + 3, ra_mask].reshape(
+            dat.shape[0], 5, -1, 1
         ),
-        axis=(2, 3),
-    ) ** -1 * (1 * 5)
+        axis=(1, 3),
+    ) ** -1 * (5 * 1)
 
+    # Make sure the spatial coordinates and flux values are properly sorted
+    if ra_order == -1:
+        flux_rect = flux_rect[:, ::-1]
+        flux_ivar_rect = flux_ivar_rect[:, ::-1]
+    
     spec_data = SpecData(
         pixel_scale=pixel_scale,
         center_ra=center_ra,
@@ -161,7 +170,7 @@ def pack_2d_spectrum(
         position_angle=position_angle,
         spat_resln=spat_resln,
         spec_resln=spec_resln,
-        spat_rect=dec_offset[np.abs(dec_offset) <= slit_len / 2],
+        spat_rect=ra_offset[ra_mask][::ra_order],  # Ensure ascending order for spat_rect
         spec_rect=wv,
         flux_rect=np.asarray(flux_rect, dtype=float).T,
         flux_ivar_rect=np.asarray(flux_ivar_rect, dtype=float).T,
@@ -194,33 +203,43 @@ def pack_2d_spectrum(
     )
     ## The slit
     ax[0].plot(
-        [col, col],
         [
-            row - slit_len / 2 / pixel_scale,
-            row + slit_len / 2 / pixel_scale,
+            col - slit_len / 2 / pixel_scale,
+            col + slit_len / 2 / pixel_scale,
         ],
+        [row, row],
         color="red",
     )
     ## The center of the slit
-    ax[0].scatter(col, row + mask_offset_pix, color="red", s=100, marker="+")
+    ax[0].scatter(col + mask_offset_pix, row, color="red", s=100, marker="+")
     ax[0].set_xlabel("RA (pixels)")
     ax[0].set_ylabel("Dec (pixels)")
 
     # Plot the mock 2D spectrum
     ## Slit width = 5 pixels = 1 arcsec
+    ## Create a 2D spectrum with the correct spatial orientation
+    spectrum_2d = np.mean(dat[:, row - 2 : row + 3, :].reshape(dat.shape[0], 5, -1), axis=1).T
+    
+    # If RA is in descending order, we need to flip the image to maintain correct spatial orientation
+    if ra_order == -1:
+        spectrum_2d = spectrum_2d[::-1, :]
+        extent = (wv[0], wv[-1], ra_offset[-1], ra_offset[0])  # Flip the y-axis extent
+    else:
+        extent = (wv[0], wv[-1], ra_offset[0], ra_offset[-1])
+        
     ax[1].imshow(
-        np.mean(dat[:, row - 2 : row + 3, :].reshape(dat.shape[0], 5, -1), axis=1).T,
+        spectrum_2d,
         origin="lower",
         cmap="grey",
         vmin=np.nanpercentile(dat[:, row, :], 1),
         vmax=np.nanpercentile(dat[:, row, :], 95),
-        extent=(wv[0], wv[-1], dec_offset[0], dec_offset[-1]),
+        extent=extent,
     )
     ax[1].set_aspect("auto")
     ax[1].set_ylim(-slit_len / 2, slit_len / 2)
     ax[1].axhline(mask_offset, color="red")
     ax[1].set_xlabel("Wavelength (Angstrom)")
-    ax[1].set_ylabel("Dec offset (arcsec)")
+    ax[1].set_ylabel("RA offset (arcsec)")
 
     plt.savefig(f"{PATH}/{targetid}_image.pdf")
     plt.close()
@@ -246,16 +265,21 @@ def model_host_prior(
     counts_err_slit = []
     spat_slit = []
 
-    on_slit = np.abs(spec_model.dec_offset - mask_offset) <= slit_len / 2
+    # Check if ra_offset is sorted in ascending or descending order
+    ra_order = 1 if spec_model.ra_offset[-1] > spec_model.ra_offset[0] else -1
+    on_slit = np.abs(spec_model.ra_offset - mask_offset) <= slit_len / 2
+    
     for flt in FLTS:
+        # Ensure consistent ordering with how spat_rect was created in pack_2d_spectrum
+        spat_slit.append(spec_model.ra_offset[on_slit][::ra_order])
         counts_slit.append(
-            np.nanmean(syn_flux[flt][:, col - 2 : col + 3], axis=1)[on_slit]
+            np.nanmean(syn_flux[flt][row - 2 : row + 3, :], axis=0)[on_slit][::ra_order]
         )
         counts_err_slit.append(
-            np.nanmean(syn_flux_var[flt][:, col - 2 : col + 3], axis=1)[on_slit] ** 0.5
+            np.nanmean(syn_flux_var[flt][row - 2 : row + 3, :], axis=0)[on_slit][::ra_order] ** 0.5
             / 5**0.5
         )
-        spat_slit.append(spec_model.dec_offset[on_slit])
+
     spec_model.build_host_prior(
         filters=FLTS,
         from_archival=False,
@@ -274,13 +298,6 @@ def plot_QA(
     targetid: str,
 ) -> None:
     """Plot the QA figures."""
-    # Prior and posterior of the host profiles
-    spec_model._plot_host_profile_prior(
-        save=f"{PATH}/{targetid}_host_profile_prior.pdf"
-    )
-    msgs.info(
-        f"Saving the prior of the host profiles to {PATH}/{targetid}_host_profile_prior.pdf"
-    )
 
     spec_model._plot_host_profile_pred(save=f"{PATH}/{targetid}_host_profile_pred.pdf")
     msgs.info(
@@ -536,10 +553,10 @@ if __name__ == "__main__":
             mean=mean_est,  # Mean of the 1D spectrum
         )
         params_init_2d = dict(
-            log_amp=-4.0,
+            log_amp=-5.0,
             log_scale=(
                 np.log10(spec_model.spat_resln),  # Spatial scale ~ seeing
-                3,  # Spectral scale ~ 1000 Angstrom
+                4,  # Spectral scale ~ 10^4 Angstrom
             ),
             mean=0.0,
             log_amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
@@ -553,10 +570,10 @@ if __name__ == "__main__":
             log_scale=np.log10(
                 [
                     # log range of the slow varying component
-                    [spec_model.spec_resln / 2.355, np.inf],
+                    [1e3, np.inf],
                     # log range of the fast varying component
                     # typical scale = spectral resolution
-                    [spec_model.spec_resln / 2.355, spec_model.spec_resln * 2],
+                    [spec_model.spec_resln / 2.355, spec_model.spec_resln],
                 ]
             ).T
         )
@@ -580,6 +597,14 @@ if __name__ == "__main__":
             ),  # Scale of the host lines
         )
         params_limit = (params_limit_1d, params_limit_2d)
+
+        # Prior and posterior of the host profiles
+        spec_model._plot_host_profile_prior(
+            save=f"{PATH}/{targetid}_host_profile_prior.pdf"
+        )
+        msgs.info(
+            f"Saving the prior of the host profiles to {PATH}/{targetid}_host_profile_prior.pdf"
+        )
 
         # Model the host
         spec_model.model_host(
