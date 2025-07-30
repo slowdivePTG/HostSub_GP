@@ -371,6 +371,12 @@ class SpecWrapper:
         if self.Y is None:
             raise ValueError("Convolution requires non-empty spectra.")
 
+        if jnp.all(kernel_wid == 0):
+            msgs.warning("Kernel width is zero. Returning the original spectrum.")
+            return SpecWrapper(
+                points=(self.spat, self.spec), values=self.Y, values_err=self.Yerr
+            )
+
         def gaussian_filter(y: Array, sigma: Array) -> Array:
             """
             Vectorized 1D Gaussian filter

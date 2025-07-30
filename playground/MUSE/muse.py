@@ -367,7 +367,7 @@ def get_synthetic_flux(
             # If we want to downgrade the spatial resolution
             if "bad_phot" in args.model_type:
                 msgs.info(
-                    f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {args.kernel_width} pixels..."
+                    f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {args.kernel_width} arcsec..."
                 )
                 kernel_size = (
                     args.kernel_width / 2.355 / spec_model.pixel_scale
@@ -515,20 +515,20 @@ if __name__ == "__main__":
         )
 
         if "match" in args.model_type:
-            dseeing_opt = spec_model.update_seeing(dseeing=None, max_dseeing=1.5)
+            dseeing_opt, alpha_opt = spec_model.update_seeing(dseeing=None, dseeing_upper=1.5)
             dseeing_opt_list.append(dseeing_opt)
 
             dseeing_wv = (
                 dseeing_opt
                 / spec_model.pixel_scale
-                * (spec_model.spec / spec_model.spec.mean()) ** (-1 / 2.5)
+                * (spec_model.spec / spec_model.spec.mean()) ** (-alpha_opt)
             )
             spec_model.construct_spec_wrapper(
                 f_obs=spec_model.f_obs.convolve(dseeing_wv),
                 batch_2d=(1, 128),
                 host_emission_cfg={
                     "find_host_emission": True,
-                    "z": args.z,
+                    "z": galaxy_cfg["z"],
                     "z_err": 0.001,
                     "p_value": 0.05,
                 },
