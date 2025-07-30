@@ -16,19 +16,19 @@ spec_range = [
 ] # Angstroms - Edge (throughput = half maximum) of the PS1 r and z filters
 
 [basic.spiral]
-PI = "Blanc"
-program_id = "098.C-0484(A)"
-object = "NGC0628"
-z = 0.002192
+PI = "TANVIR, NIAL"
+program_id = "0100.D-0649"
+object = "LCRS B110709.2-121854"
+z = 0.036932
 
 [spec_model.spiral]
 spat_resln = 0.70
-sky_region = [-inf, 10]
+sky_region = [-10, 10]
 
 [slit_range.spiral]
-row = [215, 225]
-col = [130, 250]
-mask_offset = [-50, 0]
+row = [130, 170]
+col = [130, 170]
+mask_offset = [-20, 20]
 
 [basic.elliptical]
 PI = "Johnston"

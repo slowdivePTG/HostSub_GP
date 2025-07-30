@@ -170,7 +170,7 @@ def pack_2d_spectrum(
     spec_model = spec_data.to_SpecModel(
         slit_len=slit_len,
         spec_range=spec_range,
-        host_wid=host_wid,
+        host_region=[-host_wid / 2, host_wid / 2],
         mask_wid=mask_wid,
         mask_offset=mask_offset,
         sky_region=sky_region,
