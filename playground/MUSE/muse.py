@@ -176,13 +176,16 @@ def pack_2d_spectrum(
         flux_ivar_rect=np.asarray(flux_ivar_rect, dtype=float).T,
     )
 
+    sky_left = min(sky_region[0], -host_wid / 2 + mask_offset)
+    sky_right = max(sky_region[1], host_wid / 2 + mask_offset)
+
     spec_model = spec_data.to_SpecModel(
         slit_len=slit_len,
         spec_range=spec_range,
         host_region=[-host_wid / 2, host_wid / 2],
         mask_wid=mask_wid,
         mask_offset=mask_offset,
-        sky_region=sky_region,
+        sky_region=(sky_left, sky_right),
     )
 
     spec_model.ra_offset = ra_offset
