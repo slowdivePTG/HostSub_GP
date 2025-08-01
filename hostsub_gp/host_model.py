@@ -140,8 +140,8 @@ class HostProfile:
 
         host_idx = [
             np.argwhere(
-                (spat_slit[k] - mask_offset >= host_left[0])
-                & (spat_slit[k] - mask_offset <= host_right[1])
+                (spat_slit[k] >= host_left[0])
+                & (spat_slit[k] <= host_right[1])
             ).ravel()
             for k in range(len(self.filters))
         ]
