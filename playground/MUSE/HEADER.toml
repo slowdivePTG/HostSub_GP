@@ -4,7 +4,7 @@
 # Instrument specific parameters (MUSE)
 pixel_scale = 0.2 # arcsec/pixel
 spec_resln = 2.7  # Angstroms
-slit_len = 45.0   # arcsec
+slit_len = 30.0   # arcsec
 slit_wid = 1.0    # arcsec
 # Model specific parameters
 host_wid = 10.0 # arcsec
@@ -27,8 +27,8 @@ sky_region = [-10, 10]
 
 [slit_range.spiral]
 row = [140, 200]
-col = [100, 200]
-mask_offset = [-5, 5]
+col = [160, 165]
+mask_offset = [-50, 50]
 
 [basic.elliptical]
 PI = "Johnston"
