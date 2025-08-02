@@ -146,17 +146,13 @@ def pack_2d_spectrum(
     # Check if ra_offset is sorted in ascending or descending order
     ra_order = 1 if ra_offset[-1] > ra_offset[0] else -1
     ra_mask = np.abs(ra_offset) <= slit_len / 2
-    
+
     flux_rect = np.nanmean(
-        dat[:, row - 2 : row + 3, ra_mask].reshape(
-            dat.shape[0], 5, -1, 1
-        ),
+        dat[:, row - 2 : row + 3, ra_mask].reshape(dat.shape[0], 5, -1, 1),
         axis=(1, 3),
     )
     flux_ivar_rect = np.nanmean(
-        dat_var[:, row - 2 : row + 3, ra_mask].reshape(
-            dat.shape[0], 5, -1, 1
-        ),
+        dat_var[:, row - 2 : row + 3, ra_mask].reshape(dat.shape[0], 5, -1, 1),
         axis=(1, 3),
     ) ** -1 * (5 * 1)
 
@@ -164,7 +160,7 @@ def pack_2d_spectrum(
     if ra_order == -1:
         flux_rect = flux_rect[:, ::-1]
         flux_ivar_rect = flux_ivar_rect[:, ::-1]
-    
+
     spec_data = SpecData(
         pixel_scale=pixel_scale,
         center_ra=center_ra,
@@ -173,7 +169,9 @@ def pack_2d_spectrum(
         position_angle=position_angle,
         spat_resln=spat_resln,
         spec_resln=spec_resln,
-        spat_rect=ra_offset[ra_mask][::ra_order],  # Ensure ascending order for spat_rect
+        spat_rect=ra_offset[ra_mask][
+            ::ra_order
+        ],  # Ensure ascending order for spat_rect
         spec_rect=wv,
         flux_rect=np.asarray(flux_rect, dtype=float).T,
         flux_ivar_rect=np.asarray(flux_ivar_rect, dtype=float).T,
@@ -224,15 +222,17 @@ def pack_2d_spectrum(
     # Plot the mock 2D spectrum
     ## Slit width = 5 pixels = 1 arcsec
     ## Create a 2D spectrum with the correct spatial orientation
-    spectrum_2d = np.mean(dat[:, row - 2 : row + 3, :].reshape(dat.shape[0], 5, -1), axis=1).T
-    
+    spectrum_2d = np.mean(
+        dat[:, row - 2 : row + 3, :].reshape(dat.shape[0], 5, -1), axis=1
+    ).T
+
     # If RA is in descending order, we need to flip the image to maintain correct spatial orientation
     if ra_order == -1:
         spectrum_2d = spectrum_2d[::-1, :]
         extent = (wv[0], wv[-1], ra_offset[-1], ra_offset[0])  # Flip the y-axis extent
     else:
         extent = (wv[0], wv[-1], ra_offset[0], ra_offset[-1])
-        
+
     ax[1].imshow(
         spectrum_2d,
         origin="lower",
@@ -274,7 +274,7 @@ def model_host_prior(
     # Check if ra_offset is sorted in ascending or descending order
     ra_order = 1 if spec_model.ra_offset[-1] > spec_model.ra_offset[0] else -1
     on_slit = np.abs(spec_model.ra_offset - mask_offset) <= slit_len / 2
-    
+
     for flt in FLTS:
         # Ensure consistent ordering with how spat_rect was created in pack_2d_spectrum
         spat_slit.append(spec_model.ra_offset[on_slit][::ra_order])
@@ -282,7 +282,10 @@ def model_host_prior(
             np.nanmean(syn_flux[flt][row - 2 : row + 3, :], axis=0)[on_slit][::ra_order]
         )
         counts_err_slit.append(
-            np.nanmean(syn_flux_var[flt][row - 2 : row + 3, :], axis=0)[on_slit][::ra_order] ** 0.5
+            np.nanmean(syn_flux_var[flt][row - 2 : row + 3, :], axis=0)[on_slit][
+                ::ra_order
+            ]
+            ** 0.5
             / 5**0.5
         )
 
@@ -370,25 +373,25 @@ def get_synthetic_flux(
             # syn_flux[flt][syn_flux[flt] <= 0] = np.nan
             np.save(flt_path, [syn_flux[flt], syn_flux_var[flt]])
 
-            # If we want to downgrade the spatial resolution
-            if "bad_phot" in args.model_type:
-                msgs.info(
-                    f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {args.kernel_width} arcsec..."
-                )
-                kernel_size = (
-                    args.kernel_width / 2.355 / spec_model.pixel_scale
-                )  # Convert FWHM to sigma in pixels
-                syn_flux[flt] = gaussian_filter(
-                    syn_flux[flt], sigma=kernel_size, mode="nearest"
-                )
-                syn_flux_var[flt] = gaussian_filter(
-                    syn_flux_var[flt], sigma=kernel_size, mode="nearest"
-                )
-
         # If the file exists, load it
         else:
             msgs.info(f"Loading synthetic photometry for the {flt}-band filter...")
             syn_flux[flt], syn_flux_var[flt] = np.load(flt_path)
+
+        # If we want to downgrade the spatial resolution
+        if "bad_phot" in args.model_type:
+            msgs.info(
+                f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {args.kernel_width} arcsec..."
+            )
+            kernel_size = (
+                args.kernel_width / 2.355 / spec_model.pixel_scale
+            )  # Convert FWHM to sigma in pixels
+            syn_flux[flt] = gaussian_filter(
+                syn_flux[flt], sigma=kernel_size, mode="nearest"
+            )
+            syn_flux_var[flt] = gaussian_filter(
+                syn_flux_var[flt], sigma=kernel_size, mode="nearest"
+            )
 
     return syn_flux, syn_flux_var
 
@@ -521,7 +524,9 @@ if __name__ == "__main__":
         )
 
         if "match" in args.model_type:
-            dseeing_opt, alpha_opt = spec_model.update_seeing(dseeing=None, dseeing_upper=1.5)
+            dseeing_opt, alpha_opt = spec_model.update_seeing(
+                dseeing=None, dseeing_upper=1.5
+            )
             dseeing_opt_list.append(dseeing_opt)
 
             dseeing_wv = (
@@ -558,8 +563,10 @@ if __name__ == "__main__":
             ),
             mean=mean_est,  # Mean of the 1D spectrum
         )
+
+        diff_from_prior = spec_model.f_batch_2d.Y - spec_model.f_batch_prior.Y
         params_init_2d = dict(
-            log_amp=-5.0,
+            log_amp=np.log10(np.median(diff_from_prior**2)),
             log_scale=(
                 np.log10(spec_model.spat_resln),  # Spatial scale ~ seeing
                 4,  # Spectral scale ~ 10^4 Angstrom
@@ -594,7 +601,9 @@ if __name__ == "__main__":
                     [spec_model.spec_resln / 2.355, np.inf],
                 ]
             ).T,
-            mean=np.array([-1e-1, 1e-1]),  # Mean of the host profile
+            mean=np.array(
+                [np.min(diff_from_prior), np.max(diff_from_prior)]
+            ),  # Mean of the host profile
             log_amp_line=np.array(
                 [0, np.inf]
             ),  # Logarithm of the amplitude of the host lines
