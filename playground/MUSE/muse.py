@@ -464,7 +464,7 @@ if __name__ == "__main__":
         row = range_to_random_ints(slit_range_cfg["row"], args.n_trials)
         mask_offset_pix = range_to_random_ints(
             slit_range_cfg["mask_offset"], args.n_trials
-        )
+        ) + np.array(galaxy_cfg["axis_slope"] * (row - dat.shape[1] / 2), dtype=int)
         # Check if the trials are identical
         has_identical_trials = len(set(zip(col, row, mask_offset_pix))) < args.n_trials
     msgs.info(
