@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 import argparse
 
 HDR_FILE = "./HEADER.toml"
-GALAXY_TYPES = ["elliptical", "spiral"]
+GALAXY_TYPES = ["spiral", "spiral_2", "spiral_3"]
 MODEL_TYPES = ["raw", "bad_phot", "bad_phot_match", "bad_spec", "bad_spec_match"]
 
 WV_EFF = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
@@ -138,6 +138,9 @@ def pack_2d_spectrum(
     center_dec = dec[row]
     ra_offset = (ra - center_ra) * 3600
     dec_offset = (dec - center_dec) * 3600
+
+    # Ensure the slit length does not exceed the FoV
+    slit_len = min((max(ra_offset) - min(ra_offset)) * 0.8, slit_len)
 
     # Generate the synthetic 2D spectrum
     # Check if ra_offset is sorted in ascending or descending order

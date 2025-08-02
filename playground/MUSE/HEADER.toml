@@ -30,17 +30,32 @@ row = [140, 200]
 col = [160, 165]
 mask_offset = [-50, 50]
 
-[basic.elliptical]
-PI = "Johnston"
-program_id = "099.B-0411(A)"
-object = "J205050.78-004350.85"
-z = 0.0571
+[basic.spiral_2]
+PI = "TANVIR, NIAL"
+program_id = "0100.D-0649"
+object = "LCRS B110709.2-121854"
+z = 0.036932
 
-[spec_model.elliptical]
-spat_resln = 0.78
-sky_region = [-10, 10]
+[spec_model.spiral_2]
+spat_resln = 0.68
+sky_region = [-5, 5]
 
-[slit_range.elliptical]
-row = [140, 160]
-col = [150, 170]
-mask_offset = [-5, 6]
+[slit_range.spiral_2]
+row = [70, 100]
+col = [80, 82]
+mask_offset = [-25, 25]
+
+[basic.spiral_3]
+PI = "TANVIR, NIAL"
+program_id = "0100.D-0649"
+object = "LCRS B110709.2-121854"
+z = 0.036932
+
+[spec_model.spiral_3]
+spat_resln = 0.68
+sky_region = [-3.4, 3.4]
+
+[slit_range.spiral_3]
+row = [47, 66]
+col = [54, 55]
+mask_offset = [-16, 16]
