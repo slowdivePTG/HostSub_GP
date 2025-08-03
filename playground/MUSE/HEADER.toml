@@ -59,6 +59,9 @@ spat_resln = 0.68
 sky_region = [-3.4, 3.4]
 
 [slit_range.spiral_3]
-row = [47, 66]
-col = [54, 55]
-mask_offset = [-13, 13]
+# row = [47, 66]
+# col = [54, 55]
+# mask_offset = [-13, 13]
+row = [54, 54]
+col = [54, 54]
+mask_offset = [-12, -12]

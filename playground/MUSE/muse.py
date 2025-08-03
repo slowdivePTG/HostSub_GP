@@ -380,11 +380,12 @@ def get_synthetic_flux(
 
         # If we want to downgrade the spatial resolution
         if "bad_phot" in args.model_type:
+            kernel_width = args.kernel_width * (WV_EFF[flt] / WV_EFF["r"]) ** (-0.2)
             msgs.info(
-                f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {args.kernel_width} arcsec..."
+                f"Downgrading the spatial resolution of the {flt}-band filter by a Gaussian kernel with width {kernel_width:.2f} arcsec..."
             )
             kernel_size = (
-                args.kernel_width / 2.355 / spec_model.pixel_scale
+                kernel_width / 2.355 / spec_model.pixel_scale
             )  # Convert FWHM to sigma in pixels
             syn_flux[flt] = gaussian_filter(
                 syn_flux[flt], sigma=kernel_size, mode="nearest"
@@ -392,6 +393,16 @@ def get_synthetic_flux(
             syn_flux_var[flt] = gaussian_filter(
                 syn_flux_var[flt], sigma=kernel_size, mode="nearest"
             )
+
+            flt_file_down = flt_file.replace(".npy", "_down.npy")
+            flt_path_down = f"{args.galaxy_type}/{args.model_type}/{flt_file_down}"
+
+            msgs.info(
+                f"Saving downgraded synthetic photometry for the {flt}-band filter to {flt_file_down}..."
+            )
+            # syn_flux_var[flt][syn_flux[flt] <= 0] = np.nan
+            # syn_flux[flt][syn_flux[flt] <= 0] = np.nan
+            np.save(flt_path_down, [syn_flux[flt], syn_flux_var[flt]])
 
     return syn_flux, syn_flux_var
 
@@ -403,7 +414,7 @@ def range_to_random_ints(range_tuple: tuple, n: int) -> NDArray:
     elif range_tuple[1] < range_tuple[0]:
         return np.random.randint(*range_tuple[::-1], size=n)
     else:
-        return np.ones(n) * range_tuple[0]
+        return np.ones(n, dtype=int) * range_tuple[0]
 
 
 if __name__ == "__main__":
@@ -602,7 +613,10 @@ if __name__ == "__main__":
                 ]
             ).T,
             mean=np.array(
-                [np.min(diff_from_prior), np.max(diff_from_prior)]
+                [
+                    min(np.min(diff_from_prior), -1e-3),
+                    max(np.max(diff_from_prior), 1e-3),
+                ]
             ),  # Mean of the host profile
             log_amp_line=np.array(
                 [0, np.inf]
