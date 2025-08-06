@@ -43,7 +43,7 @@ spat_resln = 0.68
 sky_region = [-5, 5]
 
 [slit_range.spiral_2]
-row = [70, 100]
+row = [70, 102]
 col = [80, 82]
 mask_offset = [-20, 20]
 
@@ -59,9 +59,22 @@ spat_resln = 0.68
 sky_region = [-3.4, 3.4]
 
 [slit_range.spiral_3]
-# row = [47, 66]
-# col = [54, 55]
-# mask_offset = [-13, 13]
-row = [54, 54]
-col = [54, 54]
-mask_offset = [-12, -12]
+row = [47, 66]
+col = [54, 55]
+mask_offset = [-13, 13]
+
+[basic.spiral_4]
+PI = "TANVIR, NIAL"
+program_id = "0100.D-0649"
+object = "LCRS B110709.2-121854"
+z = 0.036932
+axis_slope = 0.8
+
+[spec_model.spiral_4]
+spat_resln = 0.68
+sky_region = [-2.5, 2.5]
+
+[slit_range.spiral_4]
+row = [35, 50]
+col = [40, 41]
+mask_offset = [-10, 10]

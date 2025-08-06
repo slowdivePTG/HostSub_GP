@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 import argparse
 
 HDR_FILE = "./HEADER.toml"
-GALAXY_TYPES = ["spiral", "spiral_2", "spiral_3"]
+GALAXY_TYPES = ["spiral", "spiral_2", "spiral_3", "spiral_4"]
 MODEL_TYPES = ["raw", "bad_phot", "bad_phot_match", "bad_spec", "bad_spec_match"]
 
 WV_EFF = dict(g=4810.16, r=6155.47, i=7503.03, z=8668.36, y=9613.60)
@@ -470,14 +470,32 @@ if __name__ == "__main__":
 
     np.random.seed(42)
     has_identical_trials = True
+    n_trials = args.n_trials
+    col, row = np.array([], dtype=int), np.array([], dtype=int)
+    mask_offset_pix = np.array([], dtype=int)
     while has_identical_trials:
-        col = range_to_random_ints(slit_range_cfg["col"], args.n_trials)
-        row = range_to_random_ints(slit_range_cfg["row"], args.n_trials)
-        mask_offset_pix = range_to_random_ints(
-            slit_range_cfg["mask_offset"], args.n_trials
-        ) + np.array(galaxy_cfg["axis_slope"] * (row - dat.shape[1] / 2), dtype=int)
+        col_t = range_to_random_ints(slit_range_cfg["col"], n_trials)
+        row_t = range_to_random_ints(slit_range_cfg["row"], n_trials)
+        mask_offset_pix_t = range_to_random_ints(
+            slit_range_cfg["mask_offset"], n_trials
+        ) + np.array(galaxy_cfg["axis_slope"] * (row_t - dat.shape[1] / 2), dtype=int)
         # Check if the trials are identical
-        has_identical_trials = len(set(zip(col, row, mask_offset_pix))) < args.n_trials
+        has_identical_trials = len(set(zip(col_t, row_t, mask_offset_pix_t))) < n_trials
+
+        col = np.append(col, col_t)
+        row = np.append(row, row_t)
+        mask_offset_pix = np.append(mask_offset_pix, mask_offset_pix_t)
+
+        # Keep only unique trials
+        if has_identical_trials:
+            unique_trials = set(zip(col, row, mask_offset_pix))
+            col, row, mask_offset_pix = zip(*unique_trials)
+
+        n_trials = args.n_trials - len(col)
+        msgs.info(
+            f"Found {len(col)} unique trials, {n_trials} more trials needed to reach the target."
+        )
+
     msgs.info(
         f"Randomly selected {args.n_trials} trials with unique (col, row, mask_offset_pix) pairs."
     )
@@ -486,165 +504,174 @@ if __name__ == "__main__":
     dseeing_opt_list = []
 
     for n_trial in range(args.n_trials):
-        targetid = (
-            f"row_{row[n_trial]}_col_{col[n_trial]}_offset_{mask_offset_pix[n_trial]}"
-        )
-        msgs.info(f"Running trial {n_trial + 1}/{args.n_trials}...")
-        msgs.info(f"Target ID: {targetid}")
-        # Pack the 2D spectrum
-        spec_model = pack_2d_spectrum(
-            dat,
-            dat_var,
-            ra,
-            dec,
-            wv,
-            targetid,
-            row=row[n_trial],
-            col=col[n_trial],
-            mask_offset_pix=mask_offset_pix[n_trial],
-            **spec_model_cfg,
-        )
-
-        syn_flux, syn_flux_var = get_synthetic_flux(
-            dat=dat, dat_var=dat_var, wv=wv, overwrite=args.overwrite and n_trial == 0
-        )
-
-        # Model the host prior
-        spec_model = model_host_prior(
-            spec_model,
-            row=row[n_trial],
-            col=col[n_trial],
-            mask_offset_pix=mask_offset_pix[n_trial],
-            syn_flux=syn_flux,
-            syn_flux_var=syn_flux_var,
-            slit_len=spec_model_cfg["slit_len"],
-            targetid=targetid,
-        )
-
-        spec_model.construct_spec_wrapper(
-            f_obs=spec_model.f_obs,
-            batch_2d=(2, 256) if args.galaxy_type == "spiral" else (2, 128),
-            host_emission_cfg={
-                "find_host_emission": args.galaxy_type == "spiral",
-                "z": galaxy_cfg["z"],
-                "z_err": 0.0001,
-                "p_value": 0.05,
-            },
-            sigma_clip=None,
-            save=f"{PATH}/{targetid}_raw.pdf",
-        )
-
-        if "match" in args.model_type:
-            dseeing_opt, alpha_opt = spec_model.update_seeing(
-                dseeing=None, dseeing_upper=1.5
+        try:
+            targetid = f"row_{row[n_trial]}_col_{col[n_trial]}_offset_{mask_offset_pix[n_trial]}"
+            msgs.info(f"Running trial {n_trial + 1}/{args.n_trials}...")
+            msgs.info(f"Target ID: {targetid}")
+            # Pack the 2D spectrum
+            spec_model = pack_2d_spectrum(
+                dat,
+                dat_var,
+                ra,
+                dec,
+                wv,
+                targetid,
+                row=row[n_trial],
+                col=col[n_trial],
+                mask_offset_pix=mask_offset_pix[n_trial],
+                **spec_model_cfg,
             )
-            dseeing_opt_list.append(dseeing_opt)
 
-            dseeing_wv = (
-                dseeing_opt
-                / spec_model.pixel_scale
-                * (spec_model.spec / spec_model.spec.mean()) ** (-alpha_opt)
+            syn_flux, syn_flux_var = get_synthetic_flux(
+                dat=dat,
+                dat_var=dat_var,
+                wv=wv,
+                overwrite=args.overwrite and n_trial == 0,
             )
+
+            # Model the host prior
+            spec_model = model_host_prior(
+                spec_model,
+                row=row[n_trial],
+                col=col[n_trial],
+                mask_offset_pix=mask_offset_pix[n_trial],
+                syn_flux=syn_flux,
+                syn_flux_var=syn_flux_var,
+                slit_len=spec_model_cfg["slit_len"],
+                targetid=targetid,
+            )
+
             spec_model.construct_spec_wrapper(
-                f_obs=spec_model.f_obs.convolve(dseeing_wv),
-                batch_2d=(1, 128),
+                f_obs=spec_model.f_obs,
+                batch_2d=(2, 256) if args.galaxy_type == "spiral" else (2, 128),
                 host_emission_cfg={
-                    "find_host_emission": True,
+                    "find_host_emission": args.galaxy_type == "spiral",
                     "z": galaxy_cfg["z"],
-                    "z_err": 0.001,
+                    "z_err": 0.0001,
                     "p_value": 0.05,
                 },
                 sigma_clip=None,
-                save=f"{PATH}/{targetid}_conv.pdf",
+                save=f"{PATH}/{targetid}_raw.pdf",
             )
 
-        # Get the initial parameters
-        log_amp_est = np.log10(((spec_model.f_host_1d.y) ** 2).max())
-        mean_est = np.nanmean(spec_model.f_host_1d.y)
-        params_init_1d = dict(
-            log_amp=(
-                log_amp_est,  # ExpSquared: Logarithm of the maximum squared value of the 1D spectrum
-                log_amp_est - 2,  # Matern: Somewhat smaller
-            ),
-            log_scale=(
-                2,  # ExpSquared: 100 Angstrom
-                np.log10(
-                    spec_model.spec_resln / 2.355
-                ),  # Matern: Spectral resolution / 2.355
-            ),
-            mean=mean_est,  # Mean of the 1D spectrum
-        )
+            if "match" in args.model_type:
+                dseeing_opt, alpha_opt = spec_model.update_seeing(
+                    dseeing=None, dseeing_upper=1.5
+                )
+                dseeing_opt_list.append(dseeing_opt)
 
-        diff_from_prior = spec_model.f_batch_2d.Y - spec_model.f_batch_prior.Y
-        params_init_2d = dict(
-            log_amp=np.log10(np.median(diff_from_prior**2)),
-            log_scale=(
-                np.log10(spec_model.spat_resln),  # Spatial scale ~ seeing
-                4,  # Spectral scale ~ 10^4 Angstrom
-            ),
-            mean=0.0,
-            log_amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
-            scale_line=spec_model.spec_resln
-            / 2,  # Radius of the host lines: Half of the FWHM of the spectral resolution
-        )
-        params_init = (params_init_1d, params_init_2d)
+                dseeing_wv = (
+                    dseeing_opt
+                    / spec_model.pixel_scale
+                    * (spec_model.spec / spec_model.spec.mean()) ** (-alpha_opt)
+                )
+                spec_model.construct_spec_wrapper(
+                    f_obs=spec_model.f_obs.convolve(dseeing_wv),
+                    batch_2d=(1, 128),
+                    host_emission_cfg={
+                        "find_host_emission": True,
+                        "z": galaxy_cfg["z"],
+                        "z_err": 0.001,
+                        "p_value": 0.05,
+                    },
+                    sigma_clip=None,
+                    save=f"{PATH}/{targetid}_conv.pdf",
+                )
 
-        # Set the limits for the parameters
-        params_limit_1d = dict(
-            log_scale=np.log10(
-                [
-                    # log range of the slow varying component
-                    [1e3, np.inf],
-                    # log range of the fast varying component
-                    # typical scale = spectral resolution
-                    [spec_model.spec_resln / 2.355, spec_model.spec_resln],
-                ]
-            ).T
-        )
-        params_limit_2d = dict(
-            log_scale=np.log10(
-                [
-                    # log range of the spatial component
-                    # typical scale = spatial resolution
-                    [spec_model.spat_resln / 2.355, np.inf],
-                    # log range of the spectral component
-                    # typical scale = spectral resolution
-                    [spec_model.spec_resln / 2.355, np.inf],
-                ]
-            ).T,
-            mean=np.array(
-                [
-                    min(np.min(diff_from_prior), -1e-3),
-                    max(np.max(diff_from_prior), 1e-3),
-                ]
-            ),  # Mean of the host profile
-            log_amp_line=np.array(
-                [0, np.inf]
-            ),  # Logarithm of the amplitude of the host lines
-            scale_line=np.array(
-                [spec_model.spec_resln / 2.355, spec_model.spec_resln]
-            ),  # Scale of the host lines
-        )
-        params_limit = (params_limit_1d, params_limit_2d)
+            # Get the initial parameters
+            log_amp_est = np.log10(((spec_model.f_host_1d.y) ** 2).max())
+            mean_est = np.nanmean(spec_model.f_host_1d.y)
+            params_init_1d = dict(
+                log_amp=(
+                    log_amp_est,  # ExpSquared: Logarithm of the maximum squared value of the 1D spectrum
+                    log_amp_est - 2,  # Matern: Somewhat smaller
+                ),
+                log_scale=(
+                    2,  # ExpSquared: 100 Angstrom
+                    np.log10(
+                        spec_model.spec_resln / 2.355
+                    ),  # Matern: Spectral resolution / 2.355
+                ),
+                mean=mean_est,  # Mean of the 1D spectrum
+            )
 
-        # Prior and posterior of the host profiles
-        spec_model._plot_host_profile_prior(
-            save=f"{PATH}/{targetid}_host_profile_prior.pdf"
-        )
-        msgs.info(
-            f"Saving the prior of the host profiles to {PATH}/{targetid}_host_profile_prior.pdf"
-        )
+            diff_from_prior = spec_model.f_batch_2d.Y - spec_model.f_batch_prior.Y
+            params_init_2d = dict(
+                log_amp=np.log10(np.median(diff_from_prior**2)),
+                log_scale=(
+                    np.log10(spec_model.spat_resln),  # Spatial scale ~ seeing
+                    4,  # Spectral scale ~ 10^4 Angstrom
+                ),
+                mean=0.0,
+                log_amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
+                scale_line=spec_model.spec_resln
+                / 2,  # Radius of the host lines: Half of the FWHM of the spectral resolution
+            )
+            params_init = (params_init_1d, params_init_2d)
 
-        # Model the host
-        spec_model.model_host(
-            params_init=params_init,
-            params_limit=params_limit,
-            optimization=True,
-            # optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
-        )
+            # Set the limits for the parameters
+            params_limit_1d = dict(
+                log_scale=np.log10(
+                    [
+                        # log range of the slow varying component
+                        [1e3, np.inf],
+                        # log range of the fast varying component
+                        # typical scale = spectral resolution
+                        [spec_model.spec_resln / 2.355, spec_model.spec_resln],
+                    ]
+                ).T
+            )
+            params_limit_2d = dict(
+                log_scale=np.log10(
+                    [
+                        # log range of the spatial component
+                        # typical scale = spatial resolution
+                        [spec_model.spat_resln / 2.355, np.inf],
+                        # log range of the spectral component
+                        # typical scale = spectral resolution
+                        [spec_model.spec_resln / 2.355, np.inf],
+                    ]
+                ).T,
+                mean=np.array(
+                    [
+                        min(np.min(diff_from_prior), -1e-3),
+                        max(np.max(diff_from_prior), 1e-3),
+                    ]
+                ),  # Mean of the host profile
+                log_amp_line=np.array(
+                    [0, np.inf]
+                ),  # Logarithm of the amplitude of the host lines
+                scale_line=np.array(
+                    [spec_model.spec_resln / 2.355, spec_model.spec_resln]
+                ),  # Scale of the host lines
+            )
+            params_limit = (params_limit_1d, params_limit_2d)
 
-        # QA plots
-        plot_QA(spec_model, targetid)
+            # Prior and posterior of the host profiles
+            spec_model._plot_host_profile_prior(
+                save=f"{PATH}/{targetid}_host_profile_prior.pdf"
+            )
+            msgs.info(
+                f"Saving the prior of the host profiles to {PATH}/{targetid}_host_profile_prior.pdf"
+            )
+
+            # Model the host
+            spec_model.model_host(
+                params_init=params_init,
+                params_limit=params_limit,
+                optimization=True,
+                # optimization_kwargs={"maxiter": 1000, "tol": 1e-4},
+            )
+
+            # QA plots
+            plot_QA(spec_model, targetid)
+
+        except Exception as e:
+            msgs.error(f"Error in trial {n_trial + 1}: {e}")
+            msgs.error(
+                f"row, col, mask_offset_pix: {row[n_trial]}, {col[n_trial]}, {mask_offset_pix[n_trial]}"
+            )
+            continue
 
     if "match" in args.model_type:
         dseeing_opt_list = np.array(dseeing_opt_list)
