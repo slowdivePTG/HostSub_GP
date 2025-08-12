@@ -1,9 +1,0 @@
-name: hostsub
-channels:
-  - conda-forge
-dependencies:
-  - python==3.11
-  - jax
-  - jaxopt
-  - tinygp
-  - astropy==7.0.1

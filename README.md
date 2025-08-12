@@ -23,9 +23,9 @@ Users are recommended to use `PypeIt` for basic image processing, and the `spec2
 ```shell
 git clone https://github.com/slowdivePTG/HostSub_GP.git
 cd HostSub_GP
-conda env create -f environment.yml
-conda activate hostsub
-pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
 ```
 
 ### Optional Dependencies
@@ -33,7 +33,7 @@ The package includes optional dependencies that can be installed as needed:
 
 - **PypeIt integration**: For working with PypeIt data products
   ```shell
-  pip install -e ".[pypeit]"
+  pip install ".[pypeit]"
   ```
 
 **Note**: `pypeit` is an optional dependency. If you plan to use PypeIt's `spec2d` data products as input, install with the `pypeit` extra as shown above.

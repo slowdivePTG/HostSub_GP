@@ -167,6 +167,11 @@ cython_debug/
 # vscode
 .vscode
 
+# uv lock and compiled files
+requirements.txt
+requirements.lock
+uv.lock
+
 # temporarily ignored
 *.ipynb
 *.ipynb_checkpoints
