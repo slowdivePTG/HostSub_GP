@@ -20,7 +20,7 @@ keywords = [
     "host subtraction",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -34,4 +34,4 @@ pypeit = ["pypeit>=1.17"]
 hostsub = "hostsub_gp.scripts.hostsub:HostSub.entry_point"
 
 [tool.setuptools]
-packages = ["hostsub_gp"] # Explicitly specify the package
+package-dir = {"" = "src"}

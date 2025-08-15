@@ -1,5 +1,5 @@
 # HostSub_GP
-Modeling the 2d spectrum of host galaxies with Gaussian process (GP) for better background subtraction in supernova spectroscopy.
+`HostSub_GP` is a software to model the 2d spectrum of host galaxies with Gaussian process (GP) for better background subtraction in transient spectroscopy.
 
 ## Input
 - A reduced 2d spectrum (2d array: spatial v.s. spectral)
