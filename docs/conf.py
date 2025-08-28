@@ -5,6 +5,10 @@
 
 import os
 import sys
+from configparser import ConfigParser
+from importlib import metadata
+import pathlib
+
 sys.path.insert(0, os.path.abspath("../src/"))
 
 # -- Project information -----------------------------------------------------
@@ -12,7 +16,8 @@ sys.path.insert(0, os.path.abspath("../src/"))
 
 project = 'HostSub_GP'
 copyright = '2025, Chang Liu'
-author = 'Chang Liu'
+author = 'Chang Liu and Adam A. Miller'
+version = '0.1.0'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -21,7 +26,7 @@ author = 'Chang Liu'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    'sphinx.ext.autodoc', # 
+    'sphinx.ext.autodoc',
     'sphinx_automodapi.automodapi',
     'sphinx.ext.napoleon',
     'sphinx.ext.doctest',
@@ -58,7 +63,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'alabaster' # furo, pydata-sphinx-theme, sphinx_rtd_theme
+html_theme = 'sphinx_rtd_theme' # furo, alabaster, pydata-sphinx-theme, sphinx_rtd_theme
 html_static_path = ['_static']
 
 # Napoleon settings (Google/NumPy style)
