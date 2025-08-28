@@ -41,6 +41,8 @@ extensions = [
 #    'sphinx.ext.autosectionlabel',
 ]
 
+autodoc_mock_imports = ["pypeit"]
+
 #automodapi
 numpydoc_show_class_members = False
 
