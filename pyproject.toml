@@ -14,11 +14,7 @@ dependencies = [
 ]
 readme = "README.md"
 license = { file = "LICENSE" }
-keywords = [
-    "astronomy",
-    "gaussian processes",
-    "host subtraction",
-]
+keywords = ["astronomy", "gaussian processes", "host subtraction"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -28,10 +24,11 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-pypeit = ["pypeit>=1.17"]
+pypeit = ["pypeit"]
 
 [project.scripts]
 hostsub = "hostsub_gp.scripts.hostsub:HostSub.entry_point"
+hostsub_setup = "hostsub_gp.scripts.hostsub_setup:HostSubSetup.entry_point"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }

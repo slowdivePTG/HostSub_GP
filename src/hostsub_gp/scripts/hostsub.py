@@ -251,12 +251,9 @@ class HostSub(ScriptBase):
 
         # Parameters for identifying host emission lines
         host_emission_cfg = {}
-        host_emission_cfg["find_host_emission"] = par_host_emission.get(
-            "find_host_emission", "True"
-        ) in [
-            "True",
-            "true",
-        ]
+        host_emission_cfg["find_host_emission"] = (
+            par_host_emission.get("find_host_emission", "True").lower() == "true"
+        )
         host_emission_cfg["p_value"] = Float(par_host_emission.get("p_value", 0.05))
         host_emission_cfg["kernel_wid"] = (
             None
