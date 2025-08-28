@@ -6,6 +6,15 @@
 HostSub_GP documentation
 ========================
 
+.. image:: https://img.shields.io/badge/License-MIT-yellow.svg
+   :target: https://opensource.org/licenses/MIT
+
+.. image:: https://img.shields.io/badge/GitHub-Repo-blue?logo=github
+   :target: https://github.com/slowdivePTG/HostSub_GP
+
+.. image:: https://img.shields.io/badge/arXiv-2508.15278-B31B1B.svg
+   :target: https://arxiv.org/abs/2508.15278
+
 .. toctree::
    :maxdepth: 1
    :caption: Getting Started

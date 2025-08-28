@@ -26,7 +26,8 @@ An example input file for HostSub_GP is provided below. This file specifies the 
             filters = grizy
 
         [[host_emission]]
-            z = 0.0150
+            find_host_emission = True
+            # z = 0.0
 
         [[seeing_match]]
             dseeing_lower = 0.0
