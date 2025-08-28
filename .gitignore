@@ -168,7 +168,6 @@ cython_debug/
 .vscode
 
 # uv lock and compiled files
-requirements.txt
 requirements.lock
 uv.lock
 
