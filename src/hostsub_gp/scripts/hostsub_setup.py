@@ -69,7 +69,8 @@ class HostSubSetup(ScriptBase):
             cfg_lines = [
                 "[hostsub]",
                 "    slit_len = 60.0",
-                "    spec_range = 3000, 10000",
+                "    # ra = PLEASE_SET_RA",
+                "    # dec = PLEASE_SET_DEC",
                 "    mask_wid = 2.5",
                 "    sky_region = -10, 10.",
                 "    host_wid = 10.0",
@@ -187,7 +188,7 @@ class HostSubSetup(ScriptBase):
                     # Write the data block
                     f.write("# Data block for input spectra\n")
                     f.write("hostsub read\n")
-                    f.write(" path ./Science/\n")
+                    f.write(" path ../Science/\n")
                     buf = io.StringIO()
                     ascii.write(data, buf, format="fixed_width", delimiter="|")
                     for line in buf.getvalue().splitlines():

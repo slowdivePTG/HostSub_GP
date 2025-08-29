@@ -11,6 +11,8 @@ An example input file for HostSub_GP is provided below. This file specifies the 
     # User-defined parameters
     [hostsub]
         slit_len = 60.0
+        ra = RA
+        dec = DEC
         spec_range = 3000, 10000
         mask_wid = 2.5
         sky_region = -10, 10.

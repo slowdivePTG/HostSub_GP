@@ -528,7 +528,7 @@ class HostProfile:
         _, ax = plt.subplots(
             len(self.filters),
             1,
-            figsize=(6, 2 * len(self.filters)),
+            figsize=(10, 3 * len(self.filters)),
             sharex=True,
             sharey=True,
             constrained_layout=True,

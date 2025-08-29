@@ -283,8 +283,7 @@ class SpecModel:
 
         # Define the host galaxy pixels (outside the mask)
         spat_edges["host"] = (
-            (jnp.ceil(self._host_region[0] / self.pixel_scale) - 0.5)
-            * self.pixel_scale
+            (jnp.ceil(self._host_region[0] / self.pixel_scale) - 0.5) * self.pixel_scale
             + mask_offset,
             (jnp.floor(self._host_region[1] / self.pixel_scale) + 0.5)
             * self.pixel_scale
@@ -820,8 +819,8 @@ class SpecModel:
             self.f_sci_pred_1d.y is not None and self.f_sci_classic_1d.y is not None
         ), "Not sky-subtracted"
 
-        _, ax = plt.subplots(1, 1, figsize=(10, 4))
-        ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#8c96c6")
+        _, ax = plt.subplots(1, 1, figsize=(10, 4), constrained_layout=True)
+        ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#e76a0bff")
         ax.plot(
             self.f_sci_classic_1d.X,
             self.f_sci_classic_1d.y,
@@ -830,7 +829,7 @@ class SpecModel:
             zorder=-1,
         )
         ax.axhline(0, color="k", ls="--")
-        ax.set_xlabel(r"$\mathrm{Wavelength\,[\r{A}]}$")
+        ax.set_xlabel(r"$\mathrm{Spec\,[\r{A}]}$")
         ax.set_ylabel(r"$\mathrm{Counts}$")
         ylim = ax.get_ylim()
         ax.set_ylim(
@@ -871,7 +870,7 @@ class SpecModel:
         )
         # 1D spectrum of the host galaxy
         if ndim == 1:
-            log_amp_est = np.log10(((self.f_host_1d.y) ** 2).max())
+            log_amp_est = np.log10(np.nanmax((self.f_host_1d.y) ** 2))
             mean_est = np.nanmean(self.f_host_1d.y)
             params_init_default = dict(
                 log_amp=(
@@ -888,10 +887,10 @@ class SpecModel:
             )
         elif ndim == 2:
             params_init_default = dict(
-                log_amp=-4.0,
+                log_amp=-6.0,
                 log_scale=(
                     np.log10(self.spec_resln),  # Spatial scale ~ seeing
-                    3,  # Spectral scale ~ 1000 Angstrom
+                    4,  # Spectral scale ~ 10000 Angstrom
                 ),
                 mean=0.0,
                 log_amp_line=1.0,  # Covariance within the host lines = covariance outside the host lines
@@ -1678,7 +1677,7 @@ class SpecModel:
             emission_lines_idx_updated = np.unique(emission_lines_idx_updated)
 
         _, ax = plt.subplots(
-            2, 1, figsize=(20, 5), sharex=True, constrained_layout=True
+            2, 1, figsize=(10, 4), sharex=True, constrained_layout=True
         )
         ax[0].plot(self.spec, f_lines, color="tab:blue")
         ax[0].axhline(mad_std(f_lines) * 5, color="0.5", ls="--")
@@ -1887,7 +1886,7 @@ class SpecModel:
         )
         cmap_sci.set_bad("red")
 
-        _, ax = plt.subplots(4, 1, figsize=(15, 15), constrained_layout=True)
+        _, ax = plt.subplots(4, 1, figsize=(10, 10), constrained_layout=True)
         # Plot the original 2D spectrum
         ax[0].imshow(
             self.f_obs.Y,
@@ -1984,20 +1983,12 @@ class SpecModel:
             ax_.set_xlim(self.spec[0], self.spec[-1])
             ax_.set_xticks([])
         for ax_ in ax[:-2]:
-            ax_.axhline(self.spat_edges["mask"][0], color="w", linestyle="--", lw=3)
-            ax_.axhline(self.spat_edges["mask"][1], color="w", linestyle="--", lw=3)
-            ax_.axhline(
-                self.spat_edges["host"][0], color="crimson", linestyle="-.", lw=3
-            )
-            ax_.axhline(
-                self.spat_edges["host"][1], color="crimson", linestyle="-.", lw=3
-            )
-            ax_.axhline(
-                self.spat_edges["sky"][0], color="darkgreen", linestyle="-.", lw=3
-            )
-            ax_.axhline(
-                self.spat_edges["sky"][1], color="darkgreen", linestyle="-.", lw=3
-            )
+            ax_.axhline(self.spat_edges["mask"][0], color="crimson", lw=1)
+            ax_.axhline(self.spat_edges["mask"][1], color="crimson", lw=1)
+            ax_.axhline(self.spat_edges["host"][0], color="salmon", lw=1)
+            ax_.axhline(self.spat_edges["host"][1], color="salmon", lw=1)
+            ax_.axhline(self.spat_edges["sky"][0], color="tab:blue", lw=1)
+            ax_.axhline(self.spat_edges["sky"][1], color="tab:blue", lw=1)
             ax_.set_ylim(self.spat[0], self.spat[-1])
 
         ax[-1].set_ylabel(r"$\mathrm{Counts}$")
@@ -2031,6 +2022,7 @@ class SpecModel:
         ax[-1].set_xticks(transformed_minor_ticks, minor=True)
         ax[-1].set_xticklabels([f"${tick:.0f}$" for tick in original_ticks])
         ax[-1].set_xlim(spec_to_pixel(self.spec[0]), spec_to_pixel(self.spec[-1]))
+        ax[-1].set_yticks([])
 
         # Mask the SN trace in the 2D spectrum
         ax[2].fill_between(
@@ -2058,7 +2050,7 @@ class SpecModel:
         assert self.f_batch_2d.spat is not None and self.f_batch_2d.spec is not None
 
         _, ax = plt.subplots(
-            figsize=(6, len(self.f_host_batch_2d.spec) / 2),
+            figsize=(10, len(self.f_host_batch_2d.spec)),
             constrained_layout=True,
             sharex=True,
         )
@@ -2098,15 +2090,16 @@ class SpecModel:
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{Counts + offset}$")
+        ylim = ax.get_ylim()
         ax.fill_betweenx(
-            y=[ylim[0] + offset, ylim[1] - offset],
+            y=[ylim[0] - offset / 2, ylim[1] + offset / 2],
             x1=self.spat_edges["mask"][0],
             x2=self.spat_edges["mask"][1],
             color="w",
             zorder=100,
             alpha=0.75,
         )
-        ax.set_ylim(-offset * (k + 1), offset + np.nanmedian(raw[:, 0]))
+        ax.set_ylim(ylim[0] - offset / 2, ylim[1] + offset / 2)
         ax.set_yticks([])
         return ax
 
@@ -2120,7 +2113,7 @@ class SpecModel:
         )
 
         _, ax = plt.subplots(
-            figsize=(6, len(self.f_host_batch_2d.spec) / 2),
+            figsize=(10, len(self.f_host_batch_2d.spec)),
             constrained_layout=True,
             sharex=True,
         )
@@ -2163,7 +2156,6 @@ class SpecModel:
                 color=c_raw,
             )
             ax.axhline(-offset * k, color=c_raw, ls="--", lw=1, alpha=0.25)
-        ylim = ax.get_ylim()
         for k, (r, err, p, perr) in enumerate(
             zip(raw.T, raw_err.T, pred.T, pred_err.T)
         ):
@@ -2176,15 +2168,16 @@ class SpecModel:
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
+        ylim = ax.get_ylim()
         ax.fill_betweenx(
-            y=[ylim[0] + offset, ylim[1] - offset],
+            y=[ylim[0] - offset / 2, ylim[1] + offset / 2],
             x1=self.spat_edges["mask"][0],
             x2=self.spat_edges["mask"][1],
             color="w",
             zorder=100,
             alpha=0.75,
         )
-        ax.set_ylim(-offset * (k + 1), offset + np.nanmedian(raw[:, 0]))
+        ax.set_ylim(ylim[0] - offset / 2, ylim[1] + offset / 2)
         ax.set_yticks([])
         return ax
 
@@ -2226,7 +2219,7 @@ class SpecModel:
         )
 
         _, ax = plt.subplots(
-            5, 1, figsize=(15, 16.7), sharex=True, sharey=True, constrained_layout=True
+            5, 1, figsize=(10, 12), sharex=True, sharey=True, constrained_layout=True
         )
         ax[0].imshow(
             self.f_sky_sub.Y,

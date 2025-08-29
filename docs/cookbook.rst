@@ -36,7 +36,7 @@ Run with PypeIt
 
    .. code-block:: shell
         
-        hostsub_setup pypeit -c YOUR_PYPEIT_FILE.pypeit --obj OBJ
+        hostsub_setup pypeit -c YOUR_PYPEIT_FILE.pypeit --target TARGET
         
    This will read your ``.pypeit`` file and generate a folder named ``HostSub_OBJ`` containing a template input file ``hostsub.txt``. See :doc:`reference/input_file` for details of the input file format and parameters.
 
