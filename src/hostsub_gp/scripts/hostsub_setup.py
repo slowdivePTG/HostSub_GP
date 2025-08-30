@@ -101,7 +101,7 @@ class HostSubSetup(ScriptBase):
                 target_std = None
                 msgs.warning("No standard star found in the PypeIt file.")
 
-            pypeit_files = glob.glob("./Science/spec1d*[0-9].fits")
+            pypeit_files = sorted(glob.glob("./Science/spec1d*[0-9].fits"))
 
             for target in args.target:
                 msgs.info(f"Setting up HostSub_GP for object: {target}")
