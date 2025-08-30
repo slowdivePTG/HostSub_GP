@@ -108,7 +108,13 @@ class HostSubSetup(ScriptBase):
                 os.makedirs(f"HostSub_{target}", exist_ok=True)
 
                 pypeit_sci_files = [f for f in pypeit_files if target in f]
-                pypeit_std_files = [f for f in pypeit_files if target_std in f]
+                if target_std is None:
+                    pypeit_std_files = []
+                else:
+                    pypeit_std_files = [f for f in pypeit_files if target_std in f]
+
+                if len(pypeit_std_files) == 0:
+                    spat_id_std, slit_id_std, det_id_std = -1, -1, -1
 
                 for std_file in pypeit_std_files:
                     dict_out["filename"].append(std_file.split("/")[-1])
