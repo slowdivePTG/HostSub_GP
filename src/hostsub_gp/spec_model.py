@@ -2090,7 +2090,6 @@ class SpecModel:
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{Counts + offset}$")
-        ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] - offset / 2, ylim[1] + offset / 2],
             x1=self.spat_edges["mask"][0],
@@ -2156,6 +2155,7 @@ class SpecModel:
                 color=c_raw,
             )
             ax.axhline(-offset * k, color=c_raw, ls="--", lw=1, alpha=0.25)
+        ylim = ax.get_ylim()
         for k, (r, err, p, perr) in enumerate(
             zip(raw.T, raw_err.T, pred.T, pred_err.T)
         ):
@@ -2168,7 +2168,6 @@ class SpecModel:
             )
         ax.set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
         ax.set_ylabel(r"$\mathrm{2D\ profile - prior}$")
-        ylim = ax.get_ylim()
         ax.fill_betweenx(
             y=[ylim[0] - offset / 2, ylim[1] + offset / 2],
             x1=self.spat_edges["mask"][0],
