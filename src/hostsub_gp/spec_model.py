@@ -759,6 +759,44 @@ class SpecModel:
 
         return dseeing, alpha
 
+    def extract_sci_classic(self, method="boxcar") -> Axes:
+        """
+        Extract the science spectrum after host galaxy subtraction (within the mask).
+        """
+        # Predict the host galaxy flux within the mask (including uncertainties)
+        msgs.info("Extracting the science spectrum with the classic method.")
+
+        f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
+        assert f_mask.spat is not None and f_mask.spec is not None
+
+        if method == "boxcar":
+            extract_weights = None
+        # elif method == "optimal":
+        #     extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
+        else:
+            raise ValueError("Invalid extraction method.")
+
+        # Evaluate the background with the classic method
+        local_sky_left = (self.spat < -self._mask_wid / 2 + self.mask_offset) & (
+            self.spat > -(self._mask_wid / 2 + self.spat_resln) + self.mask_offset
+        )
+        local_sky_right = (self.spat > self._mask_wid / 2 + self.mask_offset) & (
+            self.spat < (self._mask_wid / 2 + self.spat_resln) + self.mask_offset
+        )
+        msgs.info(
+            f"Local sky region: {self.spat[local_sky_left][0]:.2f} to {self.spat[local_sky_left][-1]:.2f} arcsec and {self.spat[local_sky_right][0]:.2f} to {self.spat[local_sky_right][-1]:.2f} arcsec"
+        )
+        local_sky = local_sky_left | local_sky_right
+
+        # f_mask_1d = f_mask.marginalize(margin_type="mean", weights=extract_weights)
+        f_classic_sky_1d = self.f_sky_sub.apply_spatial_filter(local_sky).marginalize(
+            margin_type="mean"
+        )
+        f_sci_classic = f_mask.subtract(f_classic_sky_1d).fill_nan()
+        self.f_sci_classic_1d = f_sci_classic.marginalize(
+            margin_type="sum", weights=extract_weights
+        )
+
     @show_and_save
     def extract_sci(
         self, method="boxcar"
@@ -795,26 +833,13 @@ class SpecModel:
             raise ValueError("Invalid extraction method.")
 
         self.f_sci_pred_1d = self.f_sci_pred.marginalize(
-            margin_type="mean", weights=extract_weights
+            margin_type="sum", weights=extract_weights
         )
-
-        # Evaluate the background with the classic method
-        local_sky_left = (self.spat < -self._mask_wid / 2 + self.mask_offset) & (
-            self.spat > -self._mask_wid * 2 / 2 + self.mask_offset
-        )
-        local_sky_right = (self.spat > self._mask_wid / 2 + self.mask_offset) & (
-            self.spat < self._mask_wid * 2 / 2 + self.mask_offset
-        )
-        local_sky = local_sky_left | local_sky_right
-
-        f_mask_1d = self.f_mask.marginalize(margin_type="mean", weights=extract_weights)
-        f_classic_sky_1d = self.f_sky_sub.apply_spatial_filter(local_sky).marginalize(
-            margin_type="mean"
-        )
-        self.f_sci_classic_1d = f_mask_1d.subtract(f_classic_sky_1d)
 
         if not hasattr(self, "_f_pred"):
             raise AttributeError("Please model the host galaxy first.")
+        if not hasattr(self, "f_sci_classic_1d"):
+            self.extract_sci_classic(method=method)
         assert (
             self.f_sci_pred_1d.y is not None and self.f_sci_classic_1d.y is not None
         ), "Not sky-subtracted"

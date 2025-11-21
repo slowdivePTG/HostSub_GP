@@ -140,8 +140,7 @@ class HostProfile:
 
         host_idx = [
             np.argwhere(
-                (spat_slit[k] >= host_left[0])
-                & (spat_slit[k] <= host_right[1])
+                (spat_slit[k] >= host_left[0]) & (spat_slit[k] <= host_right[1])
             ).ravel()
             for k in range(len(self.filters))
         ]
@@ -384,7 +383,7 @@ class HostProfile:
                 :, np.abs(img_product.spat_slit_wid) < slit_wid / 2
             ]
             # slit_wid_pix = int(np.round(slit_wid / img_product.pixel_scale))
-            err1 = np.nanstd(img_slit, axis=1, ddof=1) #/ np.sqrt(slit_wid_pix)
+            err1 = np.nanstd(img_slit, axis=1, ddof=1)  # / np.sqrt(slit_wid_pix)
             # Smooth the error: convolution with a boxcar filter
             noise_smooth_kernel = 3
             if noise_smooth_kernel is not None:

@@ -202,6 +202,8 @@ class SpecData:
                 )
             return fits.getheader("/".join([raw_dir, raw_file]), **kwargs)
 
+        bad_rows = []
+
         if pypeit_header["PYP_SPEC"] in [
             "keck_lris_blue",
             "keck_lris_red",
@@ -249,6 +251,9 @@ class SpecData:
             position_angle = raw_header["PA"] - raw_header["ROT"]
 
             slit_wid = float(raw_header["MASK"].split("Longslit")[-1])
+
+            # MMT faulty rows to be removed
+            bad_rows = [113, 210, 719, 1999, 2099, 3336, 3337, 4056, 4057] + [1717, 3011]
 
         elif pypeit_header["PYP_SPEC"] == "not_alfosc":
             # NOT/ALFOSC
@@ -340,6 +345,15 @@ class SpecData:
         )  # spatial pixel of the trace
 
         sci2d = spec2dobj.Spec2DObj.from_file(spec2d_file, detname=det)
+
+        # Refill bad rows
+        for row in bad_rows:
+            sci2d.sciimg[row, :] = (
+                sci2d.sciimg[row - 1, :] + sci2d.sciimg[row + 1, :]
+            ) / 2
+            sci2d.ivarraw[row, :] = (
+                sci2d.ivarraw[row - 1, :] + sci2d.ivarraw[row + 1, :]
+            ) / 2
 
         # Spectral resolution: the FWHM of the arc lines
         try:

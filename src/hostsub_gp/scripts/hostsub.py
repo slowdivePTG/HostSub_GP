@@ -3,6 +3,7 @@
 
 from typing import Callable
 import numpy as np
+import sys
 
 import os
 import argparse
@@ -305,6 +306,9 @@ class HostSub(ScriptBase):
             **spec_wrapper_cfg,
             save=f"QA/{output_suffix}_raw.pdf",
         )
+
+        # Get the classic extraction of the science spectrum
+        spec_model.extract_sci_classic(method="boxcar")
 
         if not args.skip_seeing_match:
             dseeing = seeing_match_cfg.pop("dseeing", None)
