@@ -32,3 +32,6 @@ hostsub_setup = "hostsub_gp.scripts.hostsub_setup:HostSubSetup.entry_point"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+
+[tool.setuptools.package-data]
+hostsub_gp = ["data/*.csv"]
