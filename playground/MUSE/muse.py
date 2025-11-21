@@ -545,7 +545,7 @@ if __name__ == "__main__":
                 f_obs=spec_model.f_obs,
                 batch_2d=(2, 256) if args.galaxy_type == "spiral" else (2, 128),
                 host_emission_cfg={
-                    "find_host_emission": args.galaxy_type == "spiral",
+                    "find_host_emission": "spiral" in args.galaxy_type,
                     "z": galaxy_cfg["z"],
                     "z_err": 0.0001,
                     "p_value": 0.05,
