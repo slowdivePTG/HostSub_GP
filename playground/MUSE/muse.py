@@ -1,6 +1,7 @@
 import numpy as np
 import glob
 import os
+import sys
 
 # import jax.numpy as jnp
 # import jax
@@ -318,7 +319,7 @@ def plot_QA(
     msgs.info(f"Saving the raw, model, and residual to {PATH}/{targetid}_pred.pdf")
 
     # Extract the science spectrum
-    spec_model.extract_sci(save=f"{PATH}/{targetid}_sci.pdf")
+    spec_model.extract_sci(save=f"{PATH}/{targetid}_sci.pdf", extr_method="mean")
     msgs.info(f"Saving the science spectrum to {PATH}/{targetid}_sci.pdf")
 
     # Save the 1D spectra
@@ -479,17 +480,16 @@ if __name__ == "__main__":
         mask_offset_pix_t = range_to_random_ints(
             slit_range_cfg["mask_offset"], n_trials
         ) + np.array(galaxy_cfg["axis_slope"] * (row_t - dat.shape[1] / 2), dtype=int)
-        # Check if the trials are identical
-        has_identical_trials = len(set(zip(col_t, row_t, mask_offset_pix_t))) < n_trials
 
         col = np.append(col, col_t)
         row = np.append(row, row_t)
         mask_offset_pix = np.append(mask_offset_pix, mask_offset_pix_t)
 
-        # Keep only unique trials
-        if has_identical_trials:
-            unique_trials = set(zip(col, row, mask_offset_pix))
-            col, row, mask_offset_pix = zip(*unique_trials)
+        unique_trials = set(zip(col, row, mask_offset_pix))
+        col, row, mask_offset_pix = zip(*unique_trials)
+
+        # Check if the trials are identical
+        has_identical_trials = len(set(zip(col, row, mask_offset_pix))) < args.n_trials
 
         n_trials = args.n_trials - len(col)
         msgs.info(
@@ -553,6 +553,8 @@ if __name__ == "__main__":
                 sigma_clip=None,
                 save=f"{PATH}/{targetid}_raw.pdf",
             )
+
+            spec_model.extract_sci_classic(extr_method="mean")
 
             if "match" in args.model_type:
                 dseeing_opt, alpha_opt = spec_model.update_seeing(

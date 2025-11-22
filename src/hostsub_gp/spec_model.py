@@ -759,7 +759,7 @@ class SpecModel:
 
         return dseeing, alpha
 
-    def extract_sci_classic(self, method="boxcar") -> Axes:
+    def extract_sci_classic(self, extr_method="sum") -> Axes:
         """
         Extract the science spectrum after host galaxy subtraction (within the mask).
         """
@@ -768,13 +768,6 @@ class SpecModel:
 
         f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
         assert f_mask.spat is not None and f_mask.spec is not None
-
-        if method == "boxcar":
-            extract_weights = None
-        # elif method == "optimal":
-        #     extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
-        else:
-            raise ValueError("Invalid extraction method.")
 
         # Evaluate the background with the classic method
         local_sky_left = (self.spat < -self._mask_wid / 2 + self.mask_offset) & (
@@ -793,13 +786,11 @@ class SpecModel:
             margin_type="mean"
         )
         f_sci_classic = f_mask.subtract(f_classic_sky_1d).fill_nan()
-        self.f_sci_classic_1d = f_sci_classic.marginalize(
-            margin_type="sum", weights=extract_weights
-        )
+        self.f_sci_classic_1d = f_sci_classic.marginalize(margin_type=extr_method)
 
     @show_and_save
     def extract_sci(
-        self, method="boxcar"
+        self, extr_method="sum"
     ) -> Axes:  # TODO: adopt the extraction method of pypeit
         """
         Extract the science spectrum after host galaxy subtraction (within the mask).
@@ -822,24 +813,12 @@ class SpecModel:
         )
         self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
 
-        # def gauss(x, mu, sigma):
-        #     return jnp.exp(-0.5 * (x - mu) ** 2 / sigma**2) * (2 * jnp.pi * sigma**2) ** -0.5
-
-        if method == "boxcar":
-            extract_weights = None
-        # elif method == "optimal":
-        #     extract_weights = gauss(self.f_mask.spat, self.mask_offset, self.spat_resln / 2.355)
-        else:
-            raise ValueError("Invalid extraction method.")
-
-        self.f_sci_pred_1d = self.f_sci_pred.marginalize(
-            margin_type="sum", weights=extract_weights
-        )
+        self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type=extr_method)
 
         if not hasattr(self, "_f_pred"):
             raise AttributeError("Please model the host galaxy first.")
         if not hasattr(self, "f_sci_classic_1d"):
-            self.extract_sci_classic(method=method)
+            self.extract_sci_classic(extr_method=extr_method)
         assert (
             self.f_sci_pred_1d.y is not None and self.f_sci_classic_1d.y is not None
         ), "Not sky-subtracted"
