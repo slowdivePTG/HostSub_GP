@@ -35,6 +35,12 @@ parser.add_argument(
     help="Type of the galaxy (also used as the directory name).",
 )
 parser.add_argument(
+    "--skip_gp",
+    default=False,
+    action="store_true",
+    help="Skip the GP modeling (only preprocess the spectrum and perform classic host subtraction).",
+)
+parser.add_argument(
     "--model_type",
     type=str,
     default="raw",
@@ -309,30 +315,58 @@ def plot_QA(
 ) -> None:
     """Plot the QA figures."""
 
-    spec_model._plot_host_profile_pred(save=f"{PATH}/{targetid}_host_profile_pred.pdf")
-    msgs.info(
-        f"Saving the posterior of the host profiles to {PATH}/{targetid}_host_profile_pred.pdf"
-    )
+    if (
+        hasattr(spec_model, "_f_pred")
+        and spec_model._gp_1d is not None
+        and spec_model._gp_2d is not None
+    ):
+        spec_model._plot_host_profile_pred(
+            save=f"{PATH}/{targetid}_host_profile_pred.pdf"
+        )
+        msgs.info(
+            f"Saving the posterior of the host profiles to {PATH}/{targetid}_host_profile_pred.pdf"
+        )
 
-    # Raw, model, and residual
-    spec_model._plot_pred(save=f"{PATH}/{targetid}_pred.pdf")
-    msgs.info(f"Saving the raw, model, and residual to {PATH}/{targetid}_pred.pdf")
+        # Raw, model, and residual
+        spec_model._plot_pred(save=f"{PATH}/{targetid}_pred.pdf")
+        msgs.info(f"Saving the raw, model, and residual to {PATH}/{targetid}_pred.pdf")
 
-    # Extract the science spectrum
-    spec_model.extract_sci(save=f"{PATH}/{targetid}_sci.pdf", extr_method="mean")
-    msgs.info(f"Saving the science spectrum to {PATH}/{targetid}_sci.pdf")
+        # Extract the science spectrum
+        spec_model.extract_sci(save=f"{PATH}/{targetid}_sci.pdf", extr_method="mean")
+        msgs.info(f"Saving the science spectrum to {PATH}/{targetid}_sci.pdf")
 
-    # Save the 1D spectra
-    dat = np.array(
-        [
-            spec_model.spec,
-            spec_model.f_sci_pred_1d.y,
-            spec_model.f_sci_pred_1d.yerr,
-            spec_model.f_sci_classic_1d.y,
-            spec_model.f_sci_classic_1d.yerr,
-        ]
-    ).T
-    np.savetxt(f"{PATH}/{targetid}_sci.dat", dat)
+        # Save the 1D spectra
+        dat = np.array(
+            [
+                spec_model.spec,
+                spec_model.f_sci_pred_1d.y,
+                spec_model.f_sci_pred_1d.yerr,
+                spec_model.f_sci_linear_1d.y,
+                spec_model.f_sci_linear_1d.yerr,
+                spec_model.f_sci_bspline_1d.y,
+                spec_model.f_sci_bspline_1d.yerr,
+            ]
+        ).T
+        np.savetxt(f"{PATH}/{targetid}_sci.dat", dat)
+
+    else:
+        # Extract the science spectrum
+        spec_model.extract_sci(
+            save=f"{PATH}/{targetid}_classic_sci.pdf", extr_method="mean"
+        )
+        msgs.info(f"Saving the science spectrum to {PATH}/{targetid}_classic_sci.pdf")
+
+        # Save the 1D spectra
+        dat = np.array(
+            [
+                spec_model.spec,
+                spec_model.f_sci_linear_1d.y,
+                spec_model.f_sci_linear_1d.yerr,
+                spec_model.f_sci_bspline_1d.y,
+                spec_model.f_sci_bspline_1d.yerr,
+            ]
+        ).T
+        np.savetxt(f"{PATH}/{targetid}_classic_sci.dat", dat)
 
 
 def get_synthetic_flux(
@@ -555,6 +589,10 @@ if __name__ == "__main__":
             )
 
             spec_model.extract_sci_classic(extr_method="mean")
+
+            if args.skip_gp:
+                plot_QA(spec_model, targetid)
+                continue
 
             if "match" in args.model_type:
                 dseeing_opt, alpha_opt = spec_model.update_seeing(

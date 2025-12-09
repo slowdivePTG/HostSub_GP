@@ -43,10 +43,10 @@ class HostSub(ScriptBase):
             help="Skip the matching of the seeing between the host and science spectra.",
         )
         parser.add_argument(
-            "--skip_model",
+            "--skip_gp",
             default=False,
             action="store_true",
-            help="Skip the modeling of the host galaxy (only load and rectify the spectrum).",
+            help="Skip the GP modeling (only preprocess the spectrum and perform classic host subtraction).",
         )
         parser.add_argument(
             "--coadd2d",
@@ -183,17 +183,17 @@ class HostSub(ScriptBase):
                 spec_model = HostSub._model_host_subtraction(
                     args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1]
                 )
-
-        # Update the skymodel frame in the original Spec2D object
-        for i in sci_idx:
-            sci_file_1d = hostsubFile.filenames[i]
-            os.system(
-                f"cp {sci_file_1d} {sci_file_1d.replace('.fits', '_hostsub.fits')}"
-            )
-            sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
-            spec_data.update_pypeit_skymodel(
-                spec_model=spec_model, spec2d_file=sci_file_2d
-            )
+        if not args.skip_gp:
+            # Update the skymodel frame in the original Spec2D object
+            for i in sci_idx:
+                sci_file_1d = hostsubFile.filenames[i]
+                os.system(
+                    f"cp {sci_file_1d} {sci_file_1d.replace('.fits', '_hostsub.fits')}"
+                )
+                sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
+                spec_data.update_pypeit_skymodel(
+                    spec_model=spec_model, spec2d_file=sci_file_2d
+                )
 
     @staticmethod
     def _model_host_subtraction(
@@ -308,7 +308,31 @@ class HostSub(ScriptBase):
         )
 
         # Get the classic extraction of the science spectrum
-        spec_model.extract_sci_classic(method="boxcar")
+        spec_model.extract_sci_classic()
+
+        # Skip the subsequent modeling if requested
+        if args.skip_gp:
+            # Extract the science spectrum
+            spec_model.extract_sci(
+                show=False, save=f"QA/{output_suffix}_classic_sci.pdf"
+            )
+            np.savetxt(
+                f"QA/{output_suffix}_classic_sci.txt",
+                np.array(
+                    [
+                        spec_model.f_sci_linear_1d.X.ravel(),
+                        spec_model.f_sci_linear_1d.y,
+                        spec_model.f_sci_linear_1d.yerr,
+                        spec_model.f_sci_bspline_1d.y,
+                        spec_model.f_sci_bspline_1d.yerr,
+                    ]
+                ).T,
+                fmt="%.4f %.6e %.6e %.6e %.6e",
+            )
+            msgs.info(
+                f"Saving the extracted science spectrum to QA/{output_suffix}_sci.txt"
+            )
+            return
 
         if not args.skip_seeing_match:
             dseeing = seeing_match_cfg.pop("dseeing", None)
@@ -367,10 +391,6 @@ class HostSub(ScriptBase):
         spec_model._plot_host_profile_prior(
             show=False, save=f"QA/{output_suffix}_host_profile_prior.pdf"
         )
-
-        # Skip the subsequent modeling if requested
-        if args.skip_model:
-            return
 
         params_init, params_limit = HostSub._load_gp_params(par_hostsub)
 

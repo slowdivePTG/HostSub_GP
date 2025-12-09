@@ -759,34 +759,131 @@ class SpecModel:
 
         return dseeing, alpha
 
-    def extract_sci_classic(self, extr_method="sum") -> Axes:
+    def extract_sci_classic(self, extr_method="sum") -> None:
         """
-        Extract the science spectrum after host galaxy subtraction (within the mask).
+        Extract the science spectrum after host galaxy subtraction (within the mask)
+        using classic linear and B-spline background estimation methods.
         """
-        # Predict the host galaxy flux within the mask (including uncertainties)
-        msgs.info("Extracting the science spectrum with the classic method.")
+        import numpy as np
 
+        # --- Quality Control Assertion ---
+        # Ensure the spatial coordinate array is sorted.
+        assert np.all(self.spat[:-1] <= self.spat[1:]), (
+            "self.spat must be sorted for B-spline fitting."
+        )
+
+        msgs.info(
+            "Extracting the science spectrum with classic methods (linear and B-spline)."
+        )
+
+        # 1. Prepare common data objects
         f_mask = self.f_sky_sub.apply_spatial_filter(self.spat_filter["mask"])
         assert f_mask.spat is not None and f_mask.spec is not None
 
-        # Evaluate the background with the classic method
-        local_sky_left = (self.spat < -self._mask_wid / 2 + self.mask_offset) & (
-            self.spat > -(self._mask_wid / 2 + self.spat_resln) + self.mask_offset
+        f_sky_sub = self.f_sky_sub.fill_nan()
+
+        # 2. Run Linear Extraction
+        self._extract_sci_linear(f_mask, f_sky_sub, extr_method)
+
+        # 3. Run B-spline Extraction
+        self._extract_sci_bspline(f_mask, f_sky_sub, extr_method)
+
+    def _extract_sci_linear(
+        self, f_mask: SpecWrapper, f_sky_sub: SpecWrapper, extr_method: str
+    ) -> None:
+        """
+        Private method to estimate and subtract the background using a linear (mean) fit.
+        """
+        spat_full = self.spat
+
+        # 1. Define Local Sky Region
+        local_sky_left = (spat_full < -self._mask_wid / 2 + self.mask_offset) & (
+            spat_full > -(self._mask_wid / 2 + self.spat_resln) + self.mask_offset
         )
-        local_sky_right = (self.spat > self._mask_wid / 2 + self.mask_offset) & (
-            self.spat < (self._mask_wid / 2 + self.spat_resln) + self.mask_offset
+        local_sky_right = (spat_full > self._mask_wid / 2 + self.mask_offset) & (
+            spat_full < (self._mask_wid / 2 + self.spat_resln) + self.mask_offset
         )
         msgs.info(
-            f"Local sky region: {self.spat[local_sky_left][0]:.2f} to {self.spat[local_sky_left][-1]:.2f} arcsec and {self.spat[local_sky_right][0]:.2f} to {self.spat[local_sky_right][-1]:.2f} arcsec"
+            f"Local sky region (Linear): {spat_full[local_sky_left][0]:.2f} to {spat_full[local_sky_left][-1]:.2f} arcsec and {spat_full[local_sky_right][0]:.2f} to {spat_full[local_sky_right][-1]:.2f} arcsec"
         )
         local_sky = local_sky_left | local_sky_right
 
-        # f_mask_1d = f_mask.marginalize(margin_type="mean", weights=extract_weights)
-        f_classic_sky_1d = self.f_sky_sub.apply_spatial_filter(local_sky).marginalize(
+        # 2. Estimate and Subtract
+        # f_sky_linear_1d is the mean of the sky flux in the defined region (a 1D array of size N_spec)
+        f_sky_linear_1d = f_sky_sub.apply_spatial_filter(local_sky).marginalize(
             margin_type="mean"
         )
-        f_sci_classic = f_mask.subtract(f_classic_sky_1d).fill_nan()
-        self.f_sci_classic_1d = f_sci_classic.marginalize(margin_type=extr_method)
+        f_sci_linear = f_mask.subtract(f_sky_linear_1d).fill_nan()
+        self.f_sci_linear_1d = f_sci_linear.marginalize(margin_type=extr_method)
+
+    def _extract_sci_bspline(
+        self, f_mask: SpecWrapper, f_sky_sub: SpecWrapper, extr_method: str
+    ) -> None:
+        """
+        Private method to estimate and subtract the background using a single,
+        vectorized B-spline fit with a knot interval >= the size of the central gap.
+        """
+        from scipy.interpolate import make_lsq_spline
+
+        spat_full = self.spat
+
+        # 1. Define the combined local sky region
+        bg_width_bs = 5 * self._mask_wid
+
+        local_sky_left_bs = (spat_full < -self._mask_wid / 2 + self.mask_offset) & (
+            spat_full > -(self._mask_wid / 2 + bg_width_bs) + self.mask_offset
+        )
+        local_sky_right_bs = (spat_full > self._mask_wid / 2 + self.mask_offset) & (
+            spat_full < (self._mask_wid / 2 + bg_width_bs) + self.mask_offset
+        )
+        local_sky_bs = local_sky_left_bs | local_sky_right_bs
+
+        finite_sky = np.isfinite(f_sky_sub.Y).all(axis=0)
+
+        # 2. Prepare combined data for fitting
+        x_fit = spat_full[local_sky_bs]
+        flux_sky = f_sky_sub.Y[local_sky_bs, :][:, finite_sky]
+
+        # 3. Define Knots with Gap Constraint
+        knot_interval = self._mask_wid
+        k = 3
+
+        msgs.info(f"Using knot interval: {knot_interval:.3f} arcsec.")
+
+        # Define full knot vector based on the constrained interval
+        t_min, t_max = x_fit.min(), x_fit.max()
+        # The new knot_interval ensures t_interior skips the central gap
+        t_interior = np.arange(t_min + knot_interval, t_max, knot_interval)
+
+        # Full knot vector with padding (k+1 values at boundaries)
+        t = np.concatenate(([t_min] * (k + 1), t_interior, [t_max] * (k + 1)))
+
+        # 4. Vectorized B-spline Fit
+        spl_fit = make_lsq_spline(x_fit, flux_sky, t, k=k)
+
+        # 5. Evaluate and Subtract
+        # Evaluate the background model on the FULL spatial axis (N_spat, N_spec)
+        # Use extrapolate=True to get values in the data range [t_min, t_max]
+        # but outside the data points (i.e., in the central gap).
+        bg_model_pred = spl_fit(spat_full, extrapolate=True)
+
+        bg_model_full_2d = np.zeros(f_sky_sub.Y.shape) * np.nan
+        bg_model_full_2d[:, finite_sky] = bg_model_pred
+
+        # Extract the values and coordinates ONLY within the science mask
+        mask_filter = self.spat_filter["mask"]
+        bg_model_masked_values = bg_model_full_2d[mask_filter, :]
+        spat_mask_coords = spat_full[mask_filter]
+
+        # Create the SpecWrapper object for the background model
+        bg_model_masked_obj = SpecWrapper(
+            points=(spat_mask_coords, self.spec),
+            values=bg_model_masked_values,
+        )
+
+        # Subtract the background model from the science mask data (f_mask)
+        f_sci_bspline = f_mask.subtract(bg_model_masked_obj)
+        self.f_sci_bspline_1d = f_sci_bspline.marginalize(margin_type=extr_method)
 
     @show_and_save
     def extract_sci(
@@ -802,34 +899,22 @@ class SpecModel:
         assert self.f_mask.spat is not None and self.f_mask.spec is not None
         X_mask = self.f_mask.X.reshape(self.f_mask.shape[0], self.f_mask.shape[1], -1)
 
-        # Evaluate the background with the Gaussian Process model
-        _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(
-            self._gp_1d, self._gp_2d, X_mask, return_var=True
-        )
-        self.f_mask_pred = SpecWrapper(
-            points=(self.f_mask.spat, self.f_mask.spec),
-            values=f_mask_pred.reshape(self.f_mask.shape),
-            values_err=f_mask_pred_err.reshape(self.f_mask.shape),
-        )
-        self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
-
-        self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type=extr_method)
-
-        if not hasattr(self, "_f_pred"):
-            raise AttributeError("Please model the host galaxy first.")
-        if not hasattr(self, "f_sci_classic_1d"):
+        if not (hasattr(self, "f_sci_linear_1d") and hasattr(self, "f_sci_bspline_1d")):
             self.extract_sci_classic(extr_method=extr_method)
-        assert (
-            self.f_sci_pred_1d.y is not None and self.f_sci_classic_1d.y is not None
-        ), "Not sky-subtracted"
 
         _, ax = plt.subplots(1, 1, figsize=(10, 4), constrained_layout=True)
-        ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#e76a0bff")
         ax.plot(
-            self.f_sci_classic_1d.X,
-            self.f_sci_classic_1d.y,
-            color="grey",
-            alpha=0.5,
+            self.f_sci_linear_1d.X,
+            self.f_sci_linear_1d.y,
+            color="#9f94c1",  # elegant purple-ish gray
+            alpha=0.7,
+            zorder=-1,
+        )
+        ax.plot(
+            self.f_sci_bspline_1d.X,
+            self.f_sci_bspline_1d.y,
+            color="#9cbf95",  # elegant green-ish gray
+            alpha=0.7,
             zorder=-1,
         )
         ax.axhline(0, color="k", ls="--")
@@ -838,16 +923,40 @@ class SpecModel:
         ylim = ax.get_ylim()
         ax.set_ylim(
             max(
-                np.nanpercentile(self.f_sci_pred_1d.y, 1)
-                - np.nanstd(self.f_sci_pred_1d.y),
+                np.nanpercentile(self.f_sci_linear_1d.y, 1)
+                - np.nanstd(self.f_sci_linear_1d.y),
                 ylim[0],
             ),
             min(
-                np.nanpercentile(self.f_sci_pred_1d.y, 99)
-                + np.nanstd(self.f_sci_pred_1d.y),
+                np.nanpercentile(self.f_sci_linear_1d.y, 99)
+                + np.nanstd(self.f_sci_linear_1d.y),
                 ylim[1],
             ),
         )
+
+        if (
+            hasattr(self, "_f_pred")
+            and self._gp_1d is not None
+            and self._gp_2d is not None
+        ):
+            # Evaluate the background with the Gaussian Process model
+            _, _, (f_mask_pred, f_mask_pred_err) = self._get_pred(
+                self._gp_1d, self._gp_2d, X_mask, return_var=True
+            )
+            self.f_mask_pred = SpecWrapper(
+                points=(self.f_mask.spat, self.f_mask.spec),
+                values=f_mask_pred.reshape(self.f_mask.shape),
+                values_err=f_mask_pred_err.reshape(self.f_mask.shape),
+            )
+            self.f_sci_pred = self.f_mask.subtract(self.f_mask_pred)
+
+            self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type=extr_method)
+
+            ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#e76a0bff")
+        else:
+            msgs.warning(
+                "No GP model found. Only displaying classic extraction results."
+            )
 
         return ax
 
