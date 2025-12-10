@@ -836,6 +836,9 @@ class SpecModel:
         local_sky_right_bs = (spat_full > self._mask_wid / 2 + self.mask_offset) & (
             spat_full < (self._mask_wid / 2 + bg_width_bs) + self.mask_offset
         )
+        msgs.info(
+            f"Local sky region (B-spline): {spat_full[local_sky_left_bs][0]:.2f} to {spat_full[local_sky_left_bs][-1]:.2f} arcsec and {spat_full[local_sky_right_bs][0]:.2f} to {spat_full[local_sky_right_bs][-1]:.2f} arcsec"
+        )
         local_sky_bs = local_sky_left_bs | local_sky_right_bs
 
         finite_sky = np.isfinite(f_sky_sub.Y).all(axis=0)
@@ -906,14 +909,14 @@ class SpecModel:
         ax.plot(
             self.f_sci_linear_1d.X,
             self.f_sci_linear_1d.y,
-            color="#9f94c1",  # elegant purple-ish gray
+            color="#829ad1",
             alpha=0.7,
             zorder=-1,
         )
         ax.plot(
             self.f_sci_bspline_1d.X,
             self.f_sci_bspline_1d.y,
-            color="#9cbf95",  # elegant green-ish gray
+            color="#9cbf95",
             alpha=0.7,
             zorder=-1,
         )
