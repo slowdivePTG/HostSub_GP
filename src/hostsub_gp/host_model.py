@@ -145,14 +145,27 @@ class HostProfile:
             for k in range(len(self.filters))
         ]
 
-        self.prof_slit = [prof_slit[k][host_idx[k]] for k in range(len(self.filters))]
-        self.prof_err_slit = [
-            prof_err_slit[k][host_idx[k]] for k in range(len(self.filters))
+        # Drop filters with NaN values and trim arrays accordingly
+        valid_idx = [
+            k
+            for k in range(len(self.filters))
+            if np.all(np.isfinite(prof_slit[k]))
+            and np.all(np.isfinite(prof_err_slit[k]))
         ]
-        self.spat_slit = [spat_slit[k][host_idx[k]] for k in range(len(self.filters))]
+
+        if len(valid_idx) < len(self.filters):
+            msgs.warning(
+                f"Dropping {len(self.filters) - len(valid_idx)} filters with NaN values in the host profile estimation."
+            )
+
+        self.prof_slit = [prof_slit[k][host_idx[k]] for k in valid_idx]
+        self.prof_err_slit = [prof_err_slit[k][host_idx[k]] for k in valid_idx]
+        self.spat_slit = [spat_slit[k][host_idx[k]] for k in valid_idx]
         self.wv_slit = [
-            np.ones_like(host_idx[k]) * self.wv_eff[k] for k in range(len(self.filters))
+            np.full_like(host_idx[k], self.wv_eff[k], dtype=float) for k in valid_idx
         ]
+        self.filters = [self.filters[k] for k in valid_idx]
+        self.wv_eff = [self.wv_eff[k] for k in valid_idx]
         self.prof = jnp.concatenate(self.prof_slit)
         self.prof_err = jnp.concatenate(self.prof_err_slit)
         self.X = jnp.stack(

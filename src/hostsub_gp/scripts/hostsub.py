@@ -420,8 +420,8 @@ class HostSub(ScriptBase):
                     spec_model.f_sci_pred_1d.X.ravel(),
                     spec_model.f_sci_pred_1d.y,
                     spec_model.f_sci_pred_1d.yerr,
-                    spec_model.f_sci_classic_1d.y,
-                    spec_model.f_sci_classic_1d.yerr,
+                    spec_model.f_sci_bspline_1d.y,
+                    spec_model.f_sci_bspline_1d.yerr,
                 ]
             ).T,
             fmt="%.4f %.6e %.6e %.6e %.6e",
