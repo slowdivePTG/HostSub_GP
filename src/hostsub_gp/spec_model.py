@@ -2,37 +2,33 @@
 
 __all__ = ["SpecModel"]
 
-import numpy as np
+from typing import Callable, Literal, Optional
 
 import jax
 import jax.numpy as jnp
 
 # jax.config.update("jax_enable_x64", True)
-
 import jaxopt
-
-from ._utils import plt, msgs
-from ._utils._plt import show_and_save
-from ._utils._par import (
-    init_params,
-    init_params_limit,
-    print_params,
-    merge_params,
-    separate_params,
-)
-from .gp import GP
-from .host_model import HostProfile
-from .spec_wrapper import SpecWrapper
-
-from typing import Callable, Optional, Literal
-from jax._src.typing import ArrayLike, Array
-
+import numpy as np
+from jax._src.typing import Array, ArrayLike
+from matplotlib import cm
 from matplotlib.axes import Axes
 from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
-from matplotlib import cm
-
 from scipy.optimize import minimize
+
+from ._utils import msgs, plt
+from ._utils._par import (
+    init_params,
+    init_params_limit,
+    merge_params,
+    print_params,
+    separate_params,
+)
+from ._utils._plt import show_and_save
+from .gp import GP
+from .host_model import HostProfile
+from .spec_wrapper import SpecWrapper
 
 
 class SpecModel:
@@ -359,10 +355,13 @@ class SpecModel:
         # Spectral batch
         if host_emission_cfg is None:
             host_emission_cfg = {"find_host_emission": False}
+        host_emission_save = None
+        if host_emission_cfg.get("find_host_emission", False) and save is not None:
+            host_emission_save = save.replace(".pdf", "_host_emission.pdf")
         self._spec_batch_2d_idx = self._get_spec_batches(
             **host_emission_cfg,
             show=show,
-            save=None if save is None else save.replace(".pdf", "_host_emission.pdf"),
+            save=host_emission_save,
         )
         # The 2D sky-subtracted, sigma-clipped spectrum
         self.f_sky_sub = self.f_sky_sub.sigma_clip(
@@ -911,6 +910,7 @@ class SpecModel:
             self.f_sci_linear_1d.y,
             color="#829ad1",
             alpha=0.7,
+            lw=1,
             zorder=-1,
         )
         ax.plot(
@@ -918,6 +918,7 @@ class SpecModel:
             self.f_sci_bspline_1d.y,
             color="#9cbf95",
             alpha=0.7,
+            lw=1,
             zorder=-1,
         )
         ax.axhline(0, color="k", ls="--")
@@ -955,7 +956,7 @@ class SpecModel:
 
             self.f_sci_pred_1d = self.f_sci_pred.marginalize(margin_type=extr_method)
 
-            ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, color="#e76a0bff")
+            ax.plot(self.f_sci_pred_1d.X, self.f_sci_pred_1d.y, lw=1, color="#e76a0bff")
         else:
             msgs.warning(
                 "No GP model found. Only displaying classic extraction results."
@@ -1674,12 +1675,12 @@ class SpecModel:
         Tuple[Array, Array]
             The indices & wavelengths of the host galaxy emission.
         """
-        from scipy.signal import find_peaks
-        from scipy.stats import chi2
+        from importlib import resources
+
         from astropy.stats import mad_std
         from astropy.table import Table
-
-        from importlib import resources
+        from scipy.signal import find_peaks
+        from scipy.stats import chi2
 
         assert self.f_host.y is not None and self.f_host.yerr is not None
         assert self.f_host.Y is not None and self.f_host.Yerr is not None

@@ -141,6 +141,8 @@ class SpecData:
         spat_resln: Optional[float] = None,
         spat_rect: Optional[ArrayLike] = None,
         spec_rect: Optional[ArrayLike] = None,
+        rect_file: Optional[str] = None,
+        preproc_file: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -429,11 +431,13 @@ class SpecData:
             "Global sky background (average across the slit)"
         )
 
+        if preproc_file is None:
+            preproc_file = spec2d_file.replace(".fits", "_preproc.fits")
+        preproc_dir = os.path.dirname(preproc_file)
+        if preproc_dir:
+            os.makedirs(preproc_dir, exist_ok=True)
         hdul = fits.HDUList([primary_hdu, hdu_dist, hdu_waveimg, hdu_global_sky])
-        hdul.writeto(spec2d_file.replace(".fits", "_preproc.fits"), overwrite=True)
-
-        # Copy the spec1d fits file
-        os.system(f"cp {spec1d_file} {spec1d_file.replace('.fits', '_hostsub.fits')}")
+        hdul.writeto(preproc_file, overwrite=True)
 
         # Remove spatial pixels outside the slit (all spat values are NaN)
         valid_spat = jnp.any(np.isfinite(dist), axis=1)
@@ -517,7 +521,7 @@ class SpecData:
             waveimg=waveimg,
             spat_rect=spat_rect,
             spec_rect=spec_rect,
-            cache_path=spec2d_file.replace(".fits", "_rect.fits"),
+            cache_path=rect_file or spec2d_file.replace(".fits", "_rect.fits"),
             to_caches=True,
             **kwargs,
         )
@@ -767,7 +771,355 @@ class SpecData:
 
         # Save to fits file
         # fits_path = self.spec2d_file.replace(".fits", "_rect.fits")
+        cache_dir = os.path.dirname(public_data["cache_path"])
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
         hdul.writeto(public_data["cache_path"], overwrite=True)
+
+    @staticmethod
+    def write_pypeit_spec1d(
+        spec_model: SpecModel,
+        template_spec1d: str,
+        output_file: str,
+        obj_id: Optional[str] = None,
+        duplicate_to_opt: bool = True,
+        extraction: Literal["optimal", "hostsub"] = "optimal",
+    ) -> None:
+        """
+        Write the HostSub 1D extraction to a PypeIt-style spec1d file.
+
+        The original PypeIt spec1d file is used as a metadata template; only the
+        extracted spectral arrays are replaced by HostSub's coadded rectified
+        extraction.
+        """
+        from pypeit import specobjs
+
+        msgs.info(f"Using {template_spec1d} as HostSub spec1d metadata template")
+        sobj, header = SpecData._build_hostsub_specobj(
+            spec_model=spec_model,
+            template_spec1d=template_spec1d,
+            obj_id=obj_id,
+        )
+
+        if extraction == "optimal":
+            source = "HOSTSUB_OPT"
+            SpecData._extract_pypeit_optimal(spec_model, sobj)
+        elif extraction == "hostsub":
+            source = SpecData._fill_specobj_hostsub_extraction(
+                spec_model, sobj, duplicate_to_opt=duplicate_to_opt
+            )
+        else:
+            raise ValueError("extraction must be either 'optimal' or 'hostsub'.")
+
+        sobj.set_name()
+
+        counts = np.asarray(sobj.OPT_COUNTS if sobj.OPT_COUNTS is not None else sobj.BOX_COUNTS)
+        counts_sig = np.asarray(
+            sobj.OPT_COUNTS_SIG
+            if sobj.OPT_COUNTS_SIG is not None
+            else sobj.BOX_COUNTS_SIG
+        )
+        good = np.isfinite(counts) & np.isfinite(counts_sig) & (counts_sig > 0)
+        sobj.S2N = (
+            float(np.nanmedian(np.abs(counts[good]) / counts_sig[good]))
+            if np.any(good)
+            else 0.0
+        )
+        sobj.FWHM = spec_model.spat_resln / spec_model.pixel_scale
+        sobj.SPAT_FWHM = spec_model.spat_resln / spec_model.pixel_scale
+
+        out_objs = specobjs.SpecObjs([sobj])
+        skip_keys = {
+            "SIMPLE",
+            "BITPIX",
+            "NAXIS",
+            "EXTEND",
+            "DMODCLS",
+            "DMODVER",
+            "NSPEC",
+            "COMMENT",
+            "HISTORY",
+            "",
+        }
+        subheader = {
+            key: header[key]
+            for key in header.keys()
+            if key not in skip_keys and not key.startswith("EXT") and len(key) <= 8
+        }
+        subheader["HSTSUB"] = True
+        subheader["HSTSRC"] = source
+        subheader["HSTNOTE"] = "HostSub_GP coadded rectified 1D extraction"
+
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        out_objs.write_to_fits(subheader, output_file, overwrite=True)
+        pypeline = getattr(sobj, "PYPELINE", None) or header.get("PYPELINE")
+        if pypeline is None:
+            pypeline = "MultiSlit"
+        txt_file = output_file.replace(".fits", ".txt")
+        out_objs.write_info(txt_file, pypeline)
+        msgs.info(f"Wrote HostSub PypeIt spec1d file to {output_file}")
+        msgs.info(f"Wrote HostSub PypeIt spec1d info file to {txt_file}")
+
+    @staticmethod
+    def _build_hostsub_specobj(
+        spec_model: SpecModel,
+        template_spec1d: str,
+        obj_id: Optional[str] = None,
+    ):
+        """
+        Build a fresh PypeIt SpecObj for HostSub output.
+
+        The template is used only for stable PypeIt geometry metadata, such as
+        PYPELINE, DET, SLITID, and DETECTOR. Trace-dependent fields like
+        SPAT_PIXPOS and TRACE_SPAT are set later from HostSub's corrected
+        coordinate system.
+        """
+        from pypeit import specobj
+        from pypeit.images import detector_container
+
+        header = fits.getheader(template_spec1d, ext=0)
+        pypeline = header.get("PYPELINE", "MultiSlit")
+        det = None
+        slitid = None
+        detector = None
+
+        with fits.open(template_spec1d) as hdul:
+            specobj_hdus = []
+            for hdu in hdul[1:]:
+                if hdu.header.get("DMODCLS") == "SpecObj":
+                    specobj_hdus.append(hdu)
+                elif "DETECTOR" in hdu.name:
+                    det_from_name = hdu.name.split("-")[0]
+                    if det is None:
+                        det = det_from_name
+                    try:
+                        detector = detector_container.DetectorContainer.from_hdu(
+                            hdu, chk_version=False
+                        )
+                    except Exception as err:
+                        msgs.warning(
+                            f"Could not parse detector metadata from {hdu.name}: {err}"
+                        )
+
+            template_hdu = None
+            if obj_id is not None:
+                for hdu in specobj_hdus:
+                    if hdu.name == obj_id:
+                        template_hdu = hdu
+                        break
+                if template_hdu is None:
+                    msgs.warning(
+                        f"Object {obj_id} not found in {template_spec1d}; using metadata from the first SpecObj HDU."
+                    )
+            if template_hdu is None and len(specobj_hdus) > 0:
+                template_hdu = specobj_hdus[0]
+
+            if template_hdu is not None:
+                # These identify the PypeIt slit/detector geometry and should not
+                # be confused with the template object's trace position.
+                pypeline = template_hdu.header.get("PYPELINE", pypeline)
+                det = template_hdu.header.get("DET", det)
+                slitid = template_hdu.header.get("SLITID", slitid)
+
+        if det is None:
+            det = "DET01"
+            msgs.warning("Could not determine detector from template; using DET01.")
+        if slitid is None:
+            slitid = 0
+            msgs.warning("Could not determine slit ID from template; using SLIT0000.")
+
+        sobj = specobj.SpecObj(pypeline, det, OBJTYPE="science", SLITID=int(slitid))
+        if detector is not None:
+            sobj.DETECTOR = detector
+        if spec_model.center_ra is not None:
+            sobj.RA = spec_model.center_ra
+        if spec_model.center_dec is not None:
+            sobj.DEC = spec_model.center_dec
+        return sobj, header
+
+    @staticmethod
+    def _fill_specobj_hostsub_extraction(
+        spec_model: SpecModel,
+        sobj,
+        duplicate_to_opt: bool = True,
+    ) -> str:
+        """
+        Fill a PypeIt SpecObj with the existing HostSub 1D extraction.
+        """
+        if hasattr(spec_model, "f_sci_pred_1d"):
+            f_sci = spec_model.f_sci_pred_1d
+            source = "HOSTSUB_GP"
+        elif hasattr(spec_model, "f_sci_bspline_1d"):
+            f_sci = spec_model.f_sci_bspline_1d
+            source = "HOSTSUB_BSPLINE"
+        elif hasattr(spec_model, "f_sci_linear_1d"):
+            f_sci = spec_model.f_sci_linear_1d
+            source = "HOSTSUB_LINEAR"
+        else:
+            raise ValueError("No HostSub 1D extraction is available on spec_model.")
+
+        wave = np.asarray(f_sci.X.ravel(), dtype=np.float64)
+        counts = np.asarray(f_sci.y, dtype=np.float64)
+        counts_sig = np.asarray(f_sci.yerr, dtype=np.float64)
+        good = (
+            np.isfinite(wave)
+            & np.isfinite(counts)
+            & np.isfinite(counts_sig)
+            & (counts_sig > 0)
+        )
+        counts_ivar = np.zeros_like(counts_sig)
+        counts_ivar[good] = counts_sig[good] ** -2
+
+        box_npix = np.ones_like(counts, dtype=np.float64) * np.sum(
+            np.asarray(spec_model.spat_filter["mask"])
+        )
+        box_radius = 0.5 * (
+            spec_model.spat_edges["mask"][-1] - spec_model.spat_edges["mask"][0]
+        ) / spec_model.pixel_scale
+
+        sobj.BOX_WAVE = wave
+        sobj.BOX_COUNTS = counts
+        sobj.BOX_COUNTS_SIG = counts_sig
+        sobj.BOX_COUNTS_IVAR = counts_ivar
+        sobj.BOX_MASK = good
+        sobj.BOX_NPIX = box_npix
+        sobj.BOX_RADIUS = float(box_radius)
+        sobj.BOX_COUNTS_SKY = np.zeros_like(counts)
+
+        if duplicate_to_opt:
+            sobj.OPT_WAVE = wave
+            sobj.OPT_COUNTS = counts
+            sobj.OPT_COUNTS_SIG = counts_sig
+            sobj.OPT_COUNTS_IVAR = counts_ivar
+            sobj.OPT_MASK = good
+
+        return source
+
+    @staticmethod
+    def _build_pypeit_extraction_inputs(spec_model: SpecModel) -> dict:
+        """
+        Build PypeIt-shaped arrays from the HostSub coadded rectified model.
+        """
+        if not hasattr(spec_model, "_f_pred"):
+            raise ValueError("Please run the HostSub GP model before optimal extraction.")
+        assert spec_model.f_sky_sub.Y is not None and spec_model.f_sky_sub.Yerr is not None
+
+        host_model = np.asarray(spec_model._f_pred.reshape(spec_model.shape))
+        imgminsky = np.asarray(spec_model.f_sky_sub.Y) - host_model
+        skyimg = np.asarray(spec_model.f_sky_1d.Y)[None, :] + host_model
+        variance = np.asarray(spec_model.f_sky_sub.Yerr) ** 2
+        ivar = np.zeros_like(variance)
+        good_var = np.isfinite(variance) & (variance > 0)
+        ivar[good_var] = variance[good_var] ** -1
+
+        nspat, nspec = imgminsky.shape
+        waveimg = np.tile(np.asarray(spec_model.spec)[None, :], (nspat, 1))
+        spat_img = np.tile(np.arange(nspat, dtype=float)[:, None], (1, nspec))
+        mask = np.isfinite(imgminsky) & np.isfinite(ivar) & (ivar > 0)
+        thismask = np.ones_like(mask, dtype=bool)
+
+        # PypeIt extraction routines expect (nspec, nspat).
+        return dict(
+            imgminsky=imgminsky.T,
+            ivar=ivar.T,
+            mask=mask.T,
+            waveimg=waveimg.T,
+            skyimg=skyimg.T,
+            thismask=thismask.T,
+            spat_img=spat_img.T,
+            nspec=nspec,
+            nspat=nspat,
+        )
+
+    @staticmethod
+    def _extract_pypeit_optimal(spec_model: SpecModel, sobj) -> None:
+        """
+        Fill a PypeIt SpecObj using PypeIt's boxcar and optimal extraction.
+        """
+        from pypeit.core import extract
+
+        inputs = SpecData._build_pypeit_extraction_inputs(spec_model)
+        nspec = inputs["nspec"]
+        nspat = inputs["nspat"]
+
+        trace_center = float(getattr(spec_model, "mask_offset", 0.0))
+        trace_spat = np.interp(
+            trace_center,
+            np.asarray(spec_model.spat, dtype=float),
+            np.arange(nspat, dtype=float),
+        )
+        trace = np.full(nspec, trace_spat, dtype=float)
+        box_radius = 0.5 * (
+            spec_model.spat_edges["mask"][-1] - spec_model.spat_edges["mask"][0]
+        ) / spec_model.pixel_scale
+
+        sobj.trace_spec = np.arange(nspec, dtype=int)
+        sobj.TRACE_SPAT = trace
+        sobj.SPAT_PIXPOS = float(trace_spat)
+        sobj.SPAT_FRACPOS = float(trace_spat / max(nspat - 1, 1))
+        sobj.BOX_RADIUS = float(box_radius)
+        sobj.FWHM = spec_model.spat_resln / spec_model.pixel_scale
+        sobj.SPAT_FWHM = spec_model.spat_resln / spec_model.pixel_scale
+
+        extract.extract_boxcar(
+            inputs["imgminsky"],
+            inputs["ivar"],
+            inputs["mask"],
+            inputs["waveimg"],
+            inputs["skyimg"],
+            sobj,
+        )
+
+        oprof, trace_new, fwhmfit, _ = extract.fit_profile(
+            image=inputs["imgminsky"],
+            ivar=inputs["ivar"],
+            waveimg=inputs["waveimg"],
+            thismask=inputs["thismask"],
+            spat_img=inputs["spat_img"],
+            trace_in=trace,
+            wave=sobj.BOX_WAVE,
+            flux=sobj.BOX_COUNTS,
+            fluxivar=sobj.BOX_COUNTS_IVAR,
+            inmask=inputs["mask"],
+            thisfwhm=max(float(spec_model.spat_resln / spec_model.pixel_scale), 1.0),
+            obj_string=sobj.NAME,
+            show_profile=False,
+        )
+
+        fwhmfit_finite = fwhmfit[np.isfinite(fwhmfit)]
+        trace_shift = trace_new - trace
+        trace_shift_finite = trace_shift[np.isfinite(trace_shift)]
+        if fwhmfit_finite.size > 0:
+            msgs.info(
+                "PypeIt optimal extraction FWHM: "
+                f"initial={spec_model.spat_resln / spec_model.pixel_scale:.2f} pix, "
+                f"median fit={np.nanmedian(fwhmfit_finite):.2f} pix, "
+                f"range={np.nanmin(fwhmfit_finite):.2f}-{np.nanmax(fwhmfit_finite):.2f} pix"
+            )
+        if trace_shift_finite.size > 0:
+            msgs.info(
+                "PypeIt optimal extraction trace shift: "
+                f"median={np.nanmedian(trace_shift_finite):.2f} pix, "
+                f"range={np.nanmin(trace_shift_finite):.2f}-{np.nanmax(trace_shift_finite):.2f} pix"
+            )
+
+        sobj.TRACE_SPAT = trace_new
+        sobj.SPAT_PIXPOS = float(np.nanmedian(trace_new))
+        sobj.SPAT_FRACPOS = float(sobj.SPAT_PIXPOS / max(nspat - 1, 1))
+        sobj.FWHMFIT = fwhmfit
+
+        extract.extract_optimal(
+            imgminsky=inputs["imgminsky"],
+            ivar=inputs["ivar"],
+            mask=inputs["mask"],
+            waveimg=inputs["waveimg"],
+            skyimg=inputs["skyimg"],
+            thismask=inputs["thismask"],
+            oprof=oprof,
+            spec=sobj,
+        )
 
     def to_SpecModel(
         self,
@@ -822,7 +1174,14 @@ class SpecData:
             **kwargs,
         )
 
-    def update_pypeit_skymodel(self, spec_model: SpecModel, spec2d_file: str):
+    def update_pypeit_skymodel(
+        self,
+        spec_model: SpecModel,
+        spec2d_file: str,
+        preproc_file: Optional[str] = None,
+        rect_file: Optional[str] = None,
+        output_file: Optional[str] = None,
+    ):
         """
         Update the sky model and the mask in the PypeIt spec2d file.
         """
@@ -833,9 +1192,9 @@ class SpecData:
         BIT_CR = 2**1  # Cosmic rays
         BIT_OFFSLIT = 2**4  # Off-slit pixels
 
-        preproc_file = spec2d_file.replace(".fits", "_preproc.fits")
-        rect_file = spec2d_file.replace(".fits", "_rect.fits")
-        output_file = spec2d_file.replace(".fits", "_hostsub.fits")
+        preproc_file = preproc_file or spec2d_file.replace(".fits", "_preproc.fits")
+        rect_file = rect_file or spec2d_file.replace(".fits", "_rect.fits")
+        output_file = output_file or spec2d_file.replace(".fits", "_hostsub.fits")
 
         if not (os.path.exists(spec2d_file) | os.path.exists(rect_file)):
             raise FileNotFoundError("Spec2D file or rectified file not found.")
@@ -932,17 +1291,33 @@ class SpecData:
         local_mask = spat_mask & spec_mask
 
         x_mask = jnp.asarray(x[local_mask], dtype=jnp.float32)
-        sky_host_prior, _ = spec_model.host_prior(x_mask)
-        _, _, (sky_pred, _) = spec_model._get_pred(
-            spec_model._gp_1d, spec_model._gp_2d, x_mask, return_var=True
+        _, _, sky_pred = spec_model._get_pred(
+            spec_model._gp_1d, spec_model._gp_2d, x_mask, return_var=False
         )
 
         sky_local = np.zeros_like(dist.ravel())
-        sky_local[local_mask] = sky_pred + sky_host_prior
+        sky_local[local_mask] = np.asarray(sky_pred)
         sky_local = sky_local.reshape(dist.shape)
 
+        sky_model = np.array(global_sky_pre + global_sky_post + sky_local)
+        self._plot_writeback_diagnostic(
+            sciimg=np.array(sci2d.sciimg.T),
+            sky_model=sky_model,
+            sky_local=np.array(sky_local),
+            dist=np.array(dist),
+            waveimg=np.array(waveimg),
+            spec_model=spec_model,
+            save=os.path.join(
+                "QA",
+                os.path.basename(spec2d_file)
+                .replace(".fits", "")
+                .replace("spec2d_", "")
+                + "_writeback_native.pdf",
+            ),
+        )
+
         # assert sci2d.sciimg.shape == sky_model.T.shape
-        sci2d.skymodel = np.array(global_sky_pre + global_sky_post + sky_local).T
+        sci2d.skymodel = sky_model.T
 
         all_spec2d = spec2dobj.AllSpec2DObj()
         all_spec2d[det] = sci2d
@@ -952,6 +1327,99 @@ class SpecData:
         hdul.close()
 
         all_spec2d.write_to_fits(output_file, pri_hdr=pri_hdr)
+
+    @staticmethod
+    def _plot_writeback_diagnostic(
+        sciimg: ArrayLike,
+        sky_model: ArrayLike,
+        sky_local: ArrayLike,
+        dist: ArrayLike,
+        waveimg: ArrayLike,
+        spec_model: SpecModel,
+        save: str,
+    ) -> None:
+        """
+        Plot native-grid diagnostics for the PypeIt skymodel writeback.
+        """
+        os.makedirs(os.path.dirname(save), exist_ok=True)
+
+        sciimg = np.asarray(sciimg)
+        sky_model = np.asarray(sky_model)
+        sky_local = np.asarray(sky_local)
+        dist = np.asarray(dist)
+        waveimg = np.asarray(waveimg)
+        residual = sciimg - sky_model
+
+        spec_mask = (
+            np.isfinite(waveimg)
+            & (waveimg >= spec_model.spec[0])
+            & (waveimg <= spec_model.spec[-1])
+        )
+        host_mask = (
+            np.isfinite(dist)
+            & (dist >= spec_model.spat_edges["host"][0])
+            & (dist <= spec_model.spat_edges["host"][-1])
+            & spec_mask
+        )
+
+        def finite_scale(values: ArrayLike) -> float:
+            values = np.asarray(values)
+            values = np.abs(values[np.isfinite(values)])
+            if values.size == 0:
+                return 1.0
+            scale = np.nanpercentile(values, 95)
+            return scale if np.isfinite(scale) and scale > 0 else 1.0
+
+        resid_scale = finite_scale(residual[host_mask])
+        if resid_scale == 1.0:
+            resid_scale = finite_scale(residual)
+        local_scale = finite_scale(sky_local[host_mask])
+        if local_scale == 1.0:
+            local_scale = finite_scale(sky_local)
+
+        bins = np.linspace(
+            spec_model.spat_edges["host"][0], spec_model.spat_edges["host"][-1], 80
+        )
+        bin_center = 0.5 * (bins[1:] + bins[:-1])
+        resid_profile = np.full(bin_center.shape, np.nan)
+        model_profile = np.full(bin_center.shape, np.nan)
+        for i in range(len(bin_center)):
+            bin_mask = host_mask & (dist >= bins[i]) & (dist < bins[i + 1])
+            if np.any(bin_mask):
+                resid_profile[i] = np.nanmedian(residual[bin_mask])
+                model_profile[i] = np.nanmedian(sky_local[bin_mask])
+
+        _, ax = plt.subplots(3, 1, figsize=(12, 12), constrained_layout=True)
+        image_kwargs = dict(origin="lower", aspect="auto", cmap="RdBu_r")
+        ax[0].imshow(residual, vmin=-resid_scale, vmax=resid_scale, **image_kwargs)
+        ax[0].set_title(r"Native residual: SCIIMG $-$ proposed SKYMODEL")
+        ax[0].set_ylabel("Spatial pixel")
+
+        ax[1].imshow(sky_local, vmin=-local_scale, vmax=local_scale, **image_kwargs)
+        ax[1].set_title("Native local HostSub model")
+        ax[1].set_ylabel("Spatial pixel")
+
+        ax[2].plot(bin_center, resid_profile, label="median residual")
+        ax[2].plot(bin_center, model_profile, label="median local model", alpha=0.8)
+        ax[2].axvline(0, color="0.5", ls=":", label="trace")
+        ax[2].axvspan(
+            spec_model.spat_edges["mask"][0],
+            spec_model.spat_edges["mask"][-1],
+            color="0.8",
+            alpha=0.4,
+            label="source mask",
+        )
+        ax[2].axhline(0, color="k", ls="--", lw=1)
+        ax[2].set_xlabel("Distance from trace [arcsec]")
+        ax[2].set_ylabel("Median counts")
+        ax[2].legend(loc="best")
+
+        for ax_ in ax[:2]:
+            ax_.set_xlabel("Spectral pixel")
+
+        plt.savefig(save)
+        plt.close()
+        msgs.info(f"Saved writeback diagnostic plot to {save}")
 
     def _rectify(
         self,
@@ -1051,7 +1519,11 @@ class SpecData:
 
     @show_and_save
     def _get_offset(
-        self, points: Array, flux: Array, host_prior: Callable, mask_wid: float = 2.0
+        self,
+        points: Array,
+        flux: Array,
+        host_prior: Callable,
+        mask_wid: float = 2.0,
     ) -> float:
         """
         Center the trace of the science object.
@@ -1145,19 +1617,13 @@ class SpecData:
         # => Subtract offset_opt from the spatial coordinates of the 2D spectrum
         offset_opt = offset_list[np.argmax(ccf)]
 
-        _, ax = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+        _, ax = plt.subplots(3, 1, figsize=(12, 11), constrained_layout=True)
         ax[0].plot(offset_list, ccf)
         ax[0].set_xlabel(r"$\mathrm{SCI - STD\ [arcsec]}$")
         ax[0].set_ylabel(r"$\mathrm{Correlation Coefficient}$")
         ax[0].xaxis.set_major_locator(plt.MultipleLocator(0.2))
         ax[0].xaxis.set_minor_locator(plt.MultipleLocator(0.02))
         ax[0].axvline(offset_opt, color="k", linestyle="--")
-
-        ax[1].scatter(
-            spat,
-            (obs - jnp.nanmin(obs)) / (jnp.nanmax(obs) - jnp.nanmin(obs)),
-            label="obs",
-        )
 
         profile_prior = host_prior(
             jnp.stack(
@@ -1170,16 +1636,86 @@ class SpecData:
                 axis=-1,
             )
         )[0]
+
+        def normalize_profile(values: ArrayLike) -> np.ndarray:
+            values = np.asarray(values, dtype=float)
+            finite = np.isfinite(values)
+            norm = np.full(values.shape, np.nan, dtype=float)
+            if not np.any(finite):
+                return norm
+            vmin = np.nanmin(values[finite])
+            vmax = np.nanmax(values[finite])
+            if not np.isfinite(vmax - vmin) or vmax == vmin:
+                return norm
+            norm[finite] = (values[finite] - vmin) / (vmax - vmin)
+            return norm
+
+        corrected_spat = np.asarray(spat - offset_opt, dtype=float)
+        obs_norm = normalize_profile(obs)
+        prior_norm = normalize_profile(profile_prior)
+        residual = obs_norm - prior_norm
+        finite_resid = (
+            np.isfinite(corrected_spat)
+            & np.isfinite(residual)
+            & (np.abs(corrected_spat) <= 1.0)
+        )
+        suggested_mask_offset = (
+            corrected_spat[finite_resid][np.nanargmax(residual[finite_resid])]
+            if np.any(finite_resid)
+            else np.nan
+        )
+
+        ax[1].scatter(corrected_spat, obs_norm, label="obs")
         ax[1].scatter(
-            spat,
-            (profile_prior - profile_prior.min())
-            / (profile_prior.max() - profile_prior.min()),
+            corrected_spat,
+            prior_norm,
             label="prior",
         )
-        ax[1].set_xlabel(r"$\mathrm{Spat\ [arcsec]}$")
+        ax[1].axvline(0, color="k", linestyle="--", label="corrected origin")
+        ax[1].axvline(
+            -offset_opt,
+            color="0.5",
+            linestyle=":",
+            label="PypeIt trace",
+        )
+        if np.isfinite(suggested_mask_offset):
+            ax[1].axvline(
+                suggested_mask_offset,
+                color="C3",
+                linestyle="-.",
+                label="suggested mask_offset",
+            )
+        ax[1].set_xlabel(r"$\mathrm{Corrected\ spat\ [arcsec]}$")
         ax[1].set_ylabel(r"$\mathrm{Normalized\ Counts}$")
         ax[1].xaxis.set_major_locator(plt.MultipleLocator(5))
         ax[1].xaxis.set_minor_locator(plt.MultipleLocator(1))
         ax[1].legend()
+
+        ax[2].scatter(corrected_spat, residual, color="C3", label="obs - prior")
+        ax[2].axhline(0, color="k", linestyle="--", linewidth=1)
+        ax[2].axvline(0, color="k", linestyle="--", label="corrected origin")
+        ax[2].axvline(
+            -offset_opt,
+            color="0.5",
+            linestyle=":",
+            label="PypeIt trace",
+        )
+        if np.isfinite(suggested_mask_offset):
+            ax[2].axvline(
+                suggested_mask_offset,
+                color="C3",
+                linestyle="-.",
+                label=f"suggested mask_offset = {suggested_mask_offset:.2f} arcsec",
+            )
+        ax[2].set_xlabel(r"$\mathrm{Corrected\ spat\ [arcsec]}$")
+        ax[2].set_ylabel(r"$\mathrm{Residual}$")
+        ax[2].xaxis.set_major_locator(plt.MultipleLocator(5))
+        ax[2].xaxis.set_minor_locator(plt.MultipleLocator(1))
+        ax[2].legend()
+
+        if np.isfinite(suggested_mask_offset):
+            msgs.info(
+                f"Suggested mask_offset from trace-alignment residual: {suggested_mask_offset:.2f} arcsec"
+            )
 
         return offset_opt

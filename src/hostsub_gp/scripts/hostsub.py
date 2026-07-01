@@ -23,6 +23,21 @@ Int: Callable[[Any], int | tuple[int, int]] = Digitize(int)
 
 
 class HostSub(ScriptBase):
+    @staticmethod
+    def _hostsub_product_path(path: str, suffix: str = "") -> str:
+        """
+        Return the HostSub product path in a sibling Science_hostsub directory.
+        """
+        dirname, basename = os.path.split(path)
+        parent, dirname_base = os.path.split(dirname)
+        if dirname_base == "Science":
+            out_dir = os.path.join(parent, "Science_hostsub")
+        else:
+            out_dir = os.path.join(dirname, "Science_hostsub")
+        os.makedirs(out_dir, exist_ok=True)
+        root, ext = os.path.splitext(basename)
+        return os.path.join(out_dir, f"{root}{suffix}{ext}")
+
     @classmethod
     def get_parser(cls):
         parser = super().get_parser(description="Run the host subtraction pipeline.")
@@ -54,6 +69,12 @@ class HostSub(ScriptBase):
             action="store_true",
             help="Coadd the 2D spectra before modeling the host galaxy.",
         )
+        parser.add_argument(
+            "--write_spec2d",
+            default=False,
+            action="store_true",
+            help="Also write HostSub spec2d products when using --coadd2d.",
+        )
         return parser
 
     @msgs.timer
@@ -69,7 +90,7 @@ class HostSub(ScriptBase):
         par = hostsubFile.config
 
         # Prepare the QA directory
-        os.system("mkdir -p QA")
+        os.makedirs("QA", exist_ok=True)
 
         # Standard star
         if any(hostsubFile.data["frametype"] == "standard"):
@@ -91,9 +112,8 @@ class HostSub(ScriptBase):
         for i in sci_idx:
             sci_file_1d = hostsubFile.filenames[i]
             sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
-            sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace(
-                "spec1d", "spec2d"
-            )
+            sci_rect_file = HostSub._hostsub_product_path(sci_file_2d, "_rect")
+            sci_preproc_file = HostSub._hostsub_product_path(sci_file_2d, "_preproc")
             base_file_list.append(
                 sci_file_1d.replace("spec1d_", "").replace(".fits", "")
             )
@@ -128,6 +148,8 @@ class HostSub(ScriptBase):
                     obj_id=objid,
                     spat_rect=spat_rect,
                     spec_rect=spec_rect,
+                    rect_file=sci_rect_file,
+                    preproc_file=sci_preproc_file,
                     **spec_data_cfg,
                 )
                 spec_rect = spec_data.spec_rect
@@ -146,9 +168,7 @@ class HostSub(ScriptBase):
             for k, i in enumerate(sci_idx):
                 sci_file_1d = hostsubFile.filenames[i]
                 sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
-                sci_rect_file = sci_file_2d.replace(".fits", "_rect.fits").replace(
-                    "spec1d", "spec2d"
-                )
+                sci_rect_file = HostSub._hostsub_product_path(sci_file_2d, "_rect")
                 hdul_rect = fits.open(sci_rect_file, mode="update")
 
                 if spec_data_cr_mask is not None:
@@ -177,22 +197,53 @@ class HostSub(ScriptBase):
             spec_model = HostSub._model_host_subtraction(
                 args, spec_data_coadd2d, par_hostsub, output_suffix="coadd2d"
             )
+            spec_model_for_rewrite = spec_model
+            if not args.skip_gp:
+                from pypeit import coadd2d
+
+                spec2d_files = [
+                    hostsubFile.filenames[i].replace("spec1d", "spec2d")
+                    for i in sci_idx
+                ]
+                coadd_basename = coadd2d.CoAdd2D.default_basename(spec2d_files)
+                coadd_spec1d_file = os.path.join(
+                    os.path.dirname(
+                        HostSub._hostsub_product_path(hostsubFile.filenames[sci_idx[0]])
+                    ),
+                    f"spec1d_{coadd_basename}_hostsub.fits",
+                )
+                objid = hostsubFile.data["objid"][sci_idx[0]]
+                objid = None if len(objid) == 0 else objid
+                SpecData.write_pypeit_spec1d(
+                    spec_model=spec_model,
+                    template_spec1d=hostsubFile.filenames[sci_idx[0]],
+                    output_file=coadd_spec1d_file,
+                    obj_id=objid,
+                )
 
         else:
             for spec_data, base_file in zip(spec_data_list, base_file_list):
                 spec_model = HostSub._model_host_subtraction(
                     args, spec_data, par_hostsub, output_suffix=base_file.split("/")[-1]
                 )
-        if not args.skip_gp:
+            # For multi-file non-coadd runs, intentionally use the final model for
+            # all rewrites; the updated 2D products are expected to be coadded.
+            spec_model_for_rewrite = spec_model
+        if not args.skip_gp and ((not args.coadd2d) or args.write_spec2d):
             # Update the skymodel frame in the original Spec2D object
-            for i in sci_idx:
+            for i, spec_data in zip(sci_idx, spec_data_list):
                 sci_file_1d = hostsubFile.filenames[i]
-                os.system(
-                    f"cp {sci_file_1d} {sci_file_1d.replace('.fits', '_hostsub.fits')}"
-                )
                 sci_file_2d = sci_file_1d.replace("spec1d", "spec2d")
                 spec_data.update_pypeit_skymodel(
-                    spec_model=spec_model, spec2d_file=sci_file_2d
+                    spec_model=spec_model_for_rewrite,
+                    spec2d_file=sci_file_2d,
+                    preproc_file=HostSub._hostsub_product_path(
+                        sci_file_2d, "_preproc"
+                    ),
+                    rect_file=HostSub._hostsub_product_path(sci_file_2d, "_rect"),
+                    output_file=HostSub._hostsub_product_path(
+                        sci_file_2d, "_hostsub"
+                    ),
                 )
 
     @staticmethod

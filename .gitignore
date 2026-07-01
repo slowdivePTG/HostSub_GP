@@ -185,3 +185,7 @@ playground/MUSE/elliptical*
 test/
 *cutout*
 paper/
+
+# LLM/agents
+.codegraph
+pyrightconfig.json
