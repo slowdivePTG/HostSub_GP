@@ -437,6 +437,30 @@ class SpecModel:
         self.dist_batch_2d = self.f_batch_2d.subtract(self.f_batch_prior)
         self.dist_host_batch_2d = self.f_host_batch_2d.subtract(self.f_host_batch_prior)
 
+        # Prefactors for oversampling correction
+        _spat_step = float(np.nanmedian(np.abs(np.diff(np.asarray(self.spat)))))
+        _spec_step = float(np.nanmedian(np.abs(np.diff(np.asarray(self.spec)))))
+        self._pixel_prefactor = min(
+            1.0, _spat_step * _spec_step / (self.spat_resln * self.spec_resln)
+        )
+        self._spec_prefactor = min(1.0, _spec_step / self.spec_resln)
+        _batch_spat_step = float(
+            np.nanmedian(np.abs(np.diff(np.asarray(self.f_host_batch_2d.spat))))
+        )
+        _batch_spec_step = float(
+            np.nanmedian(np.abs(np.diff(np.asarray(self.f_host_batch_2d.spec))))
+        )
+        self._batch_prefactor = min(
+            1.0,
+            _batch_spat_step * _batch_spec_step / (self.spat_resln * self.spec_resln),
+        )
+        msgs.info(
+            "Oversampling correction  "
+            f"pixel={self._pixel_prefactor:.3f}  "
+            f"spec={self._spec_prefactor:.3f}  "
+            f"batch={self._batch_prefactor:.3f}"
+        )
+
         self._plot_raw(show=show, save=save)
 
     def model_host(
@@ -670,7 +694,7 @@ class SpecModel:
                 _dist_host_batch_2d = _f_host_batch_2d.subtract(_f_host_batch_prior)
 
                 # Calculate the chi2
-                chi2 = jnp.nansum(
+                chi2 = self._batch_prefactor * jnp.nansum(
                     _dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2
                 )
 
@@ -705,7 +729,7 @@ class SpecModel:
                 # Calculate the distance relative to the prior
                 _dist_host_batch_2d = self.f_host_batch_2d.subtract(_f_host_batch_prior)
                 # Calculate the chi2
-                chi2 = jnp.nansum(
+                chi2 = self._batch_prefactor * jnp.nansum(
                     _dist_host_batch_2d.y**2 / _dist_host_batch_2d.yerr**2
                 )
 
@@ -1120,11 +1144,12 @@ class SpecModel:
 
         params_limit = self._set_params_limit(params_limit, ndim=1)
 
+        yerr_1d = self.f_host_1d.yerr / np.sqrt(self._spec_prefactor)
         params_1d = GP(
             kernel_type="1D",
             X=self.f_host_1d.X,
             y=self.f_host_1d.y,
-            yerr=self.f_host_1d.yerr,
+            yerr=yerr_1d,
             params_init=params_init,
             params_limit=params_limit,
             optimization=True,
@@ -1214,7 +1239,7 @@ class SpecModel:
             kernel_type="1D",
             X=f_1d.X[f_1d_mask],
             y=f_1d.y[f_1d_mask],
-            yerr=f_1d.yerr[f_1d_mask],
+            yerr=f_1d.yerr[f_1d_mask] / np.sqrt(self._spec_prefactor),
             params=params_1d,
             params_limit=params_limit_1d,
         )
@@ -1229,7 +1254,7 @@ class SpecModel:
             emission_lines=self.emission_lines,
             X=f_2d.X[f_2d_mask],
             y=f_2d.y[f_2d_mask],
-            yerr=f_2d.yerr[f_2d_mask],
+            yerr=f_2d.yerr[f_2d_mask] / np.sqrt(self._batch_prefactor),
             params=params_2d,
             params_limit=params_limit_2d,
         )
@@ -1316,7 +1341,9 @@ class SpecModel:
             y_host_2d = gp_2d.predict(X_test=f_X) + f_mean
             y_host = y_host_1d * y_host_2d
             assert isinstance(y_host, Array), "Invalid host galaxy flux."
-            log_prob_obs = jnp.nansum(jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr))
+            log_prob_obs = jnp.nansum(
+                jax.scipy.stats.norm.logpdf(y_host, f_y, f_yerr)
+            )
 
             # jax.debug.print("{}", params_1d)
             # jax.debug.print("{}", params_2d)
@@ -1333,18 +1360,26 @@ class SpecModel:
         f_1d_mask = np.isfinite(self.f_host_1d.y)
         f_2d_mask = np.isfinite(self.dist_host_batch_2d.y)
 
+        f_yerr_scaled = self.f_host.yerr[obs_mask] / np.sqrt(self._pixel_prefactor)
+        f_1d_yerr_scaled = self.f_host_1d.yerr[f_1d_mask] / np.sqrt(
+            self._spec_prefactor
+        )
+        dist_2d_yerr_scaled = self.dist_host_batch_2d.yerr[f_2d_mask] / np.sqrt(
+            self._batch_prefactor
+        )
+
         return _neg_log_probability(
             params_1d=params_1d,
             params_2d=params_2d,
             f_X=self.f_host.X[obs_mask],
             f_y=self.f_host.y[obs_mask],
-            f_yerr=self.f_host.yerr[obs_mask],
+            f_yerr=f_yerr_scaled,
             f_1d_X=self.f_host_1d.X[f_1d_mask],
             f_1d_y=self.f_host_1d.y[f_1d_mask],
-            f_1d_yerr=self.f_host_1d.yerr[f_1d_mask],
+            f_1d_yerr=f_1d_yerr_scaled,
             dist_2d_X=self.dist_host_batch_2d.X[f_2d_mask],
             dist_2d_y=self.dist_host_batch_2d.y[f_2d_mask],
-            dist_2d_yerr=self.dist_host_batch_2d.yerr[f_2d_mask],
+            dist_2d_yerr=dist_2d_yerr_scaled,
             f_mean=self.f_host_prior.y[obs_mask],
             emission_lines=self.emission_lines,
         )

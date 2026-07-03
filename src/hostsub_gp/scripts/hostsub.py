@@ -214,11 +214,20 @@ class HostSub(ScriptBase):
                 )
                 objid = hostsubFile.data["objid"][sci_idx[0]]
                 objid = None if len(objid) == 0 else objid
+                pypeit_local_sky = {
+                    "enabled": True,
+                    "bsp": 0.6,
+                    "sigrej": 3.5,
+                    "npoly": 1,
+                    "bkpts_optimal": True,
+                }
+                pypeit_local_sky.update(par_hostsub.get("pypeit_local_sky", {}))
                 SpecData.write_pypeit_spec1d(
                     spec_model=spec_model,
                     template_spec1d=hostsubFile.filenames[sci_idx[0]],
                     output_file=coadd_spec1d_file,
                     obj_id=objid,
+                    pypeit_local_sky=pypeit_local_sky,
                 )
 
         else:

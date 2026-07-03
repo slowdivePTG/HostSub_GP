@@ -784,6 +784,7 @@ class SpecData:
         obj_id: Optional[str] = None,
         duplicate_to_opt: bool = True,
         extraction: Literal["optimal", "hostsub"] = "optimal",
+        pypeit_local_sky: Optional[dict] = None,
     ) -> None:
         """
         Write the HostSub 1D extraction to a PypeIt-style spec1d file.
@@ -803,11 +804,14 @@ class SpecData:
 
         if extraction == "optimal":
             source = "HOSTSUB_OPT"
-            SpecData._extract_pypeit_optimal(spec_model, sobj)
+            local_sky_info = SpecData._extract_pypeit_optimal(
+                spec_model, sobj, pypeit_local_sky=pypeit_local_sky
+            )
         elif extraction == "hostsub":
             source = SpecData._fill_specobj_hostsub_extraction(
                 spec_model, sobj, duplicate_to_opt=duplicate_to_opt
             )
+            local_sky_info = {"enabled": False, "applied": False}
         else:
             raise ValueError("extraction must be either 'optimal' or 'hostsub'.")
 
@@ -849,6 +853,11 @@ class SpecData:
         subheader["HSTSUB"] = True
         subheader["HSTSRC"] = source
         subheader["HSTNOTE"] = "HostSub_GP coadded rectified 1D extraction"
+        subheader["HSTLSKY"] = bool(local_sky_info.get("applied", False))
+        if local_sky_info.get("enabled", False):
+            subheader["HSTLSBSP"] = float(local_sky_info.get("bsp", 0.6))
+            subheader["HSTLSSIG"] = float(local_sky_info.get("sigrej", 3.5))
+            subheader["HSTLSORD"] = int(local_sky_info.get("npoly", 1))
 
         output_dir = os.path.dirname(output_file)
         if output_dir:
@@ -1008,7 +1017,7 @@ class SpecData:
 
         host_model = np.asarray(spec_model._f_pred.reshape(spec_model.shape))
         imgminsky = np.asarray(spec_model.f_sky_sub.Y) - host_model
-        skyimg = np.asarray(spec_model.f_sky_1d.Y)[None, :] + host_model
+        skyimg = np.asarray(spec_model.f_sky_1d.Y)[None, :]
         variance = np.asarray(spec_model.f_sky_sub.Yerr) ** 2
         ivar = np.zeros_like(variance)
         good_var = np.isfinite(variance) & (variance > 0)
@@ -1017,8 +1026,12 @@ class SpecData:
         nspat, nspec = imgminsky.shape
         waveimg = np.tile(np.asarray(spec_model.spec)[None, :], (nspat, 1))
         spat_img = np.tile(np.arange(nspat, dtype=float)[:, None], (1, nspec))
-        mask = np.isfinite(imgminsky) & np.isfinite(ivar) & (ivar > 0)
-        thismask = np.ones_like(mask, dtype=bool)
+        host_region = (
+            (np.asarray(spec_model.spat, dtype=float) >= spec_model.spat_edges["host"][0])
+            & (np.asarray(spec_model.spat, dtype=float) <= spec_model.spat_edges["host"][1])
+        )[:, None]
+        thismask = np.tile(host_region, (1, nspec))
+        mask = np.isfinite(imgminsky) & np.isfinite(ivar) & (ivar > 0) & thismask
 
         # PypeIt extraction routines expect (nspec, nspat).
         return dict(
@@ -1034,7 +1047,9 @@ class SpecData:
         )
 
     @staticmethod
-    def _extract_pypeit_optimal(spec_model: SpecModel, sobj) -> None:
+    def _extract_pypeit_optimal(
+        spec_model: SpecModel, sobj, pypeit_local_sky: Optional[dict] = None
+    ) -> dict:
         """
         Fill a PypeIt SpecObj using PypeIt's boxcar and optimal extraction.
         """
@@ -1110,6 +1125,38 @@ class SpecData:
         sobj.SPAT_FRACPOS = float(sobj.SPAT_PIXPOS / max(nspat - 1, 1))
         sobj.FWHMFIT = fwhmfit
 
+        local_sky_info = SpecData._default_pypeit_local_sky(pypeit_local_sky)
+        if local_sky_info["enabled"]:
+            local_sky_resid, local_sky_mask = SpecData._fit_pypeit_local_sky(
+                inputs=inputs,
+                oprof=oprof,
+                trace=trace_new,
+                box_radius=box_radius,
+                **local_sky_info,
+            )
+            if np.any(local_sky_mask):
+                inputs["imgminsky"] = inputs["imgminsky"] - local_sky_resid
+                inputs["skyimg"] = inputs["skyimg"] + local_sky_resid
+                local_sky_info["applied"] = True
+                msgs.info(
+                    "Applied PypeIt local sky residual model: "
+                    f"median={np.nanmedian(local_sky_resid[local_sky_mask]):.3e}, "
+                    f"std={np.nanstd(local_sky_resid[local_sky_mask]):.3e}"
+                )
+                extract.extract_boxcar(
+                    inputs["imgminsky"],
+                    inputs["ivar"],
+                    inputs["mask"],
+                    inputs["waveimg"],
+                    inputs["skyimg"],
+                    sobj,
+                )
+            else:
+                local_sky_info["applied"] = False
+                msgs.warning("PypeIt local sky residual model was not applied.")
+        else:
+            local_sky_info["applied"] = False
+
         extract.extract_optimal(
             imgminsky=inputs["imgminsky"],
             ivar=inputs["ivar"],
@@ -1120,6 +1167,129 @@ class SpecData:
             oprof=oprof,
             spec=sobj,
         )
+
+        return local_sky_info
+
+    @staticmethod
+    def _default_pypeit_local_sky(pypeit_local_sky: Optional[dict] = None) -> dict:
+        """
+        Normalize PypeIt local-sky residual fitting options.
+        """
+        cfg = {
+            "enabled": True,
+            "bsp": 0.6,
+            "sigrej": 3.5,
+            "npoly": 1,
+            "bkpts_optimal": True,
+        }
+        if pypeit_local_sky is not None:
+            cfg.update(pypeit_local_sky)
+        cfg["enabled"] = str(cfg["enabled"]).lower() == "true" if isinstance(cfg["enabled"], str) else bool(cfg["enabled"])
+        cfg["bkpts_optimal"] = str(cfg["bkpts_optimal"]).lower() == "true" if isinstance(cfg["bkpts_optimal"], str) else bool(cfg["bkpts_optimal"])
+        cfg["bsp"] = float(cfg["bsp"])
+        cfg["sigrej"] = float(cfg["sigrej"])
+        cfg["npoly"] = int(cfg["npoly"])
+        return cfg
+
+    @staticmethod
+    def _fit_pypeit_local_sky(
+        inputs: dict,
+        oprof: np.ndarray,
+        trace: np.ndarray,
+        box_radius: float,
+        enabled: bool = True,
+        bsp: float = 0.6,
+        sigrej: float = 3.5,
+        npoly: int = 1,
+        bkpts_optimal: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Fit residual skyline/background structure on the HostSub rectified grid.
+        """
+        from pypeit.core import skysub
+
+        nspec = inputs["nspec"]
+        nspat = inputs["nspat"]
+        piximg = np.tile(np.arange(nspec, dtype=float)[:, None], (1, nspat))
+        fitmask = np.asarray(inputs["mask"] & inputs["thismask"], dtype=bool)
+        local_sky = np.zeros_like(inputs["imgminsky"], dtype=float)
+        local_sky_mask = np.zeros_like(fitmask, dtype=bool)
+        if not enabled or not np.any(fitmask):
+            return local_sky, local_sky_mask
+
+        try:
+            evalmask = fitmask.copy()
+            source_aperture = np.abs(inputs["spat_img"] - trace[:, None]) <= box_radius
+            fitmask = fitmask & ~source_aperture
+            if not np.any(fitmask):
+                return local_sky, local_sky_mask
+            bsp_pix = max(float(bsp), 2.0)
+            fullbkpt = skysub.optimal_bkpts(
+                bkpts_optimal,
+                bsp_pix,
+                piximg,
+                fitmask,
+                skyimage=inputs["imgminsky"],
+            )
+            isub = np.where(evalmask.ravel())[0]
+            fit_ivar = np.asarray(inputs["ivar"], dtype=float).copy()
+            fit_ivar[~fitmask] = 0.0
+            oprof_sky = np.asarray(oprof, dtype=float).copy()
+            oprof_sky[source_aperture] = 0.0
+            oprof_flat = oprof_sky.reshape(nspec * nspat, 1)
+            sky_flat, _, gpm = skysub.skyoptimal(
+                piximg.ravel()[isub],
+                np.asarray(inputs["imgminsky"], dtype=float).ravel()[isub],
+                fit_ivar.ravel()[isub],
+                oprof_flat[isub, :],
+                spatial_img=np.asarray(inputs["spat_img"], dtype=float).ravel()[isub],
+                fullbkpt=fullbkpt,
+                sigrej=sigrej,
+                npoly=npoly,
+            )
+            if bkpts_optimal and not np.any(np.isfinite(sky_flat) & (sky_flat != 0)):
+                fullbkpt = skysub.optimal_bkpts(
+                    False,
+                    bsp_pix,
+                    piximg,
+                    fitmask,
+                    skyimage=inputs["imgminsky"],
+                )
+                sky_flat, _, gpm = skysub.skyoptimal(
+                    piximg.ravel()[isub],
+                    np.asarray(inputs["imgminsky"], dtype=float).ravel()[isub],
+                    fit_ivar.ravel()[isub],
+                    oprof_flat[isub, :],
+                    spatial_img=np.asarray(inputs["spat_img"], dtype=float).ravel()[isub],
+                    fullbkpt=fullbkpt,
+                    sigrej=sigrej,
+                    npoly=npoly,
+                )
+        except Exception as err:
+            msgs.warning(f"PypeIt local sky residual fitting failed: {err}")
+            return local_sky, local_sky_mask
+
+        sky_flat = np.asarray(np.ma.filled(sky_flat, 0.0), dtype=float)
+        gpm = np.asarray(np.ma.filled(gpm, False), dtype=bool)
+        if not np.any(np.isfinite(sky_flat) & (sky_flat != 0)):
+            sky_pixels = np.where(fitmask, inputs["imgminsky"], np.nan)
+            resid_1d = np.nanmedian(sky_pixels, axis=1)
+            good_resid = np.isfinite(resid_1d)
+            if not np.any(good_resid & (resid_1d != 0)):
+                return local_sky, local_sky_mask
+            if not np.all(good_resid):
+                resid_1d = np.interp(
+                    np.arange(nspec, dtype=float),
+                    np.where(good_resid)[0].astype(float),
+                    resid_1d[good_resid],
+                )
+            local_sky = np.tile(resid_1d[:, None], (1, nspat))
+            local_sky_mask = evalmask & np.isfinite(local_sky)
+            return local_sky, local_sky_mask
+        sub_idx = np.unravel_index(isub, local_sky.shape)
+        local_sky[sub_idx] = sky_flat
+        local_sky_mask[sub_idx] = gpm if np.any(gpm) else np.isfinite(sky_flat)
+        return local_sky, local_sky_mask
 
     def to_SpecModel(
         self,
